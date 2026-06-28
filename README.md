@@ -2,23 +2,17 @@
 
 AI Desk Phone 是一个把老式座机改造成 Windows 语音通话控制器的开源项目。
 
-当前主线是：ESP32-C3 读取座机摘挂机/按压机构的 GPIO1/ADC 状态，并作为名为 `AIDeskPhoneKB` 的 BLE HID 键盘向 Windows 发送可配置快捷键。本地网页控制台用于调阈值、看串口日志、选择动作预设，并把配置写入 ESP32。
+项目分成两条独立链路：
 
-电话听筒的麦克风/喇叭音频链路由 CSR8645 蓝牙音频模块单独处理。音频部分与 ESP32 控制部分分开调试，接线前请先看 [制作与维护手册](docs/BUILD_MANUAL.md)。
+- 控制链路：ESP32-C3 读取座机摘挂机/按压机构，通过 BLE HID 键盘 `AIDeskPhoneKB` 向 Windows 发送快捷键。
+- 音频链路：CSR8645 蓝牙音频模块连接听筒麦克风和喇叭，作为 Windows 蓝牙耳机输入/输出使用。
 
-本项目不再保留零散调试脚本。串口日志、板子状态、ADC 曲线、配置保存、模拟按下/释放都统一在网页控制台里完成。
+本项目只保留一个调试入口：本地网页控制台。串口日志、板子状态、ADC 曲线、动作日志、阈值调整和快捷键配置都在控制台里完成。
 
-## 当前状态
-
-- 固件版本：`hybrid-ble-config-v1`
-- 默认串口：`COM3`
-- 默认控制台地址：`http://127.0.0.1:8765`
-- 使用板卡：ESP32-C3 SuperMini，对应 PlatformIO 板卡配置 `esp32-c3-devkitm-1`
-
-## 重要硬件提醒
+## 硬件边界
 
 - CSR8645 蓝牙音频模块需要 3.7V 供电。不要用 ESP32-C3 的 3.3V 给它供电，也不要把 5V 直接接到 `BAT+`。
-- RJ9/R9/4P4C 听筒线是四芯线，在本项目里通常拆成一对喇叭线和一对麦克风线。分不清时可以在低压音频脚上临时试接，但不要把未知听筒线接到 `BAT+`、`5V`、`3V3` 或其他电源脚。
+- RJ9/R9/4P4C 听筒线是四芯线，通常拆成一对喇叭线和一对麦克风线。线序以转接板标注、万用表通断和录音/播放检查为准。
 - 当前方案不接电话外线。电话外线可能有振铃高压和未知线路状态。
 
 ## 仓库结构
@@ -29,60 +23,37 @@ requirements.txt                  Python 依赖
 config/ai_desk_phone_console.json 控制台默认配置
 firmware/esp32c3_ble_gpio/        ESP32-C3 PlatformIO 固件
 tools/ai_desk_phone_console.py    本地网页控制台和串口桥
-docs/BUILD_MANUAL.md              制作、接线、维护和排障手册
+docs/BUILD_MANUAL.md              制作与维护手册
 docs/electronics/                 硬件照片和照片索引
 ```
 
-## 环境要求
-
-- Windows 10/11
-- Python 3.11 或 3.12
-- ESP32-C3 开发板，通过 USB 连接电脑
-- PlatformIO 和 pyserial，通过 `requirements.txt` 安装
-
-## 安装依赖
+## 快速开始
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-```
-
-如果本机没有 Python 3.12，可以改用 `py -3.11`。
-
-## 编译和烧录固件
-
-```powershell
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio -t upload
-```
-
-默认上传和监视串口是 `COM3`。如果你的板子是其他串口，请修改 `firmware/esp32c3_ble_gpio/platformio.ini` 或传入 PlatformIO 参数。
-
-## 启动控制台
-
-```powershell
 .\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
 ```
 
-然后打开：
+打开：
 
 ```text
 http://127.0.0.1:8765
 ```
 
-只预览页面、不打开串口：
+如果 ESP32-C3 不在 `COM3`，把命令中的 `COM3` 换成设备管理器里看到的串口号。
 
-```powershell
-.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --no-serial --web-port 8765
-```
+## 使用方式
 
-说明：命令里的 `.venv\Scripts\python.exe` 是 Windows Python 虚拟环境的固定目录名，不是项目里额外保留的一批脚本。
+1. 打开目标 Windows 软件，确认它用于语音输入、接听、挂断或静音的快捷键。
+2. 在控制台中观察摘挂机/按压动作对应的 ADC 变化。
+3. 调整阈值，让真实电话动作能稳定触发按下和释放状态。
+4. 把目标软件的快捷键填入控制台的按下/释放动作。
+5. 保存配置并配对 `AIDeskPhoneKB`。
+6. 用电话动作验证目标软件是否按预期响应。
 
-## 文档
-
-- [制作与维护手册](docs/BUILD_MANUAL.md)
-- [硬件资料索引](docs/electronics/README.md)
-- [照片索引](docs/electronics/photo-index.md)
+完整制作顺序见 [制作与维护手册](docs/BUILD_MANUAL.md)。
 
 ## 发布前检查
 
