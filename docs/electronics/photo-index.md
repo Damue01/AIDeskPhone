@@ -12,8 +12,8 @@
 | [IMG_8612..JPG](assets/photos/IMG_8612..JPG) | CSR8645 小板一面 | 可见三颗轻触按键、若干焊盘/测试点、板号类似 `XS-CSR8645`、日期 `20171006`；丝印不完整，接线定义优先参考卖家接线图 | 照片确认 |
 | [IMG_8613..JPG](assets/photos/IMG_8613..JPG) | CSR8645 小板另一面 | 可见 Micro USB、CSR8645 主芯片、外部 Flash/存储芯片、晶振、LED/天线区域；这是蓝牙音频核心模块 | 照片确认 |
 | [IMG_8614..JPG](assets/photos/IMG_8614..JPG) | ESP32-C3 SuperMini | 可见 USB-C、BOOT/RST 按键、ESP32-C3 芯片、侧边 `5V / G / 3V` 等丝印；当前作为控制器使用 | 照片确认 |
-| [IMG_8615..JPG](assets/photos/IMG_8615..JPG) | 3 个稳压模块 | 端子丝印为 `VIN+ / GND` 和 `VOUT+ / GND`；输出电压不能只靠照片确认，使用前必须实测 VOUT | 待实测 |
-| [IMG_8616..JPG](assets/photos/IMG_8616..JPG) | CSR8645 卖家接线图 | 标注尺寸约 `35.5 x 8.3 mm`；焊盘包括麦克风正/负、右耳正/负、左耳正/负、电池正/负；开机方式为接电池后长按中间按键约 4-5 秒进入红蓝闪烁配对 | 照片确认 |
+| [IMG_8615..JPG](assets/photos/IMG_8615..JPG) | 3 个稳压/电源模块 | 端子丝印为 `VIN+ / GND` 和 `VOUT+ / GND`；只作为备用电源资料，CSR8645 使用 3.7V 供电 | 照片确认 |
+| [IMG_8616..JPG](assets/photos/IMG_8616..JPG) | CSR8645 卖家接线图 | 标注尺寸约 `35.5 x 8.3 mm`；焊盘包括麦克风正/负、右耳正/负、左耳正/负、电池正/负；CSR8645 使用 3.7V 供电；开机方式为接电后长按中间按键约 4-5 秒进入红蓝闪烁配对 | 照片确认 |
 
 ## 现场最常用的照片
 
