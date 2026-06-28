@@ -1,0 +1,15 @@
+.venv/
+__pycache__/
+*.pyc
+
+.pio/
+firmware/**/.pio/
+
+logs/
+*.log
+node_modules/
+.superpowers/
+.agents/
+.vscode/
+.idea/
+*.tmp

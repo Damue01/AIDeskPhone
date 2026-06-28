@@ -1,0 +1,19 @@
+{
+  "adc_low_means_pressed": true,
+  "press_threshold": 50,
+  "release_threshold": 80,
+  "strong_low_press_threshold": 40,
+  "strong_high_press_threshold": 110,
+  "debounce_ms": 30,
+  "press_lockout_ms": 355,
+  "press_score_step": 2,
+  "strong_press_score_step": 3,
+  "release_score_step": 1,
+  "score_max": 8,
+  "score_trigger": 5,
+  "peak_hold_ms": 350,
+  "sample_interval_ms": 50,
+  "press_action_text": "ctrl+alt+i",
+  "release_action_text": "ctrl+alt+u",
+  "enable_actions": true
+}
