@@ -1,8 +1,8 @@
-# AiLandLine
+# AI Desk Phone
 
-AiLandLine 是一个把老式座机改造成 Windows 语音通话控制器的开源项目。
+AI Desk Phone 是一个把老式座机改造成 Windows 语音通话控制器的开源项目。
 
-当前主线是：ESP32-C3 读取座机摘挂机/按压机构的 GPIO1/ADC 状态，并作为名为 `AiLandLineKB` 的 BLE HID 键盘向 Windows 发送可配置快捷键。本地网页控制台用于调阈值、看串口日志、选择动作预设，并把配置写入 ESP32。
+当前主线是：ESP32-C3 读取座机摘挂机/按压机构的 GPIO1/ADC 状态，并作为名为 `AIDeskPhoneKB` 的 BLE HID 键盘向 Windows 发送可配置快捷键。本地网页控制台用于调阈值、看串口日志、选择动作预设，并把配置写入 ESP32。
 
 电话听筒的麦克风/喇叭音频链路由 CSR8645 蓝牙音频模块单独处理。音频部分与 ESP32 控制部分分开调试，接线前请先看 [制作与维护手册](docs/BUILD_MANUAL.md)。
 
@@ -26,9 +26,9 @@ AiLandLine 是一个把老式座机改造成 Windows 语音通话控制器的开
 ```text
 README.md                         项目说明和快速开始
 requirements.txt                  Python 依赖
-config/ailandline_console.json    控制台默认配置
+config/ai_desk_phone_console.json 控制台默认配置
 firmware/esp32c3_ble_gpio/        ESP32-C3 PlatformIO 固件
-tools/ailandline_console.py       本地网页控制台和串口桥
+tools/ai_desk_phone_console.py    本地网页控制台和串口桥
 docs/BUILD_MANUAL.md              制作、接线、维护和排障手册
 docs/electronics/                 硬件照片和照片索引
 ```
@@ -61,7 +61,7 @@ py -3.12 -m venv .venv
 ## 启动控制台
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ailandline_console.py --port COM3 --web-port 8765
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
 ```
 
 然后打开：
@@ -73,7 +73,7 @@ http://127.0.0.1:8765
 只预览页面、不打开串口：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ailandline_console.py --no-serial --web-port 8765
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --no-serial --web-port 8765
 ```
 
 说明：命令里的 `.venv\Scripts\python.exe` 是 Windows Python 虚拟环境的固定目录名，不是项目里额外保留的一批脚本。
@@ -87,7 +87,7 @@ http://127.0.0.1:8765
 ## 发布前检查
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile tools\ailandline_console.py
+.\.venv\Scripts\python.exe -m py_compile tools\ai_desk_phone_console.py
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio
 ```
 

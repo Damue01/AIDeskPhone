@@ -1,4 +1,4 @@
-# AiLandLine 制作与维护手册
+# AI Desk Phone 制作与维护手册
 
 - 整理日期：2026-06-28
 - 固件版本：`hybrid-ble-config-v1`
@@ -11,7 +11,7 @@
 
 ## 1. 项目目标
 
-AiLandLine 的目标是把老式座机改造成 Windows 语音通话控制器。
+AI Desk Phone 的目标是把老式座机改造成 Windows 语音通话控制器。
 
 控制链路：
 
@@ -19,7 +19,7 @@ AiLandLine 的目标是把老式座机改造成 Windows 语音通话控制器。
 电话摘挂机/按压机构
   -> ESP32-C3 GPIO1 / ADC
   -> 固件状态机判断按下/释放
-  -> 名为 AiLandLineKB 的 BLE HID 键盘
+  -> 名为 AIDeskPhoneKB 的 BLE HID 键盘
   -> Windows 语音通话软件快捷键
 ```
 
@@ -37,7 +37,7 @@ AiLandLine 的目标是把老式座机改造成 Windows 语音通话控制器。
 ## 2. 当前完成内容
 
 - ESP32-C3 固件读取 GPIO1/ADC，并判断 `PRESSED` / `RELEASED`。
-- 固件作为 `AiLandLineKB` BLE HID 键盘发送快捷键。
+- 固件作为 `AIDeskPhoneKB` BLE HID 键盘发送快捷键。
 - 本地网页控制台显示 ADC 曲线、串口日志、板子事件和动作日志。
 - 控制台可以保存阈值和动作配置到本地 JSON，并通过 USB 串口写入 ESP32 NVS。
 - 控制台支持手动模拟按下/释放，用于验证 BLE HID 动作链路。
@@ -55,10 +55,10 @@ AiLandLine 的目标是把老式座机改造成 Windows 语音通话控制器。
 ```text
 README.md                         项目入口和快速开始
 requirements.txt                  Python 依赖
-config/ailandline_console.json    控制台默认配置
+config/ai_desk_phone_console.json 控制台默认配置
 firmware/esp32c3_ble_gpio/        ESP32-C3 PlatformIO 固件
 firmware/esp32c3_ble_gpio/src/    固件源码和 HID 报告定义
-tools/ailandline_console.py       本地网页控制台和串口桥
+tools/ai_desk_phone_console.py    本地网页控制台和串口桥
 docs/BUILD_MANUAL.md              本文档
 docs/electronics/                 硬件照片和照片索引
 ```
@@ -141,7 +141,7 @@ firmware/esp32c3_ble_gpio/src/hid_keyboard_reports.h
 
 ```text
 输入脚：GPIO1 / A1
-BLE HID 名称：AiLandLineKB
+BLE HID 名称：AIDeskPhoneKB
 默认采样间隔：50 ms
 默认串口波特率：115200
 默认按下动作：ctrl+win+shift
@@ -172,7 +172,7 @@ esp32c3_supermini_jtag
 启动：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ailandline_console.py --port COM3 --web-port 8765
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
 ```
 
 打开：
@@ -184,7 +184,7 @@ http://127.0.0.1:8765
 只预览页面、不打开串口：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ailandline_console.py --no-serial --web-port 8765
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --no-serial --web-port 8765
 ```
 
 控制台功能：
@@ -192,7 +192,7 @@ http://127.0.0.1:8765
 - 显示串口日志、板子事件、动作日志和 ADC 曲线。
 - 调整阈值、消抖、锁定时间、分数参数和采样间隔。
 - 配置按下/释放动作快捷键。
-- 保存配置到 `config/ailandline_console.json`。
+- 保存配置到 `config/ai_desk_phone_console.json`。
 - 通过 USB 串口把配置写入 ESP32 NVS。
 - 手动模拟按下/释放，用于验证 BLE HID 动作链路。
 
@@ -227,7 +227,7 @@ Get-CimInstance Win32_SerialPort | Select DeviceID,Name,PNPDeviceID
 用实际串口手动启动：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ailandline_console.py --port COM3 --web-port 8765
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
 ```
 
 ### 8.2 `.venv` 指向失效的 Python
@@ -290,12 +290,12 @@ ESP32 已确认配置写入板子。
 
 按顺序检查：
 
-1. Windows 蓝牙里 `AiLandLineKB` 是否已连接。
+1. Windows 蓝牙里 `AIDeskPhoneKB` 是否已连接。
 2. 控制台顶部串口状态是否已连接。
 3. 固件日志里是否有 BLE connected 事件。
 4. 控制台里动作执行是否开启。
 5. 点击“模拟按下/模拟释放”是否产生日志。
-6. 必要时删除并重新配对 `AiLandLineKB`。
+6. 必要时删除并重新配对 `AIDeskPhoneKB`。
 
 ### 8.10 没有完整原机原理图
 
@@ -311,7 +311,7 @@ ESP32 已确认配置写入板子。
 6. 操作电话摘挂机/按压机构，观察 ADC 曲线。
 7. 调整阈值并保存配置。
 8. 等待 ESP32 配置保存确认日志。
-9. Windows 配对 `AiLandLineKB`。
+9. Windows 配对 `AIDeskPhoneKB`。
 10. 用控制台模拟按下/释放验证快捷键。
 11. 再用真实电话动作验证。
 12. CSR8645 供电、MIC 偏置和 RJ9/R9/4P4C 线序单独排查，不要和 ESP32 控制链路混在一起。
@@ -321,14 +321,14 @@ ESP32 已确认配置写入板子。
 运行：
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile tools\ailandline_console.py
+.\.venv\Scripts\python.exe -m py_compile tools\ai_desk_phone_console.py
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio
 ```
 
 可选控制台检查：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ailandline_console.py --no-serial --web-port 8765
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --no-serial --web-port 8765
 ```
 
 打开 `http://127.0.0.1:8765`，确认页面能加载、配置能编辑、模拟按下/释放有响应。

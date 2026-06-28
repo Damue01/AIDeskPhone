@@ -25,7 +25,7 @@ except ImportError:  # pragma: no cover - exercised on machines without pyserial
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG_PATH = ROOT / "config" / "ailandline_console.json"
+DEFAULT_CONFIG_PATH = ROOT / "config" / "ai_desk_phone_console.json"
 DEFAULT_WEB_PORT = 8765
 DEFAULT_BAUD = 115200
 
@@ -617,7 +617,7 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AiLandLine 本地控制台</title>
+  <title>AI Desk Phone 本地控制台</title>
   <style>
     :root {
       color-scheme: light;
@@ -716,7 +716,7 @@ INDEX_HTML = r"""<!doctype html>
 </head>
 <body>
   <header>
-    <h1>AiLandLine 本地控制台</h1>
+    <h1>AI Desk Phone 本地控制台</h1>
     <div class="status">
       <span id="conn" class="pill">正在连接服务</span>
       <span id="serialStatus" class="pill warn">串口未连接</span>
@@ -1136,7 +1136,7 @@ INDEX_HTML = r"""<!doctype html>
       const blob = new Blob([body], {type: "text/plain;charset=utf-8"});
       const link = document.createElement("a");
       link.href = URL.createObjectURL(blob);
-      link.download = "ailandline-console-log.txt";
+      link.download = "ai-desk-phone-console-log.txt";
       link.click();
       URL.revokeObjectURL(link.href);
     }
@@ -1350,7 +1350,7 @@ def make_server(host: str, web_port: int, app: AppState) -> ThreadingHTTPServer:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="AiLandLine 本地网页控制台。")
+    parser = argparse.ArgumentParser(description="AI Desk Phone 本地网页控制台。")
     parser.add_argument("--port", help="ESP32 串口，默认自动查找。")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument("--host", default="127.0.0.1")
@@ -1378,7 +1378,7 @@ def main() -> int:
 
     server = make_server(args.host, args.web_port, app)
     url = f"http://localhost:{args.web_port}"
-    print(f"AiLandLine 本地控制台已启动：{url}")
+    print(f"AI Desk Phone 本地控制台已启动：{url}")
     print("按 Ctrl+C 停止。")
 
     try:

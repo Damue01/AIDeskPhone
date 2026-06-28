@@ -19,7 +19,7 @@ static constexpr unsigned long REPORT_STEP_DELAY_MS = 75;
 static constexpr unsigned long SENSOR_REPORT_INTERVAL_MS = 50;
 static constexpr size_t SERIAL_RX_BUFFER_SIZE = 2048;
 
-static const char *DEVICE_NAME = "AiLandLineKB";
+static const char *DEVICE_NAME = "AIDeskPhoneKB";
 static const char *FIRMWARE_VERSION = "hybrid-ble-config-v1";
 
 static constexpr uint8_t HID_MOD_LEFT_ALT = 0x04;
@@ -147,7 +147,7 @@ static void nvsGetString(nvs_handle_t handle, const char *key, char *target, siz
 static void loadConfig() {
   ensureNvsReady();
   nvs_handle_t handle;
-  if (nvs_open("ailandline", NVS_READONLY, &handle) != ESP_OK) {
+  if (nvs_open("aideskphone", NVS_READONLY, &handle) != ESP_OK) {
     return;
   }
 
@@ -174,7 +174,7 @@ static void loadConfig() {
 static void saveConfig() {
   ensureNvsReady();
   nvs_handle_t handle;
-  if (nvs_open("ailandline", NVS_READWRITE, &handle) != ESP_OK) {
+  if (nvs_open("aideskphone", NVS_READWRITE, &handle) != ESP_OK) {
     Serial.println("{\"type\":\"error\",\"message\":\"nvs_open_failed\"}");
     return;
   }
@@ -601,7 +601,7 @@ static void setupBleKeyboard() {
   hid = new NimBLEHIDDevice(server);
   inputReport = hid->getInputReport(REPORT_ID_KEYBOARD);
   hid->getOutputReport(REPORT_ID_KEYBOARD);
-  hid->setManufacturer("AiLandLine");
+  hid->setManufacturer("AIDeskPhone");
   hid->setPnp(0x02, 0x303A, 0x1001, 0x0100);
   hid->setHidInfo(0x00, 0x01);
   hid->setReportMap(hidReportMap, sizeof(hidReportMap));
