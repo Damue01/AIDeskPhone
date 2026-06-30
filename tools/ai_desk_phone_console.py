@@ -28,6 +28,9 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "ai_desk_phone_console.json"
 DEFAULT_WEB_PORT = 8765
 DEFAULT_BAUD = 115200
+SERIAL_SCAN_INTERVAL_SECONDS = 2.0
+SERIAL_LOG_INTERVAL_SECONDS = 15.0
+FIRMWARE_DATA_WAIT_SECONDS = 3.0
 
 
 ACTION_PRESETS: dict[str, dict[str, str]] = {
@@ -402,6 +405,7 @@ class AppState:
         self.current_sample: dict[str, Any] | None = None
         self.last_state = "RELEASED"
         self.serial_handle: Any = None
+        self.serial_port: str | None = None
         self.serial_lock = threading.Lock()
 
     def subscribe(self) -> queue.Queue[dict[str, Any]]:
@@ -441,23 +445,29 @@ class AppState:
             self.action_logs.append(stamped)
         self.publish({"type": "action_log", "text": stamped})
 
-    def attach_serial(self, ser: Any) -> None:
+    def attach_serial(self, ser: Any, port: str) -> None:
         with self.serial_lock:
             self.serial_handle = ser
-        self.publish({"type": "serial_status", "serial_connected": True})
+            self.serial_port = port
+        self.publish({"type": "serial_status", "serial_connected": True, "port": port})
 
     def detach_serial(self, ser: Any) -> None:
         disconnected = False
         with self.serial_lock:
             if self.serial_handle is ser:
                 self.serial_handle = None
+                self.serial_port = None
                 disconnected = True
         if disconnected:
-            self.publish({"type": "serial_status", "serial_connected": False})
+            self.publish({"type": "serial_status", "serial_connected": False, "port": None})
 
     def is_serial_connected(self) -> bool:
         with self.serial_lock:
             return self.serial_handle is not None
+
+    def current_serial_port(self) -> str | None:
+        with self.serial_lock:
+            return self.serial_port
 
     def send_serial_command(self, command: str) -> bool:
         with self.serial_lock:
@@ -513,6 +523,7 @@ class AppState:
                 "current_sample": self.current_sample,
                 "state": self.machine.stable_state,
                 "serial_connected": self.is_serial_connected(),
+                "serial_port": self.current_serial_port(),
             }
 
     def handle_sample(self, sample: SensorSample) -> None:
@@ -529,35 +540,99 @@ def timestamped(text: str) -> str:
     return f"{time.strftime('%H:%M:%S')} {text}"
 
 
-def find_default_port() -> str | None:
+def normalize_port_name(port: str | None) -> str | None:
+    value = (port or "").strip()
+    return value or None
+
+
+def describe_port(port: Any) -> str:
+    description = getattr(port, "description", "") or getattr(port, "name", "") or "串口"
+    return f"{port.device} ({description})"
+
+
+def is_system_serial_port(port: Any) -> bool:
+    identity = " ".join(
+        str(getattr(port, attr, "") or "")
+        for attr in ("description", "manufacturer", "hwid")
+    ).upper()
+    return port.device.upper() == "COM1" and ("ACPI" in identity or "PNP0501" in identity)
+
+
+def is_usb_serial_candidate(port: Any) -> bool:
+    if getattr(port, "vid", None) == 0x303A and getattr(port, "pid", None) == 0x1001:
+        return True
+
+    identity = " ".join(
+        str(getattr(port, attr, "") or "")
+        for attr in ("description", "manufacturer", "hwid")
+    ).upper()
+    return not is_system_serial_port(port) and ("USB" in identity or getattr(port, "vid", None) is not None)
+
+
+def visible_serial_ports() -> list[Any]:
     if list_ports is None:
-        return None
+        return []
 
-    ports = list(list_ports.comports())
+    return list(list_ports.comports())
+
+
+def describe_visible_ports(ports: list[Any]) -> str:
+    if not ports:
+        return "无"
+
+    descriptions = []
     for port in ports:
-        if port.vid == 0x303A and port.pid == 0x1001:
-            return port.device
+        label = describe_port(port)
+        if is_system_serial_port(port):
+            label += "，系统内置通信端口，已忽略"
+        descriptions.append(label)
+    return "；".join(descriptions)
+
+
+def serial_port_candidates(preferred_port: str | None = None) -> tuple[list[str], str]:
+    ports = visible_serial_ports()
+    candidates: list[str] = []
+
+    def add_candidate(device: str | None) -> None:
+        if device and device not in candidates:
+            candidates.append(device)
+
+    preferred = normalize_port_name(preferred_port)
+    if preferred:
+        for port in ports:
+            if port.device.upper() == preferred.upper() and is_usb_serial_candidate(port):
+                add_candidate(port.device)
+                break
 
     for port in ports:
-        if port.device.upper() != "COM1":
-            return port.device
+        if getattr(port, "vid", None) == 0x303A and getattr(port, "pid", None) == 0x1001:
+            add_candidate(port.device)
 
-    return None
+    for port in ports:
+        if is_usb_serial_candidate(port):
+            add_candidate(port.device)
+
+    return candidates, describe_visible_ports(ports)
 
 
-def handle_board_line(app: AppState, line: str) -> None:
+def find_default_port() -> str | None:
+    candidates, _visible_ports = serial_port_candidates()
+    return candidates[0] if candidates else None
+
+
+def handle_board_line(app: AppState, line: str) -> bool:
     sample = parse_serial_line(line)
     if sample is not None:
         app.handle_sample(sample)
-        return
+        return True
 
     if not line.startswith("{"):
-        return
+        return False
 
     try:
         payload = json.loads(line)
     except json.JSONDecodeError:
-        return
+        return False
 
     event_type = payload.get("type")
     if event_type == "event":
@@ -580,36 +655,103 @@ def handle_board_line(app: AppState, line: str) -> None:
     elif event_type == "hello":
         app.add_state_log(f"ESP32 固件：{payload.get('version')}")
 
+    return True
 
-def serial_worker(app: AppState, port: str, baud: int, stop: threading.Event) -> None:
+
+def serial_worker(app: AppState, preferred_port: str | None, baud: int, stop: threading.Event) -> None:
     if serial is None:
         app.add_state_log("缺少 pyserial，无法读取串口。")
         return
 
+    preferred_port = normalize_port_name(preferred_port)
+    last_wait_message = ""
+    last_wait_log_at = 0.0
+    last_failure_by_port: dict[str, tuple[str, float]] = {}
+
     while not stop.is_set():
-        try:
-            app.add_state_log(f"正在打开 {port}，波特率 {baud}。")
-            with serial.Serial(port, baud, timeout=0.2, write_timeout=1.0) as ser:
-                ser.dtr = False
-                ser.rts = False
-                app.attach_serial(ser)
-                app.add_state_log(f"{port} 已连接，开始读取传感器日志。")
-                app.send_serial_command(json.dumps({"type": "get_config"}, separators=(",", ":")))
+        candidates, visible_ports = serial_port_candidates(preferred_port)
+        if not candidates:
+            prefix = f"优先端口 {preferred_port} 当前不可见，" if preferred_port else ""
+            message = f"{prefix}没有找到 ESP32 串口，正在等待 USB 重新枚举。当前可见端口：{visible_ports}。"
+            now = time.monotonic()
+            if message != last_wait_message or now - last_wait_log_at >= SERIAL_LOG_INTERVAL_SECONDS:
+                app.add_state_log(message)
+                last_wait_message = message
+                last_wait_log_at = now
+            stop.wait(SERIAL_SCAN_INTERVAL_SECONDS)
+            continue
 
-                try:
-                    while not stop.is_set():
-                        raw = ser.readline()
-                        if not raw:
-                            continue
+        last_wait_message = ""
+        opened_port = False
+        for port in candidates:
+            if stop.is_set():
+                break
 
-                        line = raw.decode("utf-8", errors="replace").strip()
-                        app.add_raw_log(line)
-                        handle_board_line(app, line)
-                finally:
-                    app.detach_serial(ser)
-        except Exception as exc:  # pragma: no cover - hardware/environment dependent
-            app.add_state_log(f"串口读取失败：{exc}")
-            time.sleep(2)
+            try:
+                app.add_state_log(f"正在打开 {port}，波特率 {baud}。")
+                with serial.Serial(port, baud, timeout=0.2, write_timeout=1.0) as ser:
+                    opened_port = True
+                    ser.dtr = False
+                    ser.rts = False
+                    initial_command = json.dumps({"type": "get_config"}, separators=(",", ":"))
+                    app.add_state_log(f"{port} 已打开，正在确认固件通信。")
+                    try:
+                        ser.write((initial_command + "\n").encode("utf-8"))
+                        ser.flush()
+                    except Exception as exc:
+                        raise RuntimeError(f"初始配置读取命令写入失败：{exc}") from exc
+
+                    app.attach_serial(ser, port)
+                    last_failure_by_port.pop(port, None)
+                    app.add_state_log(f"{port} 已连接，开始读取传感器日志。")
+                    app.add_raw_log(f"> {initial_command}")
+                    connected_at = time.monotonic()
+                    saw_rom_banner = False
+                    saw_firmware_data = False
+                    reported_no_firmware_data = False
+
+                    try:
+                        while not stop.is_set():
+                            raw = ser.readline()
+                            if not raw:
+                                if (
+                                    not saw_firmware_data
+                                    and not reported_no_firmware_data
+                                    and time.monotonic() - connected_at >= FIRMWARE_DATA_WAIT_SECONDS
+                                ):
+                                    if saw_rom_banner:
+                                        app.add_state_log(
+                                            "串口只收到 ESP-ROM 启动信息，还没有收到 AI Desk Phone 固件数据；"
+                                            "板子可能停在下载模式，检查 BOOT 是否被按住，或复位/重新烧录固件。"
+                                        )
+                                    else:
+                                        app.add_state_log(
+                                            "串口已打开，但还没有收到固件数据；如果页面没有 ADC 曲线，"
+                                            "请复位板子或重新插拔 USB。"
+                                        )
+                                    reported_no_firmware_data = True
+                                continue
+
+                            line = raw.decode("utf-8", errors="replace").strip()
+                            app.add_raw_log(line)
+                            if line.startswith("ESP-ROM") or line.startswith("Build:"):
+                                saw_rom_banner = True
+                            if handle_board_line(app, line):
+                                saw_firmware_data = True
+                    finally:
+                        app.detach_serial(ser)
+            except Exception as exc:  # pragma: no cover - hardware/environment dependent
+                message = f"{port} 串口读取失败：{exc}"
+                now = time.monotonic()
+                last_failure, last_failure_at = last_failure_by_port.get(port, ("", 0.0))
+                if message != last_failure or now - last_failure_at >= SERIAL_LOG_INTERVAL_SECONDS:
+                    app.add_state_log(message)
+                    last_failure_by_port[port] = (message, now)
+
+            if opened_port:
+                break
+
+        stop.wait(SERIAL_SCAN_INTERVAL_SECONDS)
 
 
 INDEX_HTML = r"""<!doctype html>
@@ -719,7 +861,7 @@ INDEX_HTML = r"""<!doctype html>
     <h1>AI Desk Phone 本地控制台</h1>
     <div class="status">
       <span id="conn" class="pill">正在连接服务</span>
-      <span id="serialStatus" class="pill warn">串口未连接</span>
+      <span id="serialStatus" class="pill warn">正在扫描串口</span>
       <span id="lastSample" class="pill">暂无数据</span>
     </div>
   </header>
@@ -868,6 +1010,9 @@ INDEX_HTML = r"""<!doctype html>
     };
     const modifierOrder = ["ctrl", "win", "alt", "shift"];
     const modifierKeys = new Set(modifierOrder);
+    const tabId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const consoleChannel = "BroadcastChannel" in window ? new BroadcastChannel("ai-desk-phone-console") : null;
+    let events = null;
 
     function $(id) { return document.getElementById(id); }
 
@@ -876,9 +1021,9 @@ INDEX_HTML = r"""<!doctype html>
       while (target.length > maxLogLines) target.shift();
     }
 
-    function setSerialStatus(isConnected) {
+    function setSerialStatus(isConnected, port = "") {
       const node = $("serialStatus");
-      node.textContent = isConnected ? "串口已连接" : "串口未连接";
+      node.textContent = isConnected ? `串口已连接 ${port || ""}`.trim() : "正在扫描串口";
       node.className = isConnected ? "pill good" : "pill warn";
     }
 
@@ -1087,24 +1232,37 @@ INDEX_HTML = r"""<!doctype html>
       }
     }, true);
 
+    async function fetchJson(url, options = {}, timeoutMs = 30000) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {...options, signal: controller.signal});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+      } catch (error) {
+        if (error.name === "AbortError") throw new Error("请求超时，请关闭其他控制台标签页后刷新重试");
+        throw error;
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+
     async function loadConfig() {
-      const response = await fetch("/api/config");
-      setConfigForm(await response.json());
+      setConfigForm(await fetchJson("/api/config"));
       drawChart();
     }
 
     async function saveConfig() {
       setSaveStatus("正在保存配置...");
       try {
-        const response = await fetch("/api/config", {
+        const savedConfig = await fetchJson("/api/config", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify(getConfigForm())
-        });
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
-        setConfigForm(await response.json());
+        }, 30000);
+        setConfigForm(savedConfig);
         drawChart();
-        setSaveStatus("配置已保存，查看日志确认板子是否写入。", "ok");
+        setSaveStatus("配置已保存到电脑，并已发送给 ESP32；等待板子确认。", "ok");
       } catch (error) {
         setSaveStatus(`保存失败：${error.message}`, "warn");
       }
@@ -1195,7 +1353,9 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function connectEvents() {
-      const events = new EventSource("/events");
+      if (events) events.close();
+      if (consoleChannel) consoleChannel.postMessage({type: "active", tabId});
+      events = new EventSource("/events");
       events.onopen = () => {
         $("conn").textContent = "服务已连接";
         $("conn").className = "pill good";
@@ -1208,7 +1368,7 @@ INDEX_HTML = r"""<!doctype html>
         const payload = JSON.parse(event.data);
         if (payload.type === "snapshot") {
           setConfigForm(payload.config);
-          setSerialStatus(payload.serial_connected);
+          setSerialStatus(payload.serial_connected, payload.serial_port);
           samples = payload.samples || [];
           rawLogs.splice(0, rawLogs.length, ...(payload.raw_logs || []));
           stateLogs.splice(0, stateLogs.length, ...(payload.state_logs || []));
@@ -1230,7 +1390,7 @@ INDEX_HTML = r"""<!doctype html>
           }
           renderLogs();
         } else if (payload.type === "serial_status") {
-          setSerialStatus(payload.serial_connected);
+          setSerialStatus(payload.serial_connected, payload.port);
         } else if (payload.type === "action_log") {
           pushLog(actionLogs, payload.text);
           renderLogs();
@@ -1239,6 +1399,23 @@ INDEX_HTML = r"""<!doctype html>
         }
       };
     }
+
+    if (consoleChannel) {
+      consoleChannel.onmessage = event => {
+        if (event.data?.type !== "active" || event.data.tabId === tabId) return;
+        if (events) {
+          events.close();
+          events = null;
+        }
+        $("conn").textContent = "另一个控制台页面已接管";
+        $("conn").className = "pill warn";
+      };
+    }
+
+    window.addEventListener("beforeunload", () => {
+      if (events) events.close();
+      if (consoleChannel) consoleChannel.close();
+    });
 
     async function init() {
       await loadActionPresets();
@@ -1277,6 +1454,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         if route == "/api/config":
             data = self.read_json()
             config = ConsoleConfig.from_dict(data)
+            self.app.add_state_log("收到保存配置请求。")
             self.app.update_config(config)
             self.send_json(config.to_dict())
         elif route == "/api/simulate/press":
@@ -1301,6 +1479,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def send_bytes(self, payload: bytes, content_type: str) -> None:
         self.send_response(200)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
@@ -1351,7 +1530,7 @@ def make_server(host: str, web_port: int, app: AppState) -> ThreadingHTTPServer:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="AI Desk Phone 本地网页控制台。")
-    parser.add_argument("--port", help="ESP32 串口，默认自动查找。")
+    parser.add_argument("--port", help="优先使用的 ESP32 串口；不填则持续自动扫描。")
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--web-port", type=int, default=DEFAULT_WEB_PORT)
@@ -1366,15 +1545,17 @@ def main() -> int:
 
     app = AppState(config, args.config)
     stop = threading.Event()
-    port = args.port or find_default_port()
+    preferred_port = normalize_port_name(args.port)
 
     if args.no_serial:
         app.add_state_log("已按 --no-serial 启动，页面只用于调试配置和动作。")
-    elif port:
-        thread = threading.Thread(target=serial_worker, args=(app, port, args.baud, stop), daemon=True)
-        thread.start()
     else:
-        app.add_state_log("没有找到 ESP32 串口，页面仍可打开，但没有实时数据。")
+        if preferred_port:
+            app.add_state_log(f"串口优先使用 {preferred_port}；不可用时会继续扫描其他 USB 串口。")
+        else:
+            app.add_state_log("串口自动扫描已启动；插入或重插 ESP32-C3 后会自动连接。")
+        thread = threading.Thread(target=serial_worker, args=(app, preferred_port, args.baud, stop), daemon=True)
+        thread.start()
 
     server = make_server(args.host, args.web_port, app)
     url = f"http://localhost:{args.web_port}"

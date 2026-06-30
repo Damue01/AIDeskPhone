@@ -68,7 +68,7 @@
 .\Start_AI_Desk_Phone.bat COM5
 ```
 
-启动脚本会检查 Python 虚拟环境、安装依赖、识别串口，并打开网页控制台。
+启动脚本会检查 Python 虚拟环境、安装依赖，并打开网页控制台。控制台会持续扫描 ESP32-C3 串口；USB 断开后重新插入，也会继续尝试连接。
 
 首次烧录固件时，先安装 Python 依赖：
 
@@ -89,7 +89,13 @@ py -3.12 -m venv .venv
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio -t upload
 ```
 
-如果 ESP32-C3 不在 `COM3`，修改 `firmware/esp32c3_ble_gpio/platformio.ini` 中的串口，或在 PlatformIO 命令中指定实际端口。
+PlatformIO 会自动选择可用串口。电脑上有多个串口，或需要指定实际端口时：
+
+```powershell
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio -t upload --upload-port COM5
+```
+
+如果控制台一直显示正在扫描，并且 Windows 只看到 `COM1`，说明 ESP32-C3 还没有枚举成 USB 串口。`COM1` 通常是 Windows 系统内置通信端口，不是本项目的板子。此时先换 USB 口或 USB 数据线，重新插拔几次，并检查板子供电和 BOOT/复位状态。Windows 正常识别后，控制台会自动连接新的 `COMx`。
 
 ## 5. 控制链路制作
 
@@ -106,7 +112,9 @@ py -3.12 -m venv .venv
 6. 打开 `http://127.0.0.1:8765`。
 7. 操作电话摘挂机/按压机构，观察 ADC 曲线和状态变化。
 8. 调整按下阈值、释放阈值、消抖时间和锁定时间，让真实动作能稳定触发。
-9. 保存配置，确认 ESP32 已接收配置。
+9. 保存配置，确认日志中出现 `ESP32 已确认配置写入板子。`
+
+保存配置时只保留一个控制台网页窗口。打开多个 `http://127.0.0.1:8765` 页面可能占用浏览器连接，导致保存请求超时。出现超时后，关闭其他控制台窗口，保留一个页面并强制刷新后再保存。
 
 本项目不保留额外的串口、状态或扫描脚本。控制台就是唯一调试入口。
 
@@ -171,6 +179,7 @@ CSR8645 BAT+ / BAT- = 3.7V
 8. Windows 能连接 `AIDeskPhoneKB`。
 9. 目标软件能按配置响应电话动作。
 10. CSR8645 音频输入和输出正常。
+11. 座机本体显示正常；如果显示异常或不亮，先更换座机电池。
 
 ## 10. 仓库发布前检查
 

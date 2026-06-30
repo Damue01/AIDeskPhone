@@ -3,15 +3,22 @@ setlocal
 
 pushd "%~dp0"
 
-set "SERIAL_PORT=%~1"
-set "WEB_PORT=%~2"
-if "%WEB_PORT%"=="" set "WEB_PORT=8765"
+set "ARG1=%~1"
+set "ARG2=%~2"
+set "SERIAL_PORT="
+set "WEB_PORT=8765"
 
-if "%SERIAL_PORT%"=="" (
-  for /f "usebackq delims=" %%P in (`powershell -NoProfile -ExecutionPolicy Bypass -Command "$port = Get-CimInstance Win32_SerialPort | Where-Object { $_.PNPDeviceID -match 'VID_303A.*PID_1001' -or $_.Name -match 'USB Serial Device' } | Select-Object -First 1 -ExpandProperty DeviceID; if ($port) { $port }"`) do set "SERIAL_PORT=%%P"
+if not "%ARG1%"=="" (
+  echo %ARG1%| findstr /r "^[0-9][0-9]*$" >nul
+  if not errorlevel 1 (
+    set "WEB_PORT=%ARG1%"
+  ) else if /I "%ARG1%"=="auto" (
+    if not "%ARG2%"=="" set "WEB_PORT=%ARG2%"
+  ) else (
+    set "SERIAL_PORT=%ARG1%"
+    if not "%ARG2%"=="" set "WEB_PORT=%ARG2%"
+  )
 )
-
-if "%SERIAL_PORT%"=="" set "SERIAL_PORT=COM3"
 
 if exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -c "import sys" >nul 2>nul
@@ -56,13 +63,21 @@ if defined NEED_INSTALL (
 )
 
 echo Starting AI Desk Phone console...
-echo Serial port: %SERIAL_PORT%
+if "%SERIAL_PORT%"=="" (
+  echo Serial port: auto scan
+) else (
+  echo Serial port: %SERIAL_PORT%
+)
 echo Web URL: http://127.0.0.1:%WEB_PORT%
 
 if not "%AI_DESK_PHONE_NO_BROWSER%"=="1" (
   start "" "http://127.0.0.1:%WEB_PORT%"
 )
 
-"%PYTHON%" tools\ai_desk_phone_console.py --port "%SERIAL_PORT%" --web-port "%WEB_PORT%"
+if "%SERIAL_PORT%"=="" (
+  "%PYTHON%" tools\ai_desk_phone_console.py --web-port "%WEB_PORT%"
+) else (
+  "%PYTHON%" tools\ai_desk_phone_console.py --port "%SERIAL_PORT%" --web-port "%WEB_PORT%"
+)
 
 popd

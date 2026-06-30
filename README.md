@@ -13,6 +13,7 @@ AI Desk Phone 是一个把老式座机改造成 Windows 语音通话控制器的
 
 - CSR8645 蓝牙音频模块需要 3.7V 供电。不要用 ESP32-C3 的 3.3V 给它供电，也不要把 5V 直接接到 `BAT+`。
 - RJ9/R9/4P4C 听筒线是四芯线，通常拆成一对喇叭线和一对麦克风线。线序以转接板标注、万用表通断和录音/播放检查为准。
+- 座机本体显示异常或不亮时，优先检查座机电池；电池没电时更换电池后再继续排查。
 - 当前方案不接电话外线。电话外线可能有振铃高压和未知线路状态。
 
 ## 仓库结构
@@ -36,7 +37,7 @@ docs/electronics/                 硬件照片和照片索引
 .\Start_AI_Desk_Phone.bat
 ```
 
-脚本会自动检查 Python 环境、安装依赖、识别 ESP32-C3 串口，并打开网页控制台。需要指定串口时：
+脚本会自动检查 Python 环境、安装依赖，并打开网页控制台。控制台会持续扫描 ESP32-C3 串口；USB 断开后重新插入，也会继续尝试连接。需要指定优先串口时：
 
 ```powershell
 .\Start_AI_Desk_Phone.bat COM5
@@ -59,7 +60,13 @@ http://127.0.0.1:8765
 如果手动启动控制台：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --web-port 8765
+```
+
+手动指定优先串口：
+
+```powershell
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM5 --web-port 8765
 ```
 
 ## 使用方式
@@ -70,6 +77,13 @@ http://127.0.0.1:8765
 4. 把目标软件的快捷键填入控制台的按下/释放动作。
 5. 保存配置并配对 `AIDeskPhoneKB`。
 6. 用电话动作验证目标软件是否按预期响应。
+
+## 连接与保存
+
+- 控制台只会连接 ESP32-C3 枚举出的 USB 串口，例如 `USB Serial Device (COM3)`。`COM1` 通常是 Windows 系统内置通信端口，不是本项目的板子。
+- 如果控制台一直显示正在扫描，先换 USB 口或 USB 数据线，再重新插拔几次。Windows 正常识别后，控制台会自动连接新的 `COMx`。
+- 保存配置时只保留一个控制台网页窗口。打开多个 `http://127.0.0.1:8765` 页面可能占用浏览器连接，导致保存请求超时。
+- 保存成功需要看到日志中的 `ESP32 已确认配置写入板子。`
 
 完整制作顺序见 [制作与维护手册](docs/BUILD_MANUAL.md)。
 
