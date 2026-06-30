@@ -19,6 +19,7 @@ AI Desk Phone 是一个把老式座机改造成 Windows 语音通话控制器的
 
 ```text
 README.md                         项目说明和快速开始
+Start_AI_Desk_Phone.bat           一键启动网页控制台
 requirements.txt                  Python 依赖
 config/ai_desk_phone_console.json 控制台默认配置
 firmware/esp32c3_ble_gpio/        ESP32-C3 PlatformIO 固件
@@ -29,11 +30,24 @@ docs/electronics/                 硬件照片和照片索引
 
 ## 快速开始
 
+如果固件已经刷入 ESP32-C3，直接运行：
+
+```powershell
+.\Start_AI_Desk_Phone.bat
+```
+
+脚本会自动检查 Python 环境、安装依赖、识别 ESP32-C3 串口，并打开网页控制台。需要指定串口时：
+
+```powershell
+.\Start_AI_Desk_Phone.bat COM5
+```
+
+首次烧录固件可手动运行：
+
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio -t upload
-.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
 ```
 
 打开：
@@ -42,7 +56,11 @@ py -3.12 -m venv .venv
 http://127.0.0.1:8765
 ```
 
-如果 ESP32-C3 不在 `COM3`，把命令中的 `COM3` 换成设备管理器里看到的串口号。
+如果手动启动控制台：
+
+```powershell
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
+```
 
 ## 使用方式
 

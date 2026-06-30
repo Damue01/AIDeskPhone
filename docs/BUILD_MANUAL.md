@@ -56,7 +56,21 @@
 
 ## 4. 软件环境
 
-安装 Python 依赖：
+如果固件已经刷入 ESP32-C3，直接运行启动脚本：
+
+```powershell
+.\Start_AI_Desk_Phone.bat
+```
+
+需要指定串口时：
+
+```powershell
+.\Start_AI_Desk_Phone.bat COM5
+```
+
+启动脚本会检查 Python 虚拟环境、安装依赖、识别串口，并打开网页控制台。
+
+首次烧录固件时，先安装 Python 依赖：
 
 ```powershell
 py -3.12 -m venv .venv
@@ -86,7 +100,7 @@ py -3.12 -m venv .venv
 5. 启动本地控制台：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM3 --web-port 8765
+.\Start_AI_Desk_Phone.bat
 ```
 
 6. 打开 `http://127.0.0.1:8765`。
@@ -167,6 +181,7 @@ CSR8645 BAT+ / BAT- = 3.7V
 
 仓库中保留：
 
+- 一键启动控制台的 BAT 文件
 - 控制台源码
 - ESP32-C3 固件
 - 默认配置
