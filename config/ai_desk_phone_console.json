@@ -1,4 +1,5 @@
 {
+  "business_mode": "codex",
   "hook_scheme": "scheme1",
   "adc_low_means_pressed": true,
   "press_threshold": 80,

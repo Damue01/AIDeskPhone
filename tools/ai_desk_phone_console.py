@@ -48,6 +48,17 @@ HOOK_SCHEMES: dict[str, dict[str, str]] = {
     },
 }
 
+BUSINESS_MODES: dict[str, dict[str, str]] = {
+    "codex": {
+        "label": "方案一：Codex 提醒",
+        "description": "AI 任务完成后持续响铃并点亮 LED，抬起电话后停止提醒。",
+    },
+    "doubao": {
+        "label": "方案二：豆包语音",
+        "description": "抬起电话后进入语音报告或全双工对话；当前先保留模式入口。",
+    },
+}
+
 
 ACTION_PRESETS: dict[str, dict[str, str]] = {
     "current": {
@@ -94,6 +105,7 @@ class StateEvent:
 
 @dataclass
 class ConsoleConfig:
+    business_mode: str = "codex"
     hook_scheme: str = "scheme1"
     adc_low_means_pressed: bool = True
     press_threshold: int = 75
@@ -114,6 +126,7 @@ class ConsoleConfig:
     enable_actions: bool = True
 
     def __post_init__(self) -> None:
+        self.business_mode = normalize_business_mode(self.business_mode)
         self.hook_scheme = normalize_hook_scheme(self.hook_scheme)
 
     @classmethod
@@ -144,6 +157,11 @@ def save_config(path: Path, config: ConsoleConfig) -> None:
 def normalize_hook_scheme(value: Any) -> str:
     scheme = str(value or "scheme1").strip()
     return scheme if scheme in HOOK_SCHEMES else "scheme1"
+
+
+def normalize_business_mode(value: Any) -> str:
+    mode = str(value or "codex").strip()
+    return mode if mode in BUSINESS_MODES else "codex"
 
 
 def hook_pressed_level(config: ConsoleConfig) -> str:
@@ -482,6 +500,8 @@ class AppState:
         self.udp_device_address: tuple[str, int] | None = None
         self.udp_last_seen: float | None = None
         self.udp_lock = threading.Lock()
+        self.alerting = False
+        self.pending_report_text: str | None = None
 
     def interpreted_state_for_sample(self, sample: SensorSample) -> str:
         if sample.digital:
@@ -620,7 +640,16 @@ class AppState:
         state = self.interpreted_state_for_sample(sample)
         if state:
             self.last_state = state
+        cleared_alert = False
         scheme = normalize_hook_scheme(self.config.hook_scheme)
+        business_mode = normalize_business_mode(self.config.business_mode)
+        with self.lock:
+            if self.alerting and state == "RELEASED":
+                self.alerting = False
+                self.pending_report_text = None
+                cleared_alert = True
+            alerting = self.alerting
+            pending_report_text = self.pending_report_text
         payload = {
             "ms": sample.ms,
             "adc": sample.adc,
@@ -631,8 +660,12 @@ class AppState:
             "hook_scheme": scheme,
             "hook_scheme_label": HOOK_SCHEMES[scheme]["label"],
             "hook_scheme_description": HOOK_SCHEMES[scheme]["description"],
+            "business_mode": business_mode,
+            "business_mode_label": BUSINESS_MODES[business_mode]["label"],
             "pressed_level": hook_pressed_level(self.config),
             "hook_label": hook_state_label(state),
+            "alerting": alerting,
+            "pending_report_text": pending_report_text,
             "score": sample.score,
             "pin": sample.pin,
             "hook": sample.hook,
@@ -650,6 +683,11 @@ class AppState:
             self.current_sample = payload
             self.samples.append(payload)
         self.publish({"type": "sample", "sample": payload})
+        if cleared_alert:
+            self.add_action_log("检测到电话抬起，AI 提醒已停止。")
+            self.run_hardware_command("ring_off")
+            self.run_hardware_command("led_off")
+            self.publish_alert_status()
 
     def set_hook_scheme(self, scheme: str) -> ConsoleConfig:
         scheme = normalize_hook_scheme(scheme)
@@ -667,6 +705,21 @@ class AppState:
                 current_sample["hook_label"] = hook_state_label(state)
                 self.last_state = state
         self.add_state_log(f"已切换开关判定：{HOOK_SCHEMES[scheme]['label']}（{HOOK_SCHEMES[scheme]['description']}）")
+        self.publish({"type": "config", "config": self.config.to_dict()})
+        if current_sample is not None:
+            self.publish({"type": "sample", "sample": current_sample})
+        return self.config
+
+    def set_business_mode(self, mode: str) -> ConsoleConfig:
+        mode = normalize_business_mode(mode)
+        with self.lock:
+            self.config.business_mode = mode
+            save_config(self.config_path, self.config)
+            current_sample = self.current_sample
+            if current_sample is not None:
+                current_sample["business_mode"] = mode
+                current_sample["business_mode_label"] = BUSINESS_MODES[mode]["label"]
+        self.add_state_log(f"已切换业务模式：{BUSINESS_MODES[mode]['label']}")
         self.publish({"type": "config", "config": self.config.to_dict()})
         if current_sample is not None:
             self.publish({"type": "sample", "sample": current_sample})
@@ -695,6 +748,8 @@ class AppState:
                 "serial_connected": self.is_serial_connected(),
                 "serial_port": self.current_serial_port(),
                 "udp_device": self.current_udp_device(),
+                "alerting": self.alerting,
+                "pending_report_text": self.pending_report_text,
             }
 
     def handle_sample(self, sample: SensorSample) -> None:
@@ -712,11 +767,43 @@ class AppState:
             return True
         return False
 
-    def run_ai_hook_signal(self, source: str = "ai") -> bool:
-        ok = self.run_hardware_command("beep")
+    def publish_alert_status(self) -> None:
+        with self.lock:
+            payload = {
+                "type": "alert_status",
+                "alerting": self.alerting,
+                "pending_report_text": self.pending_report_text,
+            }
+        self.publish(payload)
+
+    def clear_ai_alert(self, reason: str = "manual") -> bool:
+        with self.lock:
+            was_alerting = self.alerting
+            self.alerting = False
+            self.pending_report_text = None
+        self.publish_alert_status()
+        buzzer_ok = self.run_hardware_command("ring_off")
+        led_ok = self.run_hardware_command("led_off")
+        self.add_action_log(f"AI 提醒已停止：{reason}")
+        return was_alerting or buzzer_ok or led_ok
+
+    def run_ai_hook_signal(self, source: str = "ai", text: str | None = None) -> bool:
+        report_text = (text or "").strip() or None
+        with self.lock:
+            self.alerting = True
+            self.pending_report_text = report_text
+        self.publish_alert_status()
+
+        buzzer_ok = self.run_hardware_command("ring_on")
+        led_ok = self.run_hardware_command("led_on")
+        ok = buzzer_ok or led_ok
         if ok:
-            self.add_action_log(f"AI hook 已触发提醒：{source}")
+            self.add_action_log(f"AI hook 已进入持续提醒：{source}")
         else:
+            with self.lock:
+                self.alerting = False
+                self.pending_report_text = None
+            self.publish_alert_status()
             self.add_action_log(f"AI hook 提醒触发失败：{source}")
         return ok
 
@@ -1007,67 +1094,73 @@ INDEX_HTML = r"""<!doctype html>
     :root {
       color-scheme: light;
       font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-      --bg: #f4f7fb;
+      --bg: #f5f6f8;
       --panel: #ffffff;
-      --border: #d8e0ec;
-      --text: #152033;
-      --muted: #64748b;
-      --accent: #1268d6;
-      --good: #0f8a5f;
-      --warn: #b7791f;
-      --dark: #101827;
+      --panel-soft: #f8fafc;
+      --border: #d9e0ea;
+      --border-strong: #b9c3d1;
+      --text: #172033;
+      --muted: #667085;
+      --accent: #1f6fd1;
+      --good: #0f7a5f;
+      --warn: #a76510;
+      --danger: #b42318;
+      --dark: #111827;
     }
     * { box-sizing: border-box; }
-    body { margin: 0; background: var(--bg); color: var(--text); }
+    body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; }
     header {
-      display: flex; justify-content: space-between; align-items: center; gap: 16px;
-      padding: 14px 18px; border-bottom: 1px solid var(--border); background: #fff;
+      display: grid; grid-template-columns: minmax(280px, 1fr) auto; gap: 24px; align-items: start;
+      padding: 16px 20px; border-bottom: 1px solid var(--border); background: #fff;
       position: sticky; top: 0; z-index: 2;
     }
-    h1 { font-size: 20px; margin: 0; }
-    h2 { font-size: 15px; margin: 0 0 10px; }
+    h1 { font-size: 20px; margin: 0 0 4px; line-height: 1.25; }
+    h2 { font-size: 16px; margin: 0; line-height: 1.3; }
+    h3 { font-size: 14px; margin: 0 0 10px; line-height: 1.3; }
+    .subtitle { margin: 0; color: var(--muted); line-height: 1.45; }
     main {
-      --config-width: 420px;
-      position: relative; display: block; padding: 16px;
-      padding-right: calc(var(--config-width) + 32px);
+      display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.85fr);
+      gap: 16px; padding: 16px;
     }
-    section { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-    main > section:nth-of-type(1) { margin-bottom: 16px; }
-    main > section:nth-of-type(2) {
-      position: absolute; top: 16px; right: 16px; width: var(--config-width);
-    }
-    .status { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-    .pill { padding: 5px 9px; border-radius: 999px; font-size: 12px; background: #eef4ff; color: #1d4e89; }
-    .pill.good { background: #e1f7ed; color: #0f6b49; }
-    .pill.warn { background: #fff4d6; color: #8a5d0a; }
-    .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-    .metric { border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-height: 94px; }
-    .label { color: var(--muted); font-size: 12px; margin-bottom: 7px; }
+    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
+    .panel-header { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 14px; }
+    .panel-note { margin: 4px 0 0; color: var(--muted); line-height: 1.45; }
+    .status { display: grid; grid-template-columns: repeat(4, max-content); gap: 8px 18px; align-items: baseline; font-size: 12px; color: var(--muted); }
+    .status-item { white-space: nowrap; }
+    .status-value { color: var(--text); font-weight: 700; }
+    .status-value.good { color: var(--good); }
+    .status-value.warn { color: var(--warn); }
+    .readout-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .metric { border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-height: 92px; background: #fff; }
+    .label { color: var(--muted); font-size: 12px; margin-bottom: 7px; line-height: 1.35; }
     .value { font-size: 30px; line-height: 1.1; font-weight: 750; word-break: break-word; }
     .state-pressed { color: var(--good); }
     .state-released { color: var(--warn); }
-    canvas { width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 8px; background: #fbfdff; }
-    .hardware-test { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
-    .hardware-test h3 { font-size: 14px; margin: 0 0 10px; }
-    .mode-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 10px 0 12px; }
-    .segmented { display: inline-grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); border: 1px solid #b8c4d6; border-radius: 7px; overflow: hidden; background: #fff; }
-    .segmented button { border: 0; border-radius: 0; border-right: 1px solid #d8e0ec; min-height: 36px; }
+    .state-line { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0 0; }
+    .state-line div { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-soft); }
+    .state-line strong { display: block; margin-top: 4px; color: var(--text); font-size: 16px; }
+    canvas { width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 8px; background: #fbfdff; display: block; }
+    #digitalChart { height: 160px; margin-top: 12px; }
+    .section-divider { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
+    .control-block { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: #fff; }
+    .control-block + .control-block { margin-top: 12px; }
+    .mode-row { display: grid; gap: 10px; margin-bottom: 10px; }
+    .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--border-strong); border-radius: 7px; overflow: hidden; background: #fff; }
+    .segmented button { border: 0; border-radius: 0; border-right: 1px solid var(--border); min-height: 38px; }
     .segmented button:last-child { border-right: 0; }
     .segmented button.active { background: var(--accent); color: #fff; }
-    .mode-hint { color: var(--muted); font-size: 12px; min-height: 18px; }
-    .test-controls {
-      display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)) repeat(4, auto);
-      gap: 10px; align-items: end; margin: 10px 0 12px;
-    }
-    .test-controls button { height: 34px; white-space: nowrap; }
-    #digitalChart { height: 160px; }
+    .mode-hint, .callout { color: var(--muted); font-size: 12px; line-height: 1.5; min-height: 18px; }
+    .callout { border-left: 3px solid var(--accent); padding: 8px 10px; background: var(--panel-soft); }
+    .pin-grid, .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .pin-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .button-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
     label { display: grid; gap: 6px; font-size: 13px; color: #263448; }
-    input, select {
-      width: 100%; height: 34px; border: 1px solid #cbd5e1; border-radius: 6px;
+    input, select, textarea {
+      width: 100%; min-height: 34px; border: 1px solid #cbd5e1; border-radius: 6px;
       padding: 6px 9px; font: inherit; background: #fff; color: var(--text);
     }
+    textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
     input[type="checkbox"] { width: auto; height: auto; }
-    .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .form-wide { grid-column: 1 / -1; }
     .preset-row { display: grid; gap: 8px; }
     .preset-actions { display: flex; gap: 8px; flex-wrap: wrap; }
@@ -1091,10 +1184,14 @@ INDEX_HTML = r"""<!doctype html>
     .save-status.warn { color: var(--warn); }
     button {
       border: 1px solid #b8c4d6; border-radius: 6px; background: #fff; color: #132033;
-      padding: 8px 10px; cursor: pointer; font: inherit;
+      padding: 8px 10px; cursor: pointer; font: inherit; min-height: 36px;
     }
     button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .logs { padding: 0; overflow: hidden; }
+    button.danger { border-color: #e6b2ad; color: var(--danger); }
+    details { border-top: 1px solid var(--border); padding-top: 10px; }
+    details + details { margin-top: 12px; }
+    summary { cursor: pointer; font-weight: 700; margin-bottom: 10px; }
+    .logs { padding: 0; overflow: hidden; grid-column: 1 / -1; }
     .log-head { display:flex; justify-content:space-between; align-items:center; gap: 12px; padding: 12px 14px; }
     .log-grid { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 1px; background: #243145; }
     pre {
@@ -1102,49 +1199,92 @@ INDEX_HTML = r"""<!doctype html>
       background: var(--dark); color: #dbeafe; white-space: pre-wrap; font: 12px/1.45 Consolas, monospace;
     }
     .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+    .muted { color: var(--muted); }
     @media (max-width: 980px) {
-      main {
-        display: grid; grid-template-columns: 1fr; gap: 16px; padding: 16px;
-      }
-      main > section:nth-of-type(1) { margin-bottom: 0; }
-      main > section:nth-of-type(2) { position: static; width: auto; }
-      .log-grid, .grid3, .form-grid, .action-row, .help-item { grid-template-columns: 1fr; }
-      .test-controls { grid-template-columns: 1fr 1fr; }
+      header { grid-template-columns: 1fr; }
+      .status { grid-template-columns: 1fr 1fr; }
+      main { grid-template-columns: 1fr; padding: 12px; }
+      .log-grid, .readout-grid, .state-line, .form-grid, .action-row, .help-item, .pin-grid { grid-template-columns: 1fr; }
       .form-wide { grid-column: auto; }
     }
   </style>
 </head>
 <body>
   <header>
-    <h1>AI Desk Phone 本地控制台</h1>
+    <div>
+      <h1>HG113 AI Desk Phone 控制台</h1>
+      <p class="subtitle">电脑端负责页面、波形和业务逻辑；ESP32-C3 只上报 GPIO 状态并执行蜂鸣器、LED 命令。</p>
+    </div>
     <div class="status">
-      <span id="conn" class="pill">正在连接服务</span>
-      <span id="serialStatus" class="pill warn">正在扫描串口</span>
-      <span id="lastSample" class="pill">暂无数据</span>
+      <div class="status-item">服务 <span id="conn" class="status-value">连接中</span></div>
+      <div class="status-item">串口 <span id="serialStatus" class="status-value warn">扫描中</span></div>
+      <div class="status-item">设备 <span id="deviceStatus" class="status-value">未发现</span></div>
+      <div class="status-item">最新 <span id="lastSample" class="status-value">暂无数据</span></div>
     </div>
   </header>
 
   <main>
-    <section>
-      <h2>实时输入</h2>
-      <div class="grid3">
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>电话状态与波形</h2>
+          <p class="panel-note">先看这里：状态是否跳变、波形是否稳定、当前提醒是否已经触发。</p>
+        </div>
+      </div>
+      <div class="readout-grid">
         <div class="metric"><div class="label">ADC 数值</div><div id="adcValue" class="value">--</div></div>
         <div class="metric"><div class="label">Digital 状态</div><div id="digitalValue" class="value">--</div></div>
         <div class="metric"><div class="label">解释状态</div><div id="stateValue" class="value">--</div></div>
       </div>
       <canvas id="chart" width="900" height="240"></canvas>
-      <div class="hint">曲线使用 ESP32 回传的 ADC 数据绘制；阈值线来自右侧当前配置。</div>
-      <div class="hardware-test">
-        <h3>硬件测试</h3>
-        <div class="mode-row">
-          <input id="hook_scheme" type="hidden" value="scheme1">
-          <div class="segmented" aria-label="开关判定方案">
-            <button id="scheme1Btn" type="button" onclick="selectHookScheme('scheme1')">方案 1</button>
-            <button id="scheme2Btn" type="button" onclick="selectHookScheme('scheme2')">方案 2</button>
-          </div>
-          <span id="hookSchemeHint" class="mode-hint">方案 1：HIGH = 按下，LOW = 抬起</span>
+      <div class="hint">ADC 曲线用于旧模拟方案；当前 GPIO 测试主要看下面这条数字波形。</div>
+      <canvas id="digitalChart" width="900" height="170"></canvas>
+      <div class="hint">拨动摘挂机开关时，数字波形应该在 HIGH 和 LOW 之间跳变。</div>
+      <div class="state-line">
+        <div>AI 提醒<strong id="alertState">未触发</strong></div>
+        <div>蜂鸣器<strong id="buzzerState">未知</strong></div>
+        <div>LED<strong id="ledState">未知</strong></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>方案与测试</h2>
+          <p class="panel-note">先选业务模式，再调 GPIO 和判定方向。</p>
         </div>
-        <div class="test-controls">
+      </div>
+
+      <div class="control-block">
+        <h3>业务模式</h3>
+        <input id="business_mode" type="hidden" value="codex">
+        <div class="segmented" aria-label="业务模式">
+          <button id="modeCodexBtn" type="button" onclick="selectBusinessMode('codex')">Codex 提醒</button>
+          <button id="modeDoubaoBtn" type="button" onclick="selectBusinessMode('doubao')">豆包聊天</button>
+        </div>
+        <div id="businessModeHint" class="callout">Codex 完成后响铃并亮灯；抬起电话后停止。</div>
+        <label class="section-divider">待播报内容
+          <textarea id="reportTextInput" placeholder="AI 完成后需要电话播报的内容，可以先留空。"></textarea>
+        </label>
+        <div class="button-row">
+          <button class="primary" onclick="postAiHook()">触发 AI 完成提醒</button>
+          <button onclick="clearAiAlert()">停止提醒</button>
+        </div>
+      </div>
+
+      <div class="control-block">
+        <h3>摘挂机判定</h3>
+        <input id="hook_scheme" type="hidden" value="scheme1">
+        <div class="segmented" aria-label="开关判定方案">
+          <button id="scheme1Btn" type="button" onclick="selectHookScheme('scheme1')">方案 1</button>
+          <button id="scheme2Btn" type="button" onclick="selectHookScheme('scheme2')">方案 2</button>
+        </div>
+        <div id="hookSchemeHint" class="mode-hint">方案 1：HIGH = 按下，LOW = 抬起</div>
+      </div>
+
+      <div class="control-block">
+        <h3>硬件测试</h3>
+        <div class="pin-grid">
           <label>开关 GPIO
             <input id="hookPinInput" type="number" min="0" max="48" value="0">
           </label>
@@ -1154,97 +1294,96 @@ INDEX_HTML = r"""<!doctype html>
           <label>LED GPIO
             <input id="ledPinInput" type="number" min="0" max="48" value="20">
           </label>
+        </div>
+        <div class="button-row">
           <button onclick="applyHardwarePins()">应用引脚</button>
-          <button class="primary" onclick="postHardwareCommand('beep')">蜂鸣器响一下</button>
+          <button class="primary" onclick="postHardwareCommand('beep')">响一下</button>
           <button onclick="postHardwareCommand('ring_on')">持续响</button>
-          <button onclick="postHardwareCommand('ring_off')">停止</button>
-          <button onclick="postHardwareCommand('led_on')">LED 点亮</button>
-          <button onclick="postHardwareCommand('led_off')">LED 熄灭</button>
-          <button class="primary" onclick="postAiHook()">AI 完成提醒</button>
+          <button class="danger" onclick="postHardwareCommand('ring_off')">停止响</button>
+          <button onclick="postHardwareCommand('led_on')">LED 亮</button>
+          <button onclick="postHardwareCommand('led_off')">LED 灭</button>
         </div>
-        <canvas id="digitalChart" width="900" height="170"></canvas>
-        <div class="hint">开关测试固件使用内部上拉：HIGH 通常表示断开/挂机，LOW 通常表示闭合/摘机。拨动开关时，这条数字波形应该上下跳变。</div>
       </div>
-    </section>
 
-    <section>
-      <h2>判定参数与动作</h2>
-      <div class="form-grid">
-        <label>ADC 极性
-          <select id="adc_low_means_pressed">
-            <option value="true">低 ADC = 按下</option>
-            <option value="false">高 ADC = 按下</option>
-          </select>
-        </label>
-        <label>动作执行
-          <select id="enable_actions">
-            <option value="true">开启</option>
-            <option value="false">只记录日志</option>
-          </select>
-        </label>
-        <label>按下阈值 <input id="press_threshold" type="number"></label>
-        <label>释放阈值 <input id="release_threshold" type="number"></label>
-        <label>强按下低阈值 <input id="strong_low_press_threshold" type="number"></label>
-        <label>强按下高阈值 <input id="strong_high_press_threshold" type="number"></label>
-        <label>消抖时间（毫秒） <input id="debounce_ms" type="number"></label>
-        <label>按下锁定（毫秒） <input id="press_lockout_ms" type="number"></label>
-        <input id="press_action_text" type="hidden">
-        <input id="release_action_text" type="hidden">
-        <div class="form-wide preset-row">
-          <div class="label">动作预设</div>
-          <div class="preset-actions">
-            <button type="button" onclick="applyPreset('current')">套用方案一：当前配置</button>
-            <button type="button" onclick="applyPreset('voice_call')">套用方案二：语音通话键</button>
+      <details>
+        <summary>动作与阈值配置</summary>
+        <div class="form-grid">
+          <label>ADC 极性
+            <select id="adc_low_means_pressed">
+              <option value="true">低 ADC = 按下</option>
+              <option value="false">高 ADC = 按下</option>
+            </select>
+          </label>
+          <label>动作执行
+            <select id="enable_actions">
+              <option value="true">开启</option>
+              <option value="false">只记录日志</option>
+            </select>
+          </label>
+          <label>按下阈值 <input id="press_threshold" type="number"></label>
+          <label>释放阈值 <input id="release_threshold" type="number"></label>
+          <label>强按下低阈值 <input id="strong_low_press_threshold" type="number"></label>
+          <label>强按下高阈值 <input id="strong_high_press_threshold" type="number"></label>
+          <label>消抖时间（毫秒） <input id="debounce_ms" type="number"></label>
+          <label>按下锁定（毫秒） <input id="press_lockout_ms" type="number"></label>
+          <input id="press_action_text" type="hidden">
+          <input id="release_action_text" type="hidden">
+          <div class="form-wide preset-row">
+            <div class="label">动作预设</div>
+            <div class="preset-actions">
+              <button type="button" onclick="applyPreset('current')">套用方案一</button>
+              <button type="button" onclick="applyPreset('voice_call')">套用方案二</button>
+            </div>
+            <div class="hint">套用后点击“保存配置”，会通过 USB 写入 ESP32；Wi-Fi 通信仍由电脑端页面负责。</div>
           </div>
-          <div class="hint">套用后点击“保存配置”，会通过 USB 写入 ESP32；之后断开 USB 也会按最后保存的配置执行。</div>
-        </div>
-        <div class="action-editor">
-          <div class="action-title">按下动作</div>
-          <div class="action-row">
-            <label>第一段快捷键
-              <button id="press_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_primary_hotkey')">点击后按键</button>
-              <input id="press_primary_hotkey" type="hidden">
-            </label>
-            <label>延迟（毫秒）
-              <input id="press_delay_ms" type="number" min="0" step="50">
-            </label>
-            <label>延迟后按键（可选）
-              <button id="press_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_follow_hotkey')">无</button>
-              <input id="press_follow_hotkey" type="hidden">
-            </label>
+          <div class="action-editor">
+            <div class="action-title">按下动作</div>
+            <div class="action-row">
+              <label>第一段快捷键
+                <button id="press_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_primary_hotkey')">点击后按键</button>
+                <input id="press_primary_hotkey" type="hidden">
+              </label>
+              <label>延迟（毫秒）
+                <input id="press_delay_ms" type="number" min="0" step="50">
+              </label>
+              <label>延迟后按键（可选）
+                <button id="press_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_follow_hotkey')">无</button>
+                <input id="press_follow_hotkey" type="hidden">
+              </label>
+            </div>
+          </div>
+          <div class="action-editor">
+            <div class="action-title">释放动作</div>
+            <div class="action-row">
+              <label>第一段快捷键
+                <button id="release_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_primary_hotkey')">点击后按键</button>
+                <input id="release_primary_hotkey" type="hidden">
+              </label>
+              <label>延迟（毫秒）
+                <input id="release_delay_ms" type="number" min="0" step="50">
+              </label>
+              <label>延迟后按键（可选）
+                <button id="release_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_follow_hotkey')">无</button>
+                <input id="release_follow_hotkey" type="hidden">
+              </label>
+            </div>
+          </div>
+          <div class="help-list">
+            <div class="help-item"><strong>按下阈值</strong><span>旧 ADC 模式使用；当前 GPIO 数字测试可先不调。</span></div>
+            <div class="help-item"><strong>释放阈值</strong><span>和按下阈值拉开距离，避免抖动。</span></div>
+            <div class="help-item"><strong>消抖/锁定</strong><span>过滤瞬间跳变，避免一次拿起或放下触发多次。</span></div>
           </div>
         </div>
-        <div class="action-editor">
-          <div class="action-title">释放动作</div>
-          <div class="action-row">
-            <label>第一段快捷键
-              <button id="release_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_primary_hotkey')">点击后按键</button>
-              <input id="release_primary_hotkey" type="hidden">
-            </label>
-            <label>延迟（毫秒）
-              <input id="release_delay_ms" type="number" min="0" step="50">
-            </label>
-            <label>延迟后按键（可选）
-              <button id="release_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_follow_hotkey')">无</button>
-              <input id="release_follow_hotkey" type="hidden">
-            </label>
-          </div>
-        </div>
-        <div class="help-list">
-          <div class="help-item"><strong>按下阈值</strong><span>低 ADC 模式下，ADC 小于等于这个值会累计“按下”分数；高 ADC 模式则相反。</span></div>
-          <div class="help-item"><strong>释放阈值</strong><span>低 ADC 模式下，ADC 大于等于这个值会释放；它应和按下阈值拉开距离，避免抖动。</span></div>
-          <div class="help-item"><strong>强按下阈值</strong><span>用于识别更明显的一次按下，命中后分数增加更快。</span></div>
-          <div class="help-item"><strong>消抖/锁定</strong><span>消抖过滤瞬间跳变；按下锁定防止一次拿起或放下被连续触发多次。</span></div>
-        </div>
-      </div>
+      </details>
+
       <div class="buttons">
         <button class="primary" onclick="saveConfig()">保存配置</button>
         <button onclick="postAction('/api/simulate/press')">模拟按下</button>
         <button onclick="postAction('/api/simulate/release')">模拟释放</button>
         <button onclick="clearLogs()">清空日志</button>
-        <span id="saveStatus" class="hint save-status">尚未保存本次修改</span>
       </div>
-      <div class="hint">快捷键支持 Ctrl、Windows、Shift、Alt、字母、数字、Enter、Space、Tab、Esc。浏览器可能无法稳定捕获 Windows 键，方案一已内置。</div>
+      <div id="saveStatus" class="hint save-status">尚未保存本次修改</div>
+      <div class="hint">快捷键支持 Ctrl、Windows、Shift、Alt、字母、数字、Enter、Space、Tab、Esc。</div>
     </section>
 
     <section class="logs">
@@ -1274,6 +1413,10 @@ INDEX_HTML = r"""<!doctype html>
     const hookSchemeDescriptions = {
       scheme1: "方案 1：HIGH = 按下，LOW = 抬起",
       scheme2: "方案 2：LOW = 按下，HIGH = 抬起"
+    };
+    const businessModeDescriptions = {
+      codex: "Codex 完成任务后，电话持续响铃并亮灯；抬起电话后停止提醒。",
+      doubao: "抬起电话后进入豆包语音报告或全双工对话；当前先保留模式入口。"
     };
     let actionPresets = {
       current: {
@@ -1314,10 +1457,25 @@ INDEX_HTML = r"""<!doctype html>
       while (target.length > maxLogLines) target.shift();
     }
 
+    function setStatusValue(id, text, tone = "") {
+      const node = $(id);
+      if (!node) return;
+      node.textContent = text;
+      node.className = `status-value ${tone}`.trim();
+    }
+
     function setSerialStatus(isConnected, port = "") {
-      const node = $("serialStatus");
-      node.textContent = isConnected ? `串口已连接 ${port || ""}`.trim() : "正在扫描串口";
-      node.className = isConnected ? "pill good" : "pill warn";
+      setStatusValue("serialStatus", isConnected ? (port || "已连接") : "扫描中", isConnected ? "good" : "warn");
+    }
+
+    function setDeviceStatus(device = "") {
+      setStatusValue("deviceStatus", device || "未发现", device ? "good" : "");
+    }
+
+    function updateAlertStatus(alerting, text = "") {
+      const alertText = alerting ? "提醒中" : "未触发";
+      $("alertState").textContent = text && alerting ? `${alertText}：${text.slice(0, 28)}` : alertText;
+      $("alertState").className = alerting ? "state-pressed" : "";
     }
 
     function setSaveStatus(text, tone = "") {
@@ -1412,6 +1570,7 @@ INDEX_HTML = r"""<!doctype html>
         node.value = String(value);
       }
       applyHookSchemeUi(config.hook_scheme || "scheme1");
+      applyBusinessModeUi(config.business_mode || "codex");
       setActionEditor("press", config.press_action_text || "");
       setActionEditor("release", config.release_action_text || "");
     }
@@ -1423,6 +1582,7 @@ INDEX_HTML = r"""<!doctype html>
       ];
       const next = {...config};
       for (const key of numeric) next[key] = Number($(key).value);
+      next.business_mode = $("business_mode").value || "codex";
       next.hook_scheme = $("hook_scheme").value || "scheme1";
       next.adc_low_means_pressed = $("adc_low_means_pressed").value === "true";
       next.enable_actions = $("enable_actions").value === "true";
@@ -1586,6 +1746,29 @@ INDEX_HTML = r"""<!doctype html>
       $("scheme2Btn").classList.toggle("active", normalized === "scheme2");
     }
 
+    function applyBusinessModeUi(mode) {
+      const normalized = businessModeDescriptions[mode] ? mode : "codex";
+      $("business_mode").value = normalized;
+      $("businessModeHint").textContent = businessModeDescriptions[normalized];
+      $("modeCodexBtn").classList.toggle("active", normalized === "codex");
+      $("modeDoubaoBtn").classList.toggle("active", normalized === "doubao");
+    }
+
+    async function selectBusinessMode(mode) {
+      applyBusinessModeUi(mode);
+      try {
+        const savedConfig = await fetchJson("/api/business-mode", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({business_mode: mode})
+        }, 10000);
+        setConfigForm(savedConfig);
+        setSaveStatus(`${businessModeDescriptions[savedConfig.business_mode || "codex"]}`, "ok");
+      } catch (error) {
+        setSaveStatus(`业务模式切换失败：${error.message}`, "warn");
+      }
+    }
+
     async function selectHookScheme(scheme) {
       applyHookSchemeUi(scheme);
       try {
@@ -1606,11 +1789,24 @@ INDEX_HTML = r"""<!doctype html>
         const result = await fetchJson("/api/ai/hook", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({source: "web"})
+          body: JSON.stringify({source: "web", text: $("reportTextInput").value || ""})
         }, 10000);
-        setSaveStatus(result.ok ? "AI 完成提醒已触发" : "AI 完成提醒发送失败", result.ok ? "ok" : "warn");
+        setSaveStatus(result.ok ? "AI 完成提醒已触发，抬起电话后停止。" : "AI 完成提醒发送失败", result.ok ? "ok" : "warn");
       } catch (error) {
         setSaveStatus(`AI 完成提醒失败：${error.message}`, "warn");
+      }
+    }
+
+    async function clearAiAlert() {
+      try {
+        const result = await fetchJson("/api/alert/clear", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "web"})
+        }, 10000);
+        setSaveStatus(result.ok ? "提醒已停止" : "停止提醒命令未发送到设备", result.ok ? "ok" : "warn");
+      } catch (error) {
+        setSaveStatus(`停止提醒失败：${error.message}`, "warn");
       }
     }
 
@@ -1665,9 +1861,13 @@ INDEX_HTML = r"""<!doctype html>
       if (sample.hook_scheme) applyHookSchemeUi(sample.hook_scheme);
       if (sample.pin !== null && sample.pin !== undefined) $("hookPinInput").value = sample.pin;
       if (sample.led_pin !== null && sample.led_pin !== undefined) $("ledPinInput").value = sample.led_pin;
+      if (sample.business_mode) applyBusinessModeUi(sample.business_mode);
+      updateAlertStatus(Boolean(sample.alerting), sample.pending_report_text || "");
+      $("buzzerState").textContent = sample.buzzer || "未知";
+      $("ledState").textContent = sample.led || "未知";
       $("lastSample").textContent = sample.adc_synthetic
-        ? `GPIO${sample.pin ?? ""} ${sample.digital}`
-        : `ADC ${sample.adc} / 分数 ${sample.score}`;
+        ? `GPIO${sample.pin ?? ""} ${sample.digital}`.trim()
+        : `ADC ${sample.adc}`;
       samples.push(sample);
       while (samples.length > 180) samples.shift();
       drawChart();
@@ -1764,18 +1964,18 @@ INDEX_HTML = r"""<!doctype html>
       if (consoleChannel) consoleChannel.postMessage({type: "active", tabId});
       events = new EventSource("/events");
       events.onopen = () => {
-        $("conn").textContent = "服务已连接";
-        $("conn").className = "pill good";
+        setStatusValue("conn", "已连接", "good");
       };
       events.onerror = () => {
-        $("conn").textContent = "服务断开，正在重连";
-        $("conn").className = "pill";
+        setStatusValue("conn", "重连中", "warn");
       };
       events.onmessage = event => {
         const payload = JSON.parse(event.data);
         if (payload.type === "snapshot") {
           setConfigForm(payload.config);
           setSerialStatus(payload.serial_connected, payload.serial_port);
+          setDeviceStatus(payload.udp_device || "");
+          updateAlertStatus(Boolean(payload.alerting), payload.pending_report_text || "");
           samples = payload.samples || [];
           rawLogs.splice(0, rawLogs.length, ...(payload.raw_logs || []));
           stateLogs.splice(0, stateLogs.length, ...(payload.state_logs || []));
@@ -1799,6 +1999,10 @@ INDEX_HTML = r"""<!doctype html>
           renderLogs();
         } else if (payload.type === "serial_status") {
           setSerialStatus(payload.serial_connected, payload.port);
+        } else if (payload.type === "udp_status") {
+          setDeviceStatus(payload.device || "");
+        } else if (payload.type === "alert_status") {
+          updateAlertStatus(Boolean(payload.alerting), payload.pending_report_text || "");
         } else if (payload.type === "action_log") {
           pushLog(actionLogs, payload.text);
           renderLogs();
@@ -1815,8 +2019,7 @@ INDEX_HTML = r"""<!doctype html>
           events.close();
           events = null;
         }
-        $("conn").textContent = "另一个控制台页面已接管";
-        $("conn").className = "pill warn";
+        setStatusValue("conn", "被其他标签接管", "warn");
       };
     }
 
@@ -1869,11 +2072,21 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             data = self.read_json()
             config = self.app.set_hook_scheme(data.get("hook_scheme", "scheme1"))
             self.send_json(config.to_dict())
+        elif route == "/api/business-mode":
+            data = self.read_json()
+            config = self.app.set_business_mode(data.get("business_mode", "codex"))
+            self.send_json(config.to_dict())
         elif route in {"/api/ai/hook", "/hook"}:
             data = self.read_json()
             source = str(data.get("source", "ai"))
-            ok = self.app.run_ai_hook_signal(source)
+            text = str(data.get("text", "") or "")
+            ok = self.app.run_ai_hook_signal(source, text)
             self.send_json({"ok": ok, "source": source})
+        elif route == "/api/alert/clear":
+            data = self.read_json()
+            reason = str(data.get("reason", "manual"))
+            ok = self.app.clear_ai_alert(reason)
+            self.send_json({"ok": ok})
         elif route == "/api/simulate/press":
             self.app.add_state_log("手动模拟按下。")
             self.app.run_action_for_state("PRESSED")
