@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860">
+  <defs>
+    <style>
+      .bg { fill: #f8fafc; }
+      .box { fill: #ffffff; stroke: #1f2937; stroke-width: 2; rx: 10; }
+      .soft { fill: #eef2ff; stroke: #475569; stroke-width: 1.5; rx: 8; }
+      .phone { fill: #fff7ed; stroke: #9a3412; stroke-width: 2; rx: 10; }
+      .audio { fill: #ecfdf5; stroke: #166534; stroke-width: 2; rx: 10; }
+      .pin { fill: #ffffff; stroke: #334155; stroke-width: 1.5; }
+      .pin-hot { fill: #fde68a; stroke: #b45309; stroke-width: 2.5; }
+      .wire { fill: none; stroke: #0f172a; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .wire-gnd { fill: none; stroke: #64748b; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .wire-wifi { fill: none; stroke: #2563eb; stroke-width: 2.5; stroke-dasharray: 8 8; stroke-linecap: round; }
+      .wire-audio { fill: none; stroke: #16a34a; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .wire-warn { fill: none; stroke: #dc2626; stroke-width: 3; stroke-linecap: round; stroke-linejoin: round; }
+      .text { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #111827; font-size: 22px; }
+      .small { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #334155; font-size: 17px; }
+      .tiny { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #475569; font-size: 14px; }
+      .label { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #0f172a; font-size: 18px; font-weight: 600; }
+      .title { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #0f172a; font-size: 34px; font-weight: 700; }
+      .subtitle { font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif; fill: #475569; font-size: 18px; }
+    </style>
+  </defs>
+
+  <rect class="bg" x="0" y="0" width="1280" height="860"/>
+  <text class="title" x="48" y="58">HG113 抽象连接参考图</text>
+  <text class="subtitle" x="48" y="88">不按照片位置绘制，只表达当前跑通的电气连接关系：开关、蜂鸣器、LED、Wi-Fi 数据、蓝牙音频。</text>
+
+  <rect class="box" x="80" y="160" width="300" height="420"/>
+  <text class="label" x="110" y="200">ESP32-C3</text>
+  <text class="small" x="110" y="230">USB-C 由电脑供电</text>
+  <text class="small" x="110" y="258">Wi-Fi STA 连接路由器</text>
+  <text class="tiny" x="110" y="282">发射功率：40</text>
+
+  <rect class="soft" x="110" y="330" width="210" height="42"/>
+  <text class="small" x="130" y="357">GPIO0：开关输入</text>
+  <rect class="soft" x="110" y="392" width="210" height="42"/>
+  <text class="small" x="130" y="419">GPIO21：蜂鸣器</text>
+  <rect class="soft" x="110" y="454" width="210" height="42"/>
+  <text class="small" x="130" y="481">GPIO20：LED</text>
+  <rect class="soft" x="110" y="516" width="210" height="42"/>
+  <text class="small" x="130" y="543">GND：公共地</text>
+
+  <rect class="phone" x="560" y="135" width="350" height="250"/>
+  <text class="label" x="590" y="175">HG113 六脚簧片 / 叉簧开关</text>
+  <text class="small" x="590" y="204">编号：上排 1 2 3，下排 4 5 6</text>
+  <text class="tiny" x="590" y="228">当前使用 2 和 6 这一对干接点</text>
+
+  <rect class="pin" x="615" y="255" width="64" height="52"/>
+  <rect class="pin-hot" x="700" y="255" width="64" height="52"/>
+  <rect class="pin" x="785" y="255" width="64" height="52"/>
+  <rect class="pin" x="615" y="320" width="64" height="52"/>
+  <rect class="pin" x="700" y="320" width="64" height="52"/>
+  <rect class="pin-hot" x="785" y="320" width="64" height="52"/>
+  <text class="text" x="638" y="288">1</text>
+  <text class="text" x="723" y="288">2</text>
+  <text class="text" x="808" y="288">3</text>
+  <text class="text" x="638" y="353">4</text>
+  <text class="text" x="723" y="353">5</text>
+  <text class="text" x="808" y="353">6</text>
+
+  <path class="wire" d="M320 351 C430 351, 455 346, 560 346"/>
+  <text class="small" x="410" y="332">GPIO0 -> 6</text>
+  <path class="wire-gnd" d="M320 537 C460 537, 470 281, 700 281"/>
+  <text class="small" x="415" y="555">GND -> 2</text>
+  <text class="tiny" x="590" y="410">2/6 是机械触点，本身不分正负；如果实际反接，检测效果相同。</text>
+
+  <rect class="phone" x="560" y="455" width="270" height="145"/>
+  <text class="label" x="590" y="493">蜂鸣器 / 响铃件</text>
+  <text class="small" x="590" y="522">GPIO21 驱动</text>
+  <text class="tiny" x="590" y="548">若为大功率铃器，后续加驱动管</text>
+  <path class="wire" d="M320 413 C420 413, 455 505, 560 505"/>
+  <text class="small" x="410" y="452">GPIO21</text>
+  <path class="wire-gnd" d="M320 537 C410 537, 465 575, 560 575"/>
+  <text class="small" x="410" y="596">GND</text>
+
+  <rect class="phone" x="880" y="455" width="270" height="145"/>
+  <text class="label" x="910" y="493">LED 指示灯</text>
+  <text class="small" x="910" y="522">GPIO20 控制</text>
+  <text class="tiny" x="910" y="548">裸 LED 需要串联限流电阻</text>
+  <path class="wire" d="M320 475 C530 475, 630 475, 880 505"/>
+  <text class="small" x="435" y="496">GPIO20</text>
+  <path class="wire-gnd" d="M320 537 C545 537, 665 585, 880 575"/>
+
+  <rect class="audio" x="80" y="660" width="350" height="135"/>
+  <text class="label" x="110" y="700">蓝牙音频模块</text>
+  <text class="small" x="110" y="730">按模块要求单独供电</text>
+  <text class="tiny" x="110" y="756">不接 ESP32 音频线，只负责麦克风和喇叭音频</text>
+
+  <rect class="audio" x="560" y="660" width="300" height="135"/>
+  <text class="label" x="590" y="700">HG113 听筒</text>
+  <text class="small" x="590" y="730">麦克风：MIC+ / MIC-</text>
+  <text class="small" x="590" y="760">喇叭：L+/L- 或 R+/R-</text>
+  <path class="wire-audio" d="M430 710 C485 710, 505 710, 560 710"/>
+  <path class="wire-audio" d="M430 750 C485 750, 505 750, 560 750"/>
+  <text class="tiny" x="455" y="694">音频线</text>
+
+  <rect class="box" x="940" y="130" width="260" height="160"/>
+  <text class="label" x="970" y="170">电脑端本地控制台</text>
+  <text class="small" x="970" y="200">http://localhost:8765/</text>
+  <text class="tiny" x="970" y="230">画波形、发命令、看状态</text>
+  <path class="wire-wifi" d="M380 245 C560 110, 780 95, 940 185"/>
+  <text class="small" x="625" y="118">Wi-Fi UDP 8766/8767</text>
+
+  <path class="wire-warn" d="M940 345 L1190 345"/>
+  <text class="small" x="950" y="375">不要接电话外线 / 市电 / 原板未知电源到 ESP32 GPIO</text>
+</svg>

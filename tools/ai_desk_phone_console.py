@@ -9,6 +9,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import queue
 import re
+import socket
 import sys
 import threading
 import time
@@ -28,9 +29,24 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "ai_desk_phone_console.json"
 DEFAULT_WEB_PORT = 8765
 DEFAULT_BAUD = 115200
+DEFAULT_UDP_TELEMETRY_PORT = 8766
+DEFAULT_UDP_COMMAND_PORT = 8767
 SERIAL_SCAN_INTERVAL_SECONDS = 2.0
 SERIAL_LOG_INTERVAL_SECONDS = 15.0
 FIRMWARE_DATA_WAIT_SECONDS = 3.0
+
+HOOK_SCHEMES: dict[str, dict[str, str]] = {
+    "scheme1": {
+        "label": "方案 1",
+        "pressed_level": "HIGH",
+        "description": "HIGH = 按下，LOW = 抬起",
+    },
+    "scheme2": {
+        "label": "方案 2",
+        "pressed_level": "LOW",
+        "description": "LOW = 按下，HIGH = 抬起",
+    },
+}
 
 
 ACTION_PRESETS: dict[str, dict[str, str]] = {
@@ -55,6 +71,17 @@ class SensorSample:
     raw_line: str
     firmware_state: str | None = None
     score: int | None = None
+    pin: int | None = None
+    hook: str | None = None
+    buzzer: str | None = None
+    led: str | None = None
+    led_pin: int | None = None
+    wifi_connected: bool | None = None
+    wifi_ip: str | None = None
+    wifi_rssi: int | None = None
+    wifi_status: int | None = None
+    wifi_disconnect_reason: int | None = None
+    adc_synthetic: bool = False
 
 
 @dataclass
@@ -67,6 +94,7 @@ class StateEvent:
 
 @dataclass
 class ConsoleConfig:
+    hook_scheme: str = "scheme1"
     adc_low_means_pressed: bool = True
     press_threshold: int = 75
     release_threshold: int = 92
@@ -84,6 +112,9 @@ class ConsoleConfig:
     press_action_text: str = "控制键+Windows键+Shift键"
     release_action_text: str = "控制键+Windows键+Shift键, 延迟1000毫秒, 回车"
     enable_actions: bool = True
+
+    def __post_init__(self) -> None:
+        self.hook_scheme = normalize_hook_scheme(self.hook_scheme)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ConsoleConfig":
@@ -108,6 +139,23 @@ def save_config(path: Path, config: ConsoleConfig) -> None:
     with path.open("w", encoding="utf-8") as file:
         json.dump(config.to_dict(), file, ensure_ascii=False, indent=2)
         file.write("\n")
+
+
+def normalize_hook_scheme(value: Any) -> str:
+    scheme = str(value or "scheme1").strip()
+    return scheme if scheme in HOOK_SCHEMES else "scheme1"
+
+
+def hook_pressed_level(config: ConsoleConfig) -> str:
+    return HOOK_SCHEMES[normalize_hook_scheme(config.hook_scheme)]["pressed_level"]
+
+
+def interpret_hook_state(digital: str, config: ConsoleConfig) -> str:
+    return "PRESSED" if normalize_digital(digital) == hook_pressed_level(config) else "RELEASED"
+
+
+def hook_state_label(state: str) -> str:
+    return "按下" if state == "PRESSED" else "抬起"
 
 
 WATCH_RE = re.compile(
@@ -141,14 +189,36 @@ def parse_serial_line(line: str) -> SensorSample | None:
         except json.JSONDecodeError:
             payload = None
 
-        if isinstance(payload, dict) and "adc" in payload and "digital" in payload:
+        if isinstance(payload, dict) and "digital" in payload and ("adc" in payload or "hook_pin" in payload or "pin" in payload):
+            digital = normalize_digital(payload["digital"])
+            has_adc = "adc" in payload
+            hook = payload.get("hook")
+            firmware_state = payload.get("state")
+            if firmware_state is None and isinstance(hook, str):
+                hook_upper = hook.upper()
+                if hook_upper == "OFF_HOOK":
+                    firmware_state = "PRESSED"
+                elif hook_upper == "ON_HOOK":
+                    firmware_state = "RELEASED"
+
             return SensorSample(
                 ms=int(payload.get("ms", now_ms)),
-                adc=int(payload["adc"]),
-                digital=normalize_digital(payload["digital"]),
+                adc=int(payload["adc"]) if has_adc else (0 if digital == "LOW" else 4095),
+                digital=digital,
                 raw_line=raw_line,
-                firmware_state=payload.get("state"),
+                firmware_state=firmware_state,
                 score=payload.get("score"),
+                pin=payload.get("pin", payload.get("hook_pin")),
+                hook=hook,
+                buzzer=payload.get("buzzer"),
+                led=payload.get("led"),
+                led_pin=payload.get("led_pin"),
+                wifi_connected=payload.get("wifi_connected"),
+                wifi_ip=payload.get("wifi_ip"),
+                wifi_rssi=payload.get("wifi_rssi"),
+                wifi_status=payload.get("wifi_status"),
+                wifi_disconnect_reason=payload.get("wifi_disconnect_reason"),
+                adc_synthetic=bool(payload.get("adc_synthetic", not has_adc)),
             )
 
     match = WATCH_RE.search(raw_line)
@@ -242,6 +312,7 @@ def build_device_config_command(config: ConsoleConfig) -> str:
     payload = {
         "type": "config",
         "config": {
+            "hook_scheme": normalize_hook_scheme(config.hook_scheme),
             "adc_low_means_pressed": config.adc_low_means_pressed,
             "press_threshold": config.press_threshold,
             "release_threshold": config.release_threshold,
@@ -407,6 +478,15 @@ class AppState:
         self.serial_handle: Any = None
         self.serial_port: str | None = None
         self.serial_lock = threading.Lock()
+        self.udp_socket: socket.socket | None = None
+        self.udp_device_address: tuple[str, int] | None = None
+        self.udp_last_seen: float | None = None
+        self.udp_lock = threading.Lock()
+
+    def interpreted_state_for_sample(self, sample: SensorSample) -> str:
+        if sample.digital:
+            return interpret_hook_state(sample.digital, self.config)
+        return sample.firmware_state or self.last_state
 
     def subscribe(self) -> queue.Queue[dict[str, Any]]:
         subscriber: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=200)
@@ -469,6 +549,57 @@ class AppState:
         with self.serial_lock:
             return self.serial_port
 
+    def attach_udp_socket(self, sock: socket.socket) -> None:
+        with self.udp_lock:
+            self.udp_socket = sock
+        self.publish({"type": "udp_status", "udp_listening": True, "device": self.current_udp_device()})
+
+    def detach_udp_socket(self, sock: socket.socket) -> None:
+        detached = False
+        with self.udp_lock:
+            if self.udp_socket is sock:
+                self.udp_socket = None
+                self.udp_device_address = None
+                self.udp_last_seen = None
+                detached = True
+        if detached:
+            self.publish({"type": "udp_status", "udp_listening": False, "device": None})
+
+    def update_udp_device(self, host: str, command_port: int) -> None:
+        with self.udp_lock:
+            self.udp_device_address = (host, command_port)
+            self.udp_last_seen = time.monotonic()
+            device = f"{host}:{command_port}"
+        self.publish({"type": "udp_status", "udp_listening": True, "device": device})
+
+    def current_udp_device(self) -> str | None:
+        with self.udp_lock:
+            if self.udp_device_address is None:
+                return None
+            return f"{self.udp_device_address[0]}:{self.udp_device_address[1]}"
+
+    def send_udp_command(self, command: str) -> bool:
+        payload = (command.strip() + "\n").encode("utf-8")
+        with self.udp_lock:
+            sock = self.udp_socket
+            target = self.udp_device_address
+        if sock is None or target is None:
+            return False
+
+        try:
+            sock.sendto(payload, target)
+        except OSError as exc:
+            self.add_state_log(f"UDP command failed: {exc}")
+            return False
+
+        self.add_raw_log(f">udp {target[0]}:{target[1]} {command.strip()}")
+        return True
+
+    def send_device_command(self, command: str) -> bool:
+        if self.send_udp_command(command):
+            return True
+        return self.send_serial_command(command)
+
     def send_serial_command(self, command: str) -> bool:
         with self.serial_lock:
             if self.serial_handle is None:
@@ -486,21 +617,60 @@ class AppState:
         return True
 
     def add_sample(self, sample: SensorSample) -> None:
-        state = sample.firmware_state or self.last_state
-        if sample.firmware_state:
-            self.last_state = sample.firmware_state
+        state = self.interpreted_state_for_sample(sample)
+        if state:
+            self.last_state = state
+        scheme = normalize_hook_scheme(self.config.hook_scheme)
         payload = {
             "ms": sample.ms,
             "adc": sample.adc,
             "digital": sample.digital,
+            "digital_value": 0 if sample.digital == "LOW" else 1,
             "firmware_state": sample.firmware_state,
             "python_state": state,
+            "hook_scheme": scheme,
+            "hook_scheme_label": HOOK_SCHEMES[scheme]["label"],
+            "hook_scheme_description": HOOK_SCHEMES[scheme]["description"],
+            "pressed_level": hook_pressed_level(self.config),
+            "hook_label": hook_state_label(state),
             "score": sample.score,
+            "pin": sample.pin,
+            "hook": sample.hook,
+            "buzzer": sample.buzzer,
+            "led": sample.led,
+            "led_pin": sample.led_pin,
+            "wifi_connected": sample.wifi_connected,
+            "wifi_ip": sample.wifi_ip,
+            "wifi_rssi": sample.wifi_rssi,
+            "wifi_status": sample.wifi_status,
+            "wifi_disconnect_reason": sample.wifi_disconnect_reason,
+            "adc_synthetic": sample.adc_synthetic,
         }
         with self.lock:
             self.current_sample = payload
             self.samples.append(payload)
         self.publish({"type": "sample", "sample": payload})
+
+    def set_hook_scheme(self, scheme: str) -> ConsoleConfig:
+        scheme = normalize_hook_scheme(scheme)
+        with self.lock:
+            self.config.hook_scheme = scheme
+            save_config(self.config_path, self.config)
+            current_sample = self.current_sample
+            if current_sample is not None and current_sample.get("digital") is not None:
+                state = interpret_hook_state(current_sample["digital"], self.config)
+                current_sample["python_state"] = state
+                current_sample["hook_scheme"] = scheme
+                current_sample["hook_scheme_label"] = HOOK_SCHEMES[scheme]["label"]
+                current_sample["hook_scheme_description"] = HOOK_SCHEMES[scheme]["description"]
+                current_sample["pressed_level"] = hook_pressed_level(self.config)
+                current_sample["hook_label"] = hook_state_label(state)
+                self.last_state = state
+        self.add_state_log(f"已切换开关判定：{HOOK_SCHEMES[scheme]['label']}（{HOOK_SCHEMES[scheme]['description']}）")
+        self.publish({"type": "config", "config": self.config.to_dict()})
+        if current_sample is not None:
+            self.publish({"type": "sample", "sample": current_sample})
+        return self.config
 
     def update_config(self, config: ConsoleConfig) -> None:
         save_config(self.config_path, config)
@@ -524,6 +694,7 @@ class AppState:
                 "state": self.machine.stable_state,
                 "serial_connected": self.is_serial_connected(),
                 "serial_port": self.current_serial_port(),
+                "udp_device": self.current_udp_device(),
             }
 
     def handle_sample(self, sample: SensorSample) -> None:
@@ -534,6 +705,30 @@ class AppState:
         command = json.dumps({"type": command_type}, separators=(",", ":"))
         if self.send_serial_command(command):
             self.add_action_log(f"已发送板子模拟命令：{command_type}")
+
+    def run_hardware_command(self, command: str) -> bool:
+        if self.send_device_command(command):
+            self.add_action_log(f"硬件测试命令：{command}")
+            return True
+        return False
+
+    def run_ai_hook_signal(self, source: str = "ai") -> bool:
+        ok = self.run_hardware_command("beep")
+        if ok:
+            self.add_action_log(f"AI hook 已触发提醒：{source}")
+        else:
+            self.add_action_log(f"AI hook 提醒触发失败：{source}")
+        return ok
+
+    def set_test_pins(self, hook_pin: int, buzzer_pin: int, led_pin: int = 20) -> bool:
+        command = json.dumps(
+            {"type": "set_pins", "hook_pin": hook_pin, "buzzer_pin": buzzer_pin, "led_pin": led_pin},
+            separators=(",", ":"),
+        )
+        if self.send_device_command(command):
+            self.add_action_log(f"测试引脚已发送：开关 GPIO{hook_pin}，蜂鸣器 GPIO{buzzer_pin}，LED GPIO{led_pin}")
+            return True
+        return False
 
 
 def timestamped(text: str) -> str:
@@ -650,10 +845,20 @@ def handle_board_line(app: AppState, line: str) -> bool:
         app.add_state_log("ESP32 已回传当前板载配置。")
     elif event_type == "ble":
         app.add_state_log(f"BLE 状态：{payload.get('state')}")
+    elif event_type == "buzzer":
+        app.add_action_log(
+            f"蜂鸣器：{payload.get('state')} pin={payload.get('pin')} freq={payload.get('freq_hz', '-')}"
+        )
+    elif event_type == "led":
+        app.add_action_log(f"LED：{payload.get('state')} pin={payload.get('pin')}")
+    elif event_type == "pins":
+        app.add_state_log(
+            f"测试固件引脚：开关 GPIO{payload.get('hook_pin')}，蜂鸣器 GPIO{payload.get('buzzer_pin')}，LED GPIO{payload.get('led_pin')}"
+        )
     elif event_type == "error":
         app.add_state_log(f"ESP32 错误：{payload.get('message')}")
     elif event_type == "hello":
-        app.add_state_log(f"ESP32 固件：{payload.get('version')}")
+        app.add_state_log(f"ESP32 固件：{payload.get('version') or payload.get('fw')}")
 
     return True
 
@@ -693,7 +898,7 @@ def serial_worker(app: AppState, preferred_port: str | None, baud: int, stop: th
                     opened_port = True
                     ser.dtr = False
                     ser.rts = False
-                    initial_command = json.dumps({"type": "get_config"}, separators=(",", ":"))
+                    initial_command = json.dumps({"type": "ping"}, separators=(",", ":"))
                     app.add_state_log(f"{port} 已打开，正在确认固件通信。")
                     try:
                         ser.write((initial_command + "\n").encode("utf-8"))
@@ -754,6 +959,44 @@ def serial_worker(app: AppState, preferred_port: str | None, baud: int, stop: th
         stop.wait(SERIAL_SCAN_INTERVAL_SECONDS)
 
 
+def udp_worker(app: AppState, telemetry_port: int, command_port: int, stop: threading.Event) -> None:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    sock.settimeout(0.5)
+
+    try:
+        sock.bind(("", telemetry_port))
+    except OSError as exc:
+        app.add_state_log(f"UDP listen failed on port {telemetry_port}: {exc}")
+        sock.close()
+        return
+
+    app.attach_udp_socket(sock)
+    app.add_state_log(f"UDP listening on 0.0.0.0:{telemetry_port}; device commands will use port {command_port}.")
+
+    try:
+        while not stop.is_set():
+            try:
+                raw, address = sock.recvfrom(4096)
+            except socket.timeout:
+                continue
+            except OSError as exc:
+                if not stop.is_set():
+                    app.add_state_log(f"UDP receive failed: {exc}")
+                break
+
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+
+            app.update_udp_device(address[0], command_port)
+            app.add_raw_log(f"<udp {address[0]}:{address[1]}> {line}")
+            handle_board_line(app, line)
+    finally:
+        app.detach_udp_socket(sock)
+        sock.close()
+
+
 INDEX_HTML = r"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -804,6 +1047,20 @@ INDEX_HTML = r"""<!doctype html>
     .state-pressed { color: var(--good); }
     .state-released { color: var(--warn); }
     canvas { width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 8px; background: #fbfdff; }
+    .hardware-test { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
+    .hardware-test h3 { font-size: 14px; margin: 0 0 10px; }
+    .mode-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin: 10px 0 12px; }
+    .segmented { display: inline-grid; grid-template-columns: repeat(2, minmax(120px, 1fr)); border: 1px solid #b8c4d6; border-radius: 7px; overflow: hidden; background: #fff; }
+    .segmented button { border: 0; border-radius: 0; border-right: 1px solid #d8e0ec; min-height: 36px; }
+    .segmented button:last-child { border-right: 0; }
+    .segmented button.active { background: var(--accent); color: #fff; }
+    .mode-hint { color: var(--muted); font-size: 12px; min-height: 18px; }
+    .test-controls {
+      display: grid; grid-template-columns: repeat(2, minmax(120px, 1fr)) repeat(4, auto);
+      gap: 10px; align-items: end; margin: 10px 0 12px;
+    }
+    .test-controls button { height: 34px; white-space: nowrap; }
+    #digitalChart { height: 160px; }
     label { display: grid; gap: 6px; font-size: 13px; color: #263448; }
     input, select {
       width: 100%; height: 34px; border: 1px solid #cbd5e1; border-radius: 6px;
@@ -852,6 +1109,7 @@ INDEX_HTML = r"""<!doctype html>
       main > section:nth-of-type(1) { margin-bottom: 0; }
       main > section:nth-of-type(2) { position: static; width: auto; }
       .log-grid, .grid3, .form-grid, .action-row, .help-item { grid-template-columns: 1fr; }
+      .test-controls { grid-template-columns: 1fr 1fr; }
       .form-wide { grid-column: auto; }
     }
   </style>
@@ -872,10 +1130,41 @@ INDEX_HTML = r"""<!doctype html>
       <div class="grid3">
         <div class="metric"><div class="label">ADC 数值</div><div id="adcValue" class="value">--</div></div>
         <div class="metric"><div class="label">Digital 状态</div><div id="digitalValue" class="value">--</div></div>
-        <div class="metric"><div class="label">板子判定</div><div id="stateValue" class="value">--</div></div>
+        <div class="metric"><div class="label">解释状态</div><div id="stateValue" class="value">--</div></div>
       </div>
       <canvas id="chart" width="900" height="240"></canvas>
       <div class="hint">曲线使用 ESP32 回传的 ADC 数据绘制；阈值线来自右侧当前配置。</div>
+      <div class="hardware-test">
+        <h3>硬件测试</h3>
+        <div class="mode-row">
+          <input id="hook_scheme" type="hidden" value="scheme1">
+          <div class="segmented" aria-label="开关判定方案">
+            <button id="scheme1Btn" type="button" onclick="selectHookScheme('scheme1')">方案 1</button>
+            <button id="scheme2Btn" type="button" onclick="selectHookScheme('scheme2')">方案 2</button>
+          </div>
+          <span id="hookSchemeHint" class="mode-hint">方案 1：HIGH = 按下，LOW = 抬起</span>
+        </div>
+        <div class="test-controls">
+          <label>开关 GPIO
+            <input id="hookPinInput" type="number" min="0" max="48" value="0">
+          </label>
+          <label>蜂鸣器 GPIO
+            <input id="buzzerPinInput" type="number" min="0" max="48" value="21">
+          </label>
+          <label>LED GPIO
+            <input id="ledPinInput" type="number" min="0" max="48" value="20">
+          </label>
+          <button onclick="applyHardwarePins()">应用引脚</button>
+          <button class="primary" onclick="postHardwareCommand('beep')">蜂鸣器响一下</button>
+          <button onclick="postHardwareCommand('ring_on')">持续响</button>
+          <button onclick="postHardwareCommand('ring_off')">停止</button>
+          <button onclick="postHardwareCommand('led_on')">LED 点亮</button>
+          <button onclick="postHardwareCommand('led_off')">LED 熄灭</button>
+          <button class="primary" onclick="postAiHook()">AI 完成提醒</button>
+        </div>
+        <canvas id="digitalChart" width="900" height="170"></canvas>
+        <div class="hint">开关测试固件使用内部上拉：HIGH 通常表示断开/挂机，LOW 通常表示闭合/摘机。拨动开关时，这条数字波形应该上下跳变。</div>
+      </div>
     </section>
 
     <section>
@@ -982,6 +1271,10 @@ INDEX_HTML = r"""<!doctype html>
     const rawLogs = [];
     const stateLogs = [];
     const actionLogs = [];
+    const hookSchemeDescriptions = {
+      scheme1: "方案 1：HIGH = 按下，LOW = 抬起",
+      scheme2: "方案 2：LOW = 按下，HIGH = 抬起"
+    };
     let actionPresets = {
       current: {
         press_action_text: "控制键+Windows键+Shift键, 延迟1000毫秒, 回车",
@@ -1118,6 +1411,7 @@ INDEX_HTML = r"""<!doctype html>
         if (!node) continue;
         node.value = String(value);
       }
+      applyHookSchemeUi(config.hook_scheme || "scheme1");
       setActionEditor("press", config.press_action_text || "");
       setActionEditor("release", config.release_action_text || "");
     }
@@ -1129,6 +1423,7 @@ INDEX_HTML = r"""<!doctype html>
       ];
       const next = {...config};
       for (const key of numeric) next[key] = Number($(key).value);
+      next.hook_scheme = $("hook_scheme").value || "scheme1";
       next.adc_low_means_pressed = $("adc_low_means_pressed").value === "true";
       next.enable_actions = $("enable_actions").value === "true";
       next.press_action_text = composeActionText("press");
@@ -1250,6 +1545,7 @@ INDEX_HTML = r"""<!doctype html>
     async function loadConfig() {
       setConfigForm(await fetchJson("/api/config"));
       drawChart();
+      drawDigitalChart();
     }
 
     async function saveConfig() {
@@ -1262,6 +1558,7 @@ INDEX_HTML = r"""<!doctype html>
         }, 30000);
         setConfigForm(savedConfig);
         drawChart();
+        drawDigitalChart();
         setSaveStatus("配置已保存到电脑，并已发送给 ESP32；等待板子确认。", "ok");
       } catch (error) {
         setSaveStatus(`保存失败：${error.message}`, "warn");
@@ -1270,6 +1567,67 @@ INDEX_HTML = r"""<!doctype html>
 
     async function postAction(url) {
       await fetch(url, {method: "POST"});
+    }
+
+    async function postHardwareCommand(command) {
+      try {
+        const result = await fetchJson(`/api/hardware/${command}`, {method: "POST"}, 10000);
+        setSaveStatus(result.ok ? `硬件命令已发送：${command}` : `硬件命令发送失败：${command}`, result.ok ? "ok" : "warn");
+      } catch (error) {
+        setSaveStatus(`硬件命令失败：${error.message}`, "warn");
+      }
+    }
+
+    function applyHookSchemeUi(scheme) {
+      const normalized = hookSchemeDescriptions[scheme] ? scheme : "scheme1";
+      $("hook_scheme").value = normalized;
+      $("hookSchemeHint").textContent = hookSchemeDescriptions[normalized];
+      $("scheme1Btn").classList.toggle("active", normalized === "scheme1");
+      $("scheme2Btn").classList.toggle("active", normalized === "scheme2");
+    }
+
+    async function selectHookScheme(scheme) {
+      applyHookSchemeUi(scheme);
+      try {
+        const savedConfig = await fetchJson("/api/hook-scheme", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({hook_scheme: scheme})
+        }, 10000);
+        setConfigForm(savedConfig);
+        setSaveStatus(`${hookSchemeDescriptions[savedConfig.hook_scheme || "scheme1"]} 已生效`, "ok");
+      } catch (error) {
+        setSaveStatus(`方案切换失败：${error.message}`, "warn");
+      }
+    }
+
+    async function postAiHook() {
+      try {
+        const result = await fetchJson("/api/ai/hook", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({source: "web"})
+        }, 10000);
+        setSaveStatus(result.ok ? "AI 完成提醒已触发" : "AI 完成提醒发送失败", result.ok ? "ok" : "warn");
+      } catch (error) {
+        setSaveStatus(`AI 完成提醒失败：${error.message}`, "warn");
+      }
+    }
+
+    async function applyHardwarePins() {
+      const hookPin = Number($("hookPinInput").value || 0);
+      const buzzerPin = Number($("buzzerPinInput").value || 21);
+      const ledPin = Number($("ledPinInput").value || 20);
+      try {
+        const result = await fetchJson("/api/hardware/pins", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({hook_pin: hookPin, buzzer_pin: buzzerPin, led_pin: ledPin})
+        }, 10000);
+        setSaveStatus(result.ok ? `测试引脚已应用：开关 GPIO${hookPin}，蜂鸣器 GPIO${buzzerPin}，LED GPIO${ledPin}` : "测试引脚发送失败", result.ok ? "ok" : "warn");
+      } catch (error) {
+        setSaveStatus(`测试引脚失败：${error.message}`, "warn");
+      }
     }
 
     function clearLogs() {
@@ -1300,14 +1658,20 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function updateSample(sample) {
-      $("adcValue").textContent = sample.adc;
+      $("adcValue").textContent = sample.adc_synthetic ? `${sample.digital === "LOW" ? 0 : 1} / 数字` : sample.adc;
       $("digitalValue").textContent = sample.digital;
-      $("stateValue").textContent = sample.python_state === "PRESSED" ? "按下" : "释放";
+      $("stateValue").textContent = sample.hook_label || (sample.python_state === "PRESSED" ? "按下" : "抬起");
       $("stateValue").className = "value " + (sample.python_state === "PRESSED" ? "state-pressed" : "state-released");
-      $("lastSample").textContent = `ADC ${sample.adc} / 分数 ${sample.score}`;
+      if (sample.hook_scheme) applyHookSchemeUi(sample.hook_scheme);
+      if (sample.pin !== null && sample.pin !== undefined) $("hookPinInput").value = sample.pin;
+      if (sample.led_pin !== null && sample.led_pin !== undefined) $("ledPinInput").value = sample.led_pin;
+      $("lastSample").textContent = sample.adc_synthetic
+        ? `GPIO${sample.pin ?? ""} ${sample.digital}`
+        : `ADC ${sample.adc} / 分数 ${sample.score}`;
       samples.push(sample);
       while (samples.length > 180) samples.shift();
       drawChart();
+      drawDigitalChart();
     }
 
     function drawChart() {
@@ -1352,6 +1716,49 @@ INDEX_HTML = r"""<!doctype html>
       ctx.stroke();
     }
 
+    function drawDigitalChart() {
+      const canvas = $("digitalChart");
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#fbfdff";
+      ctx.fillRect(0, 0, w, h);
+
+      ctx.strokeStyle = "#e2e8f0";
+      ctx.lineWidth = 1;
+      for (const y of [36, h - 36]) {
+        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      }
+
+      ctx.font = "13px Microsoft YaHei, sans-serif";
+      ctx.fillStyle = "#64748b";
+      ctx.fillText("HIGH", 10, 28);
+      ctx.fillText("LOW", 10, h - 18);
+      ctx.fillText("GPIO 开关波形", w - 130, 28);
+
+      if (samples.length < 2) return;
+      const yFor = sample => (sample.digital === "LOW" || sample.digital_value === 0) ? h - 36 : 36;
+
+      ctx.strokeStyle = "#0f8a5f";
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      samples.forEach((sample, index) => {
+        const x = samples.length === 1 ? 0 : (w * index) / (samples.length - 1);
+        const y = yFor(sample);
+        if (index === 0) {
+          ctx.moveTo(x, y);
+          return;
+        }
+        const prevX = (w * (index - 1)) / (samples.length - 1);
+        const prevY = yFor(samples[index - 1]);
+        ctx.lineTo(x, prevY);
+        ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
     function connectEvents() {
       if (events) events.close();
       if (consoleChannel) consoleChannel.postMessage({type: "active", tabId});
@@ -1376,6 +1783,7 @@ INDEX_HTML = r"""<!doctype html>
           if (payload.current_sample) updateSample(payload.current_sample);
           renderLogs();
           drawChart();
+          drawDigitalChart();
         } else if (payload.type === "config") {
           setConfigForm(payload.config);
         } else if (payload.type === "raw_log") {
@@ -1457,6 +1865,15 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self.app.add_state_log("收到保存配置请求。")
             self.app.update_config(config)
             self.send_json(config.to_dict())
+        elif route == "/api/hook-scheme":
+            data = self.read_json()
+            config = self.app.set_hook_scheme(data.get("hook_scheme", "scheme1"))
+            self.send_json(config.to_dict())
+        elif route in {"/api/ai/hook", "/hook"}:
+            data = self.read_json()
+            source = str(data.get("source", "ai"))
+            ok = self.app.run_ai_hook_signal(source)
+            self.send_json({"ok": ok, "source": source})
         elif route == "/api/simulate/press":
             self.app.add_state_log("手动模拟按下。")
             self.app.run_action_for_state("PRESSED")
@@ -1465,6 +1882,28 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self.app.add_state_log("手动模拟释放。")
             self.app.run_action_for_state("RELEASED")
             self.send_json({"ok": True})
+        elif route == "/api/hardware/beep":
+            ok = self.app.run_hardware_command("beep")
+            self.send_json({"ok": ok})
+        elif route == "/api/hardware/ring_on":
+            ok = self.app.run_hardware_command("ring_on")
+            self.send_json({"ok": ok})
+        elif route == "/api/hardware/ring_off":
+            ok = self.app.run_hardware_command("ring_off")
+            self.send_json({"ok": ok})
+        elif route == "/api/hardware/led_on":
+            ok = self.app.run_hardware_command("led_on")
+            self.send_json({"ok": ok})
+        elif route == "/api/hardware/led_off":
+            ok = self.app.run_hardware_command("led_off")
+            self.send_json({"ok": ok})
+        elif route == "/api/hardware/pins":
+            data = self.read_json()
+            hook_pin = int(data.get("hook_pin", 0))
+            buzzer_pin = int(data.get("buzzer_pin", 21))
+            led_pin = int(data.get("led_pin", 20))
+            ok = self.app.set_test_pins(hook_pin, buzzer_pin, led_pin)
+            self.send_json({"ok": ok, "hook_pin": hook_pin, "buzzer_pin": buzzer_pin, "led_pin": led_pin})
         else:
             self.send_error(404)
 
@@ -1534,6 +1973,8 @@ def main() -> int:
     parser.add_argument("--baud", type=int, default=DEFAULT_BAUD)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--web-port", type=int, default=DEFAULT_WEB_PORT)
+    parser.add_argument("--udp-port", type=int, default=DEFAULT_UDP_TELEMETRY_PORT)
+    parser.add_argument("--device-command-port", type=int, default=DEFAULT_UDP_COMMAND_PORT)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--no-serial", action="store_true", help="只启动网页，不打开串口。")
     parser.add_argument("--no-actions", action="store_true", help="只记录动作，不发送 Windows 快捷键。")
@@ -1546,6 +1987,13 @@ def main() -> int:
     app = AppState(config, args.config)
     stop = threading.Event()
     preferred_port = normalize_port_name(args.port)
+
+    udp_thread = threading.Thread(
+        target=udp_worker,
+        args=(app, args.udp_port, args.device_command_port, stop),
+        daemon=True,
+    )
+    udp_thread.start()
 
     if args.no_serial:
         app.add_state_log("已按 --no-serial 启动，页面只用于调试配置和动作。")

@@ -1,8 +1,9 @@
 {
+  "hook_scheme": "scheme1",
   "adc_low_means_pressed": true,
-  "press_threshold": 50,
-  "release_threshold": 80,
-  "strong_low_press_threshold": 40,
+  "press_threshold": 80,
+  "release_threshold": 100,
+  "strong_low_press_threshold": 70,
   "strong_high_press_threshold": 110,
   "debounce_ms": 30,
   "press_lockout_ms": 355,
@@ -13,7 +14,7 @@
   "score_trigger": 5,
   "peak_hold_ms": 350,
   "sample_interval_ms": 50,
-  "press_action_text": "ctrl+alt+i",
-  "release_action_text": "ctrl+alt+u",
+  "press_action_text": "ctrl+win+shift, 延迟1000毫秒, enter",
+  "release_action_text": "ctrl+win+shift",
   "enable_actions": true
 }

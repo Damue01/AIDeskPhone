@@ -1,99 +1,155 @@
 # AI Desk Phone
 
-AI Desk Phone 是一个把老式座机改造成 Windows 语音通话控制器的开源项目。
+这是一个基于 HG113 共电电话外壳改造的 AI 桌面电话项目。
 
-项目分成两条独立链路：
+当前主线不再是早期“只做 BLE 快捷键”的原型，而是以 HG113 为目标：
+ESP32-C3 负责读取摘挂机开关、通过 Wi-Fi 发送轻量状态数据，并接收电脑端
+命令来驱动蜂鸣器和 LED。网页、波形、动作配置、Codex 完成提醒，以及后续
+豆包语音能力都放在电脑端处理。
 
-- 控制链路：ESP32-C3 读取座机摘挂机/按压机构，通过 BLE HID 键盘 `AIDeskPhoneKB` 向 Windows 发送快捷键。
-- 音频链路：CSR8645 蓝牙音频模块连接听筒麦克风和喇叭，作为 Windows 蓝牙耳机输入/输出使用。
+## 当前主线资料
 
-本项目只保留一个调试入口：本地网页控制台。串口日志、板子状态、ADC 曲线、动作日志、阈值调整和快捷键配置都在控制台里完成。
+- [HG113 产品方案](docs/HG113_PRODUCT_PLAN.md)
+- [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md)
+- [硬件参考资料](docs/electronics/README.md)
 
-## 硬件边界
+旧电话信号和早期 BLE HID 方案保留在 `legacy/phone-signal` 分支。
 
-- CSR8645 蓝牙音频模块需要 3.7V 供电。不要用 ESP32-C3 的 3.3V 给它供电，也不要把 5V 直接接到 `BAT+`。
-- RJ9/R9/4P4C 听筒线是四芯线，通常拆成一对喇叭线和一对麦克风线。线序以转接板标注、万用表通断和录音/播放检查为准。
-- 座机本体显示异常或不亮时，优先检查座机电池；电池没电时更换电池后再继续排查。
-- 当前方案不接电话外线。电话外线可能有振铃高压和未知线路状态。
-
-## 仓库结构
+## 系统结构
 
 ```text
-README.md                         项目说明和快速开始
-Start_AI_Desk_Phone.bat           一键启动网页控制台
-requirements.txt                  Python 依赖
-config/ai_desk_phone_console.json 控制台默认配置
-firmware/esp32c3_ble_gpio/        ESP32-C3 PlatformIO 固件
-tools/ai_desk_phone_console.py    本地网页控制台和串口桥
-docs/BUILD_MANUAL.md              制作与维护手册
-docs/electronics/                 硬件照片和照片索引
+HG113 摘挂机开关
+  -> ESP32-C3 GPIO0
+  -> Wi-Fi UDP 状态上报
+  -> 电脑端控制台 http://localhost:8765/
+
+电脑端控制台 / AI hook
+  -> UDP 或 USB 串口命令
+  -> ESP32-C3
+  -> GPIO21 蜂鸣器、GPIO20 LED
+
+手柄音频
+  -> 蓝牙耳机音频模块
+  -> 电脑音频输入/输出
 ```
 
-## 快速开始
+ESP32-C3 不负责承载网页。它只发送状态数据，并执行蜂鸣器、LED 等硬件命令。
 
-如果固件已经刷入 ESP32-C3，直接运行：
+## 已实现内容
+
+- 本地网页控制台：状态显示、GPIO 波形、GPIO 配置、蜂鸣器测试、LED 测试、方案切换。
+- 摘挂机判定方案可切换：
+  - 方案 1：`HIGH = 按下`，`LOW = 抬起`。
+  - 方案 2：`LOW = 按下`，`HIGH = 抬起`。
+- Codex 或其他 AI 工具完成任务后可以调用：
+  - `POST http://127.0.0.1:8765/api/ai/hook`
+  - `POST http://127.0.0.1:8765/hook`
+- 当前 hook 已能走到蜂鸣器和 LED 控制链路。
+- 目标提醒逻辑：Codex 完成任务后，蜂鸣器响、LED 亮；只有抬起电话后才停止提醒。
+
+## 当前硬件默认引脚
+
+```text
+GPIO0  = 摘挂机开关输入
+GPIO21 = 蜂鸣器输出
+GPIO20 = LED 输出
+```
+
+目前已经测通的 HG113 六脚簧片开关接法：
+
+```text
+ESP32-C3 GPIO0 -> 开关 6 脚
+ESP32-C3 GND   -> 开关 2 脚
+```
+
+改线前先看 [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md)。
+
+## Wi-Fi 说明
+
+当前稳定固件基于 pioarduino / Arduino-ESP32 3.3.9，并降低了 Wi-Fi 发射功率：
+
+```text
+WIFI_TX_POWER_QUARTER_DBM = 40
+状态上报 UDP 端口       = 8766
+命令接收 UDP 端口       = 8767
+```
+
+不要提交真实 Wi-Fi 密码。本地新建这个被忽略的文件即可：
+
+```cpp
+// firmware/esp32c3_gpio0_21_test/include/wifi_credentials.h
+#pragma once
+
+#define WIFI_STA_SSID "your-wifi-ssid"
+#define WIFI_STA_PASSWORD "your-wifi-password"
+```
+
+## 启动控制台
 
 ```powershell
 .\Start_AI_Desk_Phone.bat
 ```
 
-脚本会自动检查 Python 环境、安装依赖，并打开网页控制台。控制台会持续扫描 ESP32-C3 串口；USB 断开后重新插入，也会继续尝试连接。需要指定优先串口时：
+也可以手动运行：
 
 ```powershell
-.\Start_AI_Desk_Phone.bat COM5
-```
-
-首次烧录固件可手动运行：
-
-```powershell
-py -3.12 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio -t upload
+.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM5
 ```
 
 打开：
 
 ```text
-http://127.0.0.1:8765
+http://localhost:8765/
 ```
 
-如果手动启动控制台：
+## 编译固件
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --web-port 8765
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test
 ```
 
-手动指定优先串口：
+另外两个 Wi-Fi 最小测试工程只作为排查参考保留：
+
+```text
+firmware/esp32c3_wifi_minimal_test/
+firmware/esp32c3_wifi_pioarduino_test/
+```
+
+如果 Windows 终端编码导致新版 esptool 烧录输出崩掉，可以用合并镜像烧录：
 
 ```powershell
-.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM5 --web-port 8765
+$env:PYTHONIOENCODING='utf-8'
+& "$env:USERPROFILE\.platformio\penv\Scripts\esptool.exe" `
+  --chip esp32c3 `
+  --port COM5 `
+  --baud 115200 `
+  --before default-reset `
+  --after hard-reset `
+  write-flash -z 0x0 `
+  firmware\esp32c3_gpio0_21_test\.pio\build\esp32c3_gpio0_21_test\firmware.factory.bin
 ```
 
-## 使用方式
-
-1. 打开目标 Windows 软件，确认它用于语音输入、接听、挂断或静音的快捷键。
-2. 在控制台中观察摘挂机/按压动作对应的 ADC 变化。
-3. 调整阈值，让真实电话动作能稳定触发按下和释放状态。
-4. 把目标软件的快捷键填入控制台的按下/释放动作。
-5. 保存配置并配对 `AIDeskPhoneKB`。
-6. 用电话动作验证目标软件是否按预期响应。
-
-## 连接与保存
-
-- 控制台只会连接 ESP32-C3 枚举出的 USB 串口，例如 `USB Serial Device (COM3)`。`COM1` 通常是 Windows 系统内置通信端口，不是本项目的板子。
-- 如果控制台一直显示正在扫描，先换 USB 口或 USB 数据线，再重新插拔几次。Windows 正常识别后，控制台会自动连接新的 `COMx`。
-- 保存配置时只保留一个控制台网页窗口。打开多个 `http://127.0.0.1:8765` 页面可能占用浏览器连接，导致保存请求超时。
-- 保存成功需要看到日志中的 `ESP32 已确认配置写入板子。`
-
-完整制作顺序见 [制作与维护手册](docs/BUILD_MANUAL.md)。
-
-## 发布前检查
+## 验证
 
 ```powershell
 .\.venv\Scripts\python.exe -m py_compile tools\ai_desk_phone_console.py
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test
+```
+
+## 目录
+
+```text
+README.md
+docs/HG113_PRODUCT_PLAN.md
+docs/HG113_CONNECTION_MANUAL.md
+docs/electronics/
+firmware/esp32c3_gpio0_21_test/
+firmware/esp32c3_wifi_minimal_test/
+firmware/esp32c3_wifi_pioarduino_test/
+tools/ai_desk_phone_console.py
+config/ai_desk_phone_console.json
 ```
 
 ## 许可证
 
-当前还没有选择开源许可证。正式公开前请先添加 `LICENSE` 文件。
+暂未选择开源许可证。公开复用前需要补充 `LICENSE` 文件。

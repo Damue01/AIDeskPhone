@@ -4,6 +4,8 @@ __pycache__/
 
 .pio/
 firmware/**/.pio/
+firmware/**/include/wifi_credentials.h
+docs/electronics/hg113_tmp/
 
 logs/
 *.log
