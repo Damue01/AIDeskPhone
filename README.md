@@ -13,6 +13,7 @@ ESP32-C3 负责读取摘挂机开关、通过 Wi-Fi 发送轻量状态数据，�
 - [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md)
 - [硬件参考资料](docs/electronics/README.md)
 - [Codex 接线员 hook 配置](docs/CODEX_OPERATOR_HOOK.md)
+- [控制指挥中心页面与 Agent 接口](web/variant-earth-command-center/README.md)
 - [2026-07-08 工作区更新汇总](docs/WORKSPACE_UPDATE_2026-07-08.md)
 
 旧电话信号和早期 BLE HID 方案保留在 `legacy/phone-signal` 分支。
@@ -23,7 +24,7 @@ ESP32-C3 负责读取摘挂机开关、通过 Wi-Fi 发送轻量状态数据，�
 HG113 摘挂机开关
   -> ESP32-C3 GPIO0
   -> Wi-Fi UDP 状态上报
-  -> 电脑端控制台 http://localhost:8765/
+  -> 电脑端 Agent 页面 http://localhost:8765/command-center/
 
 电脑端控制台 / AI hook
   -> UDP 或 USB 串口命令
@@ -40,6 +41,7 @@ ESP32-C3 不负责承载网页。它只发送状态数据，并执行蜂鸣器�
 ## 已实现内容
 
 - 本地网页控制台：状态显示、GPIO 波形、GPIO 配置、蜂鸣器测试、LED 测试、方案切换。
+- Agent 待命页：`Start_AI_Desk_Phone.bat` 默认打开 `http://127.0.0.1:8765/command-center/`，用于展示地球屏保和当前 Agent 阶段。
 - 摘挂机判定方案可切换：
   - 方案 1：`HIGH = 按下`，`LOW = 抬起`。
   - 方案 2：`LOW = 按下`，`HIGH = 抬起`。
@@ -50,7 +52,7 @@ ESP32-C3 不负责承载网页。它只发送状态数据，并执行蜂鸣器�
 - 约 90 秒无人接听后，普通响铃停止并切换为忙音节奏。
 - 回话队列：hook 文本或手动回话会进入队列，Codex hook 可先经 Ark 角色模型润色成通讯员回报，默认复用主 API Key，摘机后播放；AI 播报中挂机会立即停止当前播报。
 - 豆包 / 火山引擎语音链路：支持 TTS 2.0 流式回话播放、BigASR 流式识别、摘机录音和本地模拟页调试；用户说完后挂机会提交后台处理，完成后再电话回拨。
-- 服务通信中枢地球页：`web/variant-earth-command-center/index.html` 已融合 Three.js 地球和 MapLibre 卫星地图，支持城市级缩放探索。
+- 控制指挥中心地球页：`web/variant-earth-command-center/index.html` 已融合 Three.js 地球和 MapLibre 卫星地图，支持城市级缩放探索。外部 AI 可通过页面桥接接口直接切换状态、跳转城市或经纬度位置。
 
 ## 当前硬件默认引脚
 
@@ -105,6 +107,12 @@ WIFI_TX_POWER_QUARTER_DBM = 40
 
 ```text
 http://localhost:8765/
+```
+
+控制指挥中心默认由脚本自动打开，也可以直接访问：
+
+```text
+http://127.0.0.1:8765/command-center/
 ```
 
 ## 编译固件

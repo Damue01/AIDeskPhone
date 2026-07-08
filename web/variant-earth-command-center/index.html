@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
-  <title>服务通信中枢</title>
+  <title>控制指挥中心</title>
   <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.css">
   <style>
     :root {
@@ -408,7 +408,7 @@
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       align-items: start;
-      gap: 14px;
+      gap: 24px;
       pointer-events: none;
     }
 
@@ -441,78 +441,31 @@
       text-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
     }
 
-    .clock-block {
-      pointer-events: auto;
-      min-width: 220px;
-      border: 0;
-      background: transparent;
-      color: var(--ink);
-      padding: 0;
-      text-align: right;
-      text-shadow: 0 10px 28px rgba(0, 0, 0, 0.72), 0 0 18px rgba(125, 246, 227, 0.16);
-    }
-
-    .clock-label {
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 900;
-      text-transform: none;
-    }
-
-    .clock-time {
-      margin-top: 2px;
-      font-family: var(--display);
-      font-size: 29px;
-      line-height: 0.9;
-      font-weight: 900;
-    }
-
     .right-stack {
-      position: absolute;
+      position: relative;
       z-index: 7;
-      right: 16px;
-      top: 158px;
-      bottom: 80px;
-      width: clamp(250px, 22vw, 352px);
-      display: grid;
-      grid-template-rows: repeat(3, minmax(104px, 1fr));
-      gap: 10px;
+      width: max-content;
+      max-width: none;
       border: 0;
-      pointer-events: auto;
+      pointer-events: none;
+      text-align: right;
+      justify-self: end;
+      align-self: start;
     }
 
     .status-block {
       position: relative;
-      overflow: hidden;
-      display: flex;
-      flex-direction: column;
-      justify-content: flex-end;
       min-height: 0;
-      padding: 18px;
-      border: 1px solid var(--glass-stroke);
-      border-radius: 28px;
-      background: var(--glass);
+      padding: 0;
+      width: max-content;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
       color: rgba(247, 243, 232, 0.94);
-      box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -1px 0 rgba(255, 255, 255, 0.055);
-      backdrop-filter: blur(28px) saturate(1.35);
-      -webkit-backdrop-filter: blur(28px) saturate(1.35);
-    }
-
-    .status-block:nth-child(2) {
-      background: linear-gradient(145deg, rgba(125, 246, 227, 0.16), rgba(255, 255, 255, 0.055));
-    }
-
-    .status-block:last-child {
-      background: linear-gradient(145deg, rgba(247, 243, 232, 0.18), rgba(255, 255, 255, 0.055));
-    }
-
-    .status-block::before {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.18), transparent 34%);
-      opacity: 0.8;
-      pointer-events: none;
+      box-shadow: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      overflow: visible;
     }
 
     .status-label {
@@ -528,14 +481,15 @@
     .status-huge {
       position: relative;
       z-index: 1;
+      display: inline-block;
       font-family: var(--display);
-      font-size: clamp(48px, 7vw, 92px);
-      line-height: 0.82;
-      font-weight: 850;
+      font-size: clamp(30px, 3.4vw, 52px);
+      line-height: 0.94;
+      font-weight: 900;
       text-transform: none;
       letter-spacing: 0;
-      overflow-wrap: anywhere;
-      text-shadow: 0 14px 38px rgba(0, 0, 0, 0.38);
+      white-space: nowrap;
+      text-shadow: 0 10px 30px rgba(0, 0, 0, 0.78), 0 0 16px rgba(125, 246, 227, 0.1);
     }
 
     #sector-word {
@@ -553,61 +507,21 @@
       color: rgba(247, 243, 232, 0.88);
     }
 
-    .right-stack {
-      top: 118px;
-      bottom: auto;
-      width: clamp(260px, 24vw, 360px);
-      grid-template-rows: repeat(3, auto);
-      gap: 20px;
-      justify-items: end;
-      text-align: right;
-      pointer-events: none;
+    .status-subline {
+      position: relative;
+      z-index: 1;
+      margin-top: 9px;
+      font-size: 12px;
+      line-height: 1.35;
+      font-weight: 720;
+      color: rgba(247, 243, 232, 0.66);
     }
 
-    .status-block,
-    .status-block:nth-child(2),
-    .status-block:last-child {
-      display: block;
-      width: 100%;
-      min-height: 0;
-      padding: 0;
-      border: 0;
-      border-radius: 0;
-      background: transparent;
-      box-shadow: none;
-      backdrop-filter: none;
-      -webkit-backdrop-filter: none;
-      color: rgba(247, 243, 232, 0.94);
-      overflow: visible;
-    }
-
-    .status-block::before {
-      display: none;
-    }
-
-    .status-label {
-      margin-bottom: 6px;
-      font-size: 10px;
-      letter-spacing: 0;
-      color: rgba(247, 243, 232, 0.54);
-    }
-
-    .status-huge {
-      font-size: clamp(24px, 3vw, 42px);
-      line-height: 0.94;
-      text-shadow: 0 10px 26px rgba(0, 0, 0, 0.76);
-    }
-
-    #sector-word {
-      font-size: clamp(20px, 2.1vw, 32px);
-      line-height: 1.02;
-    }
-
-    .status-value {
-      font-size: 13px;
-      line-height: 1.36;
+    .status-value-muted {
+      margin-top: 4px;
+      color: rgba(247, 243, 232, 0.56);
+      font-size: 12px;
       font-weight: 680;
-      color: rgba(247, 243, 232, 0.72);
     }
 
     .bottom-ticker {
@@ -622,7 +536,7 @@
       overflow: hidden;
       border: 0;
       border-radius: 0;
-      background: linear-gradient(90deg, rgba(176, 14, 20, 0.96) 0 118px, rgba(4, 7, 10, 0.78) 118px 100%);
+      background: linear-gradient(90deg, rgba(176, 14, 20, 0.96) 0 132px, rgba(4, 7, 10, 0.76) 132px 100%);
       color: #f7f3e8;
       pointer-events: auto;
       box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.32);
@@ -644,32 +558,26 @@
       position: relative;
       z-index: 1;
       align-self: stretch;
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      width: 118px;
-      flex: 0 0 118px;
+      display: block;
+      gap: 0;
+      width: 132px;
+      flex: 0 0 132px;
       margin-left: 0;
-      padding: 0 18px;
+      padding: 0;
       border-radius: 0;
       background: transparent;
       color: rgba(247, 243, 232, 0.92);
-      font-size: 15px;
-      font-weight: 920;
+      font-size: 22px;
+      line-height: 56px;
+      font-weight: 940;
       letter-spacing: 0;
       text-transform: none;
+      text-align: center;
       text-shadow: 0 8px 22px rgba(0, 0, 0, 0.72);
     }
 
     .ticker-label::before {
-      content: "";
-      width: 7px;
-      height: 7px;
-      flex: 0 0 7px;
-      border-radius: 50%;
-      background: rgba(247, 243, 232, 0.88);
-      box-shadow: 0 0 0 5px rgba(247, 243, 232, 0.08), 0 0 18px rgba(125, 246, 227, 0.45);
-      animation: tickerPulse 1.9s ease-in-out infinite;
+      display: none;
     }
 
     .ticker-window {
@@ -765,22 +673,23 @@
 
     @media (max-width: 1100px) {
       .right-stack {
-        width: 270px;
+        width: max-content;
       }
 
     }
 
     @media (max-width: 860px) {
       .topbar {
-        grid-template-columns: 1fr;
-      }
-
-      .clock-block {
-        display: none;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
       }
 
       .right-stack {
-        display: none;
+        max-width: none;
+      }
+
+      .status-huge {
+        font-size: clamp(23px, 6.4vw, 34px);
       }
 
       .bottom-ticker {
@@ -790,14 +699,15 @@
       }
 
       .ticker-label {
-        width: 124px;
-        flex-basis: 124px;
+        width: 118px;
+        flex-basis: 118px;
+        font-size: 20px;
       }
     }
 
     @media (max-width: 560px) {
       .brand-block {
-        padding: 10px;
+        padding: 0;
       }
 
       .mobile-dock {
@@ -872,7 +782,7 @@
   </style>
 </head>
 <body data-palette="teal">
-  <main class="stage" id="stage" aria-label="服务通信中枢">
+  <main class="stage" id="stage" aria-label="控制指挥中心">
     <div id="starfield" aria-hidden="true"></div>
     <div id="map" aria-label="真实地图"></div>
     <div id="map-label-layer" aria-hidden="true"></div>
@@ -882,31 +792,16 @@
     <header class="topbar">
       <section class="brand-block" aria-label="系统身份">
         <div class="brand-row">
-          <h1>服务通信中枢</h1>
+          <h1>控制指挥中心</h1>
         </div>
       </section>
 
-      <section class="clock-block" aria-label="本地时间">
-        <div class="clock-label">本地时间</div>
-        <div class="clock-time" id="clock">00:00:00</div>
+      <section class="right-stack" aria-label="当前状态">
+        <article class="status-block agent-status">
+          <div class="status-huge" id="status-word">等待命令中</div>
+        </article>
       </section>
     </header>
-
-    <section class="right-stack" aria-label="服务状态面板">
-      <article class="status-block">
-        <div class="status-label">系统状态</div>
-        <div class="status-huge" id="status-word">在线</div>
-      </article>
-      <article class="status-block">
-        <div class="status-label">命令状态</div>
-        <div class="status-huge" id="sector-word">接收命令中</div>
-      </article>
-      <article class="status-block">
-        <div class="status-label">当前服务区</div>
-        <div class="status-value" id="coord-a">服务区计算中</div>
-        <div class="status-value" id="coord-b">接线员分配中</div>
-      </article>
-    </section>
 
     <nav class="mobile-dock" aria-label="移动端控制">
       <button id="m-pause" type="button" aria-pressed="false">暂停</button>
@@ -916,7 +811,7 @@
     </nav>
 
     <footer class="bottom-ticker" aria-label="控制台日志">
-      <div class="ticker-label" id="ticker-label">LOG</div>
+      <div class="ticker-label" id="ticker-label">播报</div>
       <div class="ticker-window">
         <div class="ticker-track" id="ticker-track">[SYS] 等待命令输入  /  [AI] 本地控制台待连接  /</div>
       </div>
@@ -962,12 +857,8 @@
       fps: document.getElementById("fps"),
       rot: document.getElementById("rot"),
       mask: document.getElementById("mask-state"),
-      clock: document.getElementById("clock"),
       drag: document.getElementById("drag-state"),
       status: document.getElementById("status-word"),
-      sector: document.getElementById("sector-word"),
-      coordA: document.getElementById("coord-a"),
-      coordB: document.getElementById("coord-b"),
       tickerLabel: document.getElementById("ticker-label"),
       tickerTrack: document.getElementById("ticker-track"),
       mapLabelLayer
@@ -1092,12 +983,24 @@
         tickerReady: false,
         tickerSpeed: 52,
         logs: [
-          "[SYS] 等待命令输入",
-          "[AI] 本地控制台待连接",
-          "[CMD] 地球视图保持唤醒",
-          "[SCREEN] 屏保模式运行中",
-          "[READY] 可接管电脑操作"
+          "[SYS] 控制指挥中心已就绪",
+          "[WAIT] 等待命令输入"
         ]
+      },
+      telemetry: {
+        connected: false,
+        endpoint: "",
+        lastEventAt: 0,
+        lastErrorAt: 0,
+        sample: null,
+        voice: {},
+        reply: {},
+        alerting: false,
+        alertPhase: "",
+        actionLog: "",
+        lastPhase: "",
+        lastVoiceText: "",
+        lastReplyText: ""
       }
     };
 
@@ -1277,51 +1180,72 @@
       {
         key: "waiting",
         status: "等待命令中",
-        sector: "监听输入",
-        area: "AI 控制台待命",
+        sector: "waiting",
+        area: "waiting",
         log: "[WAIT] 等待命令输入"
       },
       {
+        key: "listening",
+        status: "接收指令中",
+        sector: "listening",
+        area: "listening",
+        log: "[CALL] 接收指令中"
+      },
+      {
         key: "executing",
-        status: "命令正在执行",
-        sector: "执行中",
-        area: "电脑操作链路激活",
-        log: "[ACTION] 命令正在执行"
+        status: "执行命令中",
+        sector: "executing",
+        area: "executing",
+        log: "[ACTION] 执行命令中"
       },
       {
         key: "feedback",
-        status: "正在反馈结果",
-        sector: "反馈结果",
-        area: "采集屏幕与状态",
-        log: "[RESULT] 正在反馈结果"
+        status: "等待接听中",
+        sector: "feedback",
+        area: "feedback",
+        log: "[RESULT] 等待接听中"
       },
       {
         key: "reporting",
-        status: "正在汇报结果",
-        sector: "汇报结果",
-        area: "生成操作摘要",
-        log: "[REPORT] 正在汇报结果"
+        status: "播报结果中",
+        sector: "reporting",
+        area: "reporting",
+        log: "[REPORT] 播报结果中"
       }
     ];
 
     const CONSOLE_API_VERSION = "2026.07.08";
+    const CONTROL_CONSOLE_ORIGIN = "http://127.0.0.1:8765";
+    const CONTROL_COMMAND_ROUTES = {
+      startAgent: "/api/agent/start",
+      stopVoice: "/api/voice/stop",
+      stopPlayback: "/api/playback/stop",
+      clearAlert: "/api/alert/clear",
+      simulateRelease: "/api/simulate/release",
+      simulatePress: "/api/simulate/press",
+      beep: "/api/hardware/beep",
+      ringOn: "/api/hardware/ring_on",
+      ringOff: "/api/hardware/ring_off",
+      ledOn: "/api/hardware/led_on",
+      ledOff: "/api/hardware/led_off"
+    };
 
     const LOG_KEYWORDS = [
       "AI",
       "SYS",
       "CMD",
       "WAIT",
+      "CALL",
       "ACTION",
       "RESULT",
       "REPORT",
       "READY",
       "SCREEN",
       "等待命令中",
-      "命令正在执行",
-      "正在反馈结果",
-      "正在汇报结果",
-      "本地控制台",
-      "电脑操作"
+      "接收指令中",
+      "执行命令中",
+      "等待接听中",
+      "播报结果中"
     ];
 
     function appendConsoleLog(message) {
@@ -1379,7 +1303,7 @@
     }
 
     function renderConsoleTicker() {
-      if (els.tickerLabel) els.tickerLabel.textContent = "LOG";
+      if (els.tickerLabel) els.tickerLabel.textContent = "播报";
       if (!els.tickerTrack) return;
       els.tickerTrack.replaceChildren();
       state.console.logs.forEach(entry => appendConsoleTickerNode(entry));
@@ -1426,10 +1350,11 @@
         };
       }
 
+      const previousPhase = state.console.phase;
       state.console.phase = phase.key;
       state.console.phaseIndex = Math.max(0, COMMAND_PHASES.findIndex(item => item.key === phase.key));
       if (fromExternal) state.console.externalUntil = Date.now() + 30000;
-      appendConsoleLog(phase.log);
+      if (previousPhase !== phase.key) appendConsoleLog(phase.log);
       return {
         ok: true,
         action: "setPhase",
@@ -1438,6 +1363,127 @@
         sector: phase.sector,
         area: phase.area
       };
+    }
+
+    function isServedByControlConsole() {
+      return location.protocol.startsWith("http") && location.hostname && location.port === "8765";
+    }
+
+    function controlConsoleUrl(path) {
+      return `${isServedByControlConsole() ? "" : CONTROL_CONSOLE_ORIGIN}${path}`;
+    }
+
+    function shortText(value, maxLength = 34) {
+      const text = String(value || "").replace(/\s+/g, " ").trim();
+      if (text.length <= maxLength) return text;
+      return `${text.slice(0, Math.max(0, maxLength - 1))}…`;
+    }
+
+    function setTelemetryConnection(connected, reason = "") {
+      state.telemetry.connected = Boolean(connected);
+      document.body.dataset.telemetry = state.telemetry.connected ? "online" : "offline";
+      stage.dataset.telemetry = document.body.dataset.telemetry;
+    }
+
+    function replyText(reply = {}) {
+      if (!reply || typeof reply !== "object") return "";
+      return reply.title || reply.text || reply.source || "";
+    }
+
+    function deriveTelemetryPhase() {
+      const sample = state.telemetry.sample || {};
+      const voice = state.telemetry.voice || {};
+      const reply = state.telemetry.reply || {};
+
+      if (reply.playback_active) return "reporting";
+      if (voice.recording) return "listening";
+      if (voice.processing || voice.streaming_asr) return "executing";
+      if ((Number(reply.queue_size) || 0) > 0 || reply.pending_report_text || state.telemetry.alerting) return "feedback";
+      if (sample.python_state === "RELEASED") return "listening";
+      return "waiting";
+    }
+
+    function applyTelemetryPhase() {
+      const phase = deriveTelemetryPhase();
+      if (phase !== state.telemetry.lastPhase) {
+        state.telemetry.lastPhase = phase;
+        setConsolePhase(phase, true);
+      }
+    }
+
+    function applyTelemetryPayload(payload = {}) {
+      state.telemetry.lastEventAt = Date.now();
+      setTelemetryConnection(true);
+
+      if (payload.type === "snapshot") {
+        if (payload.current_sample) state.telemetry.sample = payload.current_sample;
+        state.telemetry.voice = {...state.telemetry.voice, ...payload};
+        state.telemetry.reply = {...state.telemetry.reply, ...payload};
+        state.telemetry.alerting = Boolean(payload.alerting || (payload.current_sample || {}).alerting);
+        state.telemetry.alertPhase = payload.alert_phase || (payload.current_sample || {}).alert_phase || "";
+      } else if (payload.type === "sample") {
+        state.telemetry.sample = payload.sample || {};
+        state.telemetry.alerting = Boolean((payload.sample || {}).alerting);
+        state.telemetry.alertPhase = (payload.sample || {}).alert_phase || "";
+      } else if (payload.type === "voice_status") {
+        state.telemetry.voice = {...state.telemetry.voice, ...payload};
+        const voiceText = shortText(payload.partial_text || payload.last_result || "");
+        if (voiceText && voiceText !== state.telemetry.lastVoiceText) state.telemetry.lastVoiceText = voiceText;
+      } else if (payload.type === "reply_status") {
+        state.telemetry.reply = {...state.telemetry.reply, ...payload};
+        const text = shortText(payload.pending_report_text || replyText(payload.active_reply) || "");
+        if (text && text !== state.telemetry.lastReplyText) state.telemetry.lastReplyText = text;
+      } else if (payload.type === "alert_status") {
+        state.telemetry.alerting = Boolean(payload.alerting);
+        state.telemetry.alertPhase = payload.alert_phase || "";
+      } else if (payload.type === "action_log" && payload.text) {
+        state.telemetry.actionLog = payload.text;
+      }
+
+      applyTelemetryPhase();
+    }
+
+    function connectAgentTelemetry() {
+      if (!("EventSource" in window)) {
+        setTelemetryConnection(false, "浏览器不支持 EventSource");
+        return null;
+      }
+
+      const endpoint = controlConsoleUrl("/events");
+      state.telemetry.endpoint = endpoint;
+      const events = new EventSource(endpoint);
+
+      events.onopen = () => setTelemetryConnection(true);
+      events.onerror = () => {
+        state.telemetry.lastErrorAt = Date.now();
+        setTelemetryConnection(false, "等待 8765/events");
+      };
+      events.onmessage = (event) => {
+        try {
+          applyTelemetryPayload(JSON.parse(event.data));
+        } catch (error) {
+          appendConsoleLog(`[LINK] 事件解析失败：${error.message}`);
+        }
+      };
+
+      return events;
+    }
+
+    async function postControlCommand(route, payload = {}) {
+      try {
+        const response = await fetch(controlConsoleUrl(route), {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload || {})
+        });
+        const result = await response.json().catch(() => ({ok: response.ok}));
+        appendConsoleLog(response.ok && result.ok !== false ? "[CMD] 命令已发送" : "[CMD] 命令发送失败");
+        return result;
+      } catch (error) {
+        setTelemetryConnection(false, "命令发送失败");
+        appendConsoleLog("[CMD] 命令发送失败");
+        return {ok: false, route, error: error.message};
+      }
     }
 
     function advanceConsolePhase() {
@@ -1461,6 +1507,15 @@
         sector: phase.sector,
         area: phase.area,
         source: state.console.source,
+        telemetry: {
+          connected: state.telemetry.connected,
+          endpoint: state.telemetry.endpoint,
+          sample: state.telemetry.sample,
+          voice: state.telemetry.voice,
+          reply: state.telemetry.reply,
+          alerting: state.telemetry.alerting,
+          alertPhase: state.telemetry.alertPhase
+        },
         visualPreset: state.visualPreset,
         map: {
           ready: state.mapReady,
@@ -1589,6 +1644,55 @@
           source: state.console.source
         };
       },
+      control(route, payload = {}) {
+        return postControlCommand(route, payload);
+      },
+      startAgent(options = {}) {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.startAgent, {
+          reason: "earth-command-center",
+          allow_on_hook: true,
+          ...(options || {})
+        });
+      },
+      stopVoice(options = {}) {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.stopVoice, {
+          reason: "earth-command-center",
+          ...(options || {})
+        });
+      },
+      stopPlayback(options = {}) {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.stopPlayback, {
+          reason: "earth-command-center",
+          ...(options || {})
+        });
+      },
+      clearAlert(options = {}) {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.clearAlert, {
+          reason: "earth-command-center",
+          ...(options || {})
+        });
+      },
+      simulateRelease() {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.simulateRelease);
+      },
+      simulatePress() {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.simulatePress);
+      },
+      beep() {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.beep);
+      },
+      ringOn() {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.ringOn);
+      },
+      ringOff() {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.ringOff);
+      },
+      ledOn() {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.ledOn);
+      },
+      ledOff() {
+        return postControlCommand(CONTROL_COMMAND_ROUTES.ledOff);
+      },
       flyTo(target, options = {}) {
         return navigateToMapTarget(target, options);
       },
@@ -1628,8 +1732,12 @@
     };
     window.AiLandLineConsole = consoleBridge;
     window.AiLandLine = consoleBridge;
+    window.AILandline = consoleBridge;
+    window.AIDeskPhone = consoleBridge;
     globalThis.AiLandLineConsole = consoleBridge;
     globalThis.AiLandLine = consoleBridge;
+    globalThis.AILandline = consoleBridge;
+    globalThis.AIDeskPhone = consoleBridge;
     document.body.dataset.consoleBridge = "ready";
     document.body.dataset.consoleApiVersion = CONSOLE_API_VERSION;
 
@@ -1670,6 +1778,8 @@
     window.dispatchEvent(new CustomEvent("ailandline:ready", {
       detail: getConsoleApiState()
     }));
+
+    state.telemetry.events = connectAgentTelemetry();
 
     function updateMapLabels() {
       if (!els.mapLabelLayer || !state.mapReady || document.body.dataset.viewMode !== "map") return;
@@ -3701,19 +3811,6 @@
       setText(els.rot, earthSpinGroup.rotation.y.toFixed(2));
       setText(els.mask, state.maskPixels[0] !== undefined ? "运行" : "就绪");
       setText(els.status, state.paused ? "暂停" : phase.status);
-      setText(els.sector, phase.sector);
-      setText(els.coordA, phase.area);
-      setText(els.coordB, state.console.source);
-    }
-
-    function updateClock() {
-      const now = new Date();
-      els.clock.textContent = now.toLocaleTimeString("en-US", {
-        hour12: false,
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit"
-      });
     }
 
     function render(now) {
@@ -3774,8 +3871,6 @@
     applyEarthLighting();
     applyVisualPreset(state.visualPreset, { silent: true });
     syncControls();
-    updateClock();
-    setInterval(updateClock, 1000);
     renderConsoleTicker();
     setInterval(advanceConsolePhase, 5200);
     window.setTimeout(applyInitialNavigationFromUrl, 700);

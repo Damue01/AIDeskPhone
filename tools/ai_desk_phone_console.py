@@ -7,6 +7,7 @@ from collections import deque
 from dataclasses import asdict, dataclass, field
 import html
 import json
+import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import queue
 import re
@@ -17,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 import uuid
 
 try:
@@ -49,6 +50,7 @@ except ImportError:  # pragma: no cover - kept optional for partial deployments
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "ai_desk_phone_console.json"
+COMMAND_CENTER_DIR = ROOT / "web" / "variant-earth-command-center"
 DEFAULT_WEB_PORT = 8765
 DEFAULT_BAUD = 115200
 DEFAULT_UDP_TELEMETRY_PORT = 8766
@@ -6797,10 +6799,39 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
+    def is_loopback_origin(self, origin: str) -> bool:
+        if not origin:
+            return False
+        parsed = urlparse(origin)
+        return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+
+    def send_cors_headers(self) -> None:
+        origin = self.headers.get("Origin", "")
+        if self.is_loopback_origin(origin):
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+        elif origin == "null":
+            self.send_header("Access-Control-Allow-Origin", "null")
+            self.send_header("Vary", "Origin")
+        elif not origin:
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Max-Age", "600")
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self.send_cors_headers()
+        self.end_headers()
+
     def do_GET(self) -> None:
         route = urlparse(self.path).path
         if route == "/":
             self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
+        elif route == "/command-center":
+            self.send_redirect("/command-center/")
+        elif route.startswith("/command-center/"):
+            self.send_command_center_asset(route)
         elif route == "/simulator":
             self.send_bytes(SIMULATOR_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif route == "/api/config":
@@ -6998,16 +7029,51 @@ class ConsoleHandler(BaseHTTPRequestHandler):
     def send_json(self, payload: dict[str, Any]) -> None:
         self.send_bytes(json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
 
+    def send_redirect(self, location: str) -> None:
+        self.send_response(302)
+        self.send_cors_headers()
+        self.send_header("Location", location)
+        self.end_headers()
+
     def send_bytes(self, payload: bytes, content_type: str) -> None:
         self.send_response(200)
+        self.send_cors_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         self.end_headers()
         self.wfile.write(payload)
 
+    def send_command_center_asset(self, route: str) -> None:
+        relative = unquote(route.removeprefix("/command-center/")) or "index.html"
+        target = (COMMAND_CENTER_DIR / relative).resolve()
+        try:
+            target.relative_to(COMMAND_CENTER_DIR.resolve())
+        except ValueError:
+            self.send_error(404)
+            return
+
+        if target.is_dir():
+            target = target / "index.html"
+        if not target.exists() or not target.is_file():
+            self.send_error(404)
+            return
+
+        content_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
+        if target.suffix == ".js":
+            content_type = "application/javascript; charset=utf-8"
+        elif target.suffix in {".html", ".htm"}:
+            content_type = "text/html; charset=utf-8"
+        elif target.suffix == ".css":
+            content_type = "text/css; charset=utf-8"
+        elif target.suffix == ".json":
+            content_type = "application/json; charset=utf-8"
+
+        self.send_bytes(target.read_bytes(), content_type)
+
     def handle_events(self) -> None:
         self.send_response(200)
+        self.send_cors_headers()
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "keep-alive")
