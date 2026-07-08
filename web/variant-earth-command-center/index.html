@@ -1,0 +1,1194 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI 桌面电话服务通信中枢</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #06110f;
+      --ink: #f7f3e8;
+      --muted: rgba(247, 243, 232, 0.66);
+      --dim: rgba(247, 243, 232, 0.22);
+      --red: #e6423e;
+      --red-soft: rgba(230, 66, 62, 0.13);
+      --red-line: rgba(230, 66, 62, 0.42);
+      --cyan: #7df6e3;
+      --cyan-soft: rgba(125, 246, 227, 0.16);
+      --cyan-line: rgba(125, 246, 227, 0.48);
+      --paper: #f1eddf;
+      --surface: rgba(8, 24, 22, 0.78);
+      --black-72: rgba(6, 17, 15, 0.72);
+      --black-86: rgba(6, 17, 15, 0.86);
+      --mono: "JetBrains Mono", "Courier New", monospace;
+      --display: Inter, Arial Black, Impact, system-ui, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      min-width: 320px;
+      height: 100%;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--mono);
+      letter-spacing: 0;
+    }
+
+    button,
+    input {
+      font: inherit;
+    }
+
+    button {
+      color: inherit;
+    }
+
+    .stage {
+      position: fixed;
+      inset: 0;
+      overflow: hidden;
+      background:
+        linear-gradient(rgba(125, 246, 227, 0.07) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(125, 246, 227, 0.055) 1px, transparent 1px),
+        linear-gradient(180deg, #081815 0%, #020706 100%);
+      background-size: 40px 40px, 40px 40px, auto;
+      isolation: isolate;
+    }
+
+    .stage::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 6;
+      background:
+        linear-gradient(180deg, rgba(125, 246, 227, 0.07), transparent 20%, transparent 80%, rgba(230, 66, 62, 0.08)),
+        repeating-linear-gradient(180deg, transparent 0, transparent 3px, rgba(255, 255, 255, 0.025) 4px);
+      mix-blend-mode: screen;
+      opacity: 0.42;
+    }
+
+    #globe-canvas,
+    #text-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+
+    #text-canvas {
+      pointer-events: none;
+      z-index: 2;
+      mix-blend-mode: screen;
+    }
+
+    .scanline {
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 2px;
+      z-index: 5;
+      background: rgba(125, 246, 227, 0.34);
+      box-shadow: 0 0 18px rgba(125, 246, 227, 0.22);
+      animation: scan 5.5s linear infinite;
+      pointer-events: none;
+    }
+
+    @keyframes scan {
+      from { transform: translateY(-3vh); }
+      to { transform: translateY(103vh); }
+    }
+
+    .topbar {
+      position: absolute;
+      z-index: 7;
+      top: 16px;
+      left: 16px;
+      right: 16px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 14px;
+      pointer-events: none;
+    }
+
+    .brand-block {
+      pointer-events: auto;
+      border: 2px solid var(--cyan-line);
+      background: var(--surface);
+      width: min(620px, 100%);
+      padding: 12px 14px 13px;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 16px 48px rgba(0, 0, 0, 0.22);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .brand-mark {
+      width: 38px;
+      height: 38px;
+      display: grid;
+      place-items: center;
+      flex: 0 0 38px;
+      background: var(--cyan);
+      color: #06110f;
+      font-family: var(--display);
+      font-size: 26px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    h1 {
+      margin: 0;
+      font-family: var(--display);
+      font-size: clamp(29px, 3vw, 54px);
+      line-height: 0.9;
+      font-weight: 900;
+      text-transform: none;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .brand-meta {
+      margin-top: 8px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 14px;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 800;
+      text-transform: none;
+    }
+
+    .clock-block {
+      pointer-events: auto;
+      min-width: 220px;
+      border: 2px solid var(--cyan-line);
+      background: var(--paper);
+      color: #06110f;
+      padding: 10px 12px;
+      text-align: right;
+    }
+
+    .clock-label {
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: none;
+    }
+
+    .clock-time {
+      margin-top: 2px;
+      font-family: var(--display);
+      font-size: 29px;
+      line-height: 0.9;
+      font-weight: 900;
+    }
+
+    .left-panel {
+      position: absolute;
+      z-index: 7;
+      left: 16px;
+      top: 158px;
+      width: 300px;
+      border: 2px solid var(--cyan-line);
+      background: var(--surface);
+      pointer-events: auto;
+      backdrop-filter: blur(14px);
+    }
+
+    .panel-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 8px;
+      min-height: 42px;
+      padding: 0 12px;
+      border-bottom: 2px solid var(--cyan-line);
+      background: var(--cyan-soft);
+      color: var(--ink);
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: none;
+    }
+
+    .panel-body {
+      display: grid;
+      gap: 13px;
+      padding: 13px 12px 14px;
+    }
+
+    .control {
+      display: grid;
+      gap: 6px;
+    }
+
+    .control-row {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: none;
+      color: var(--muted);
+    }
+
+    .control-row output {
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    input[type="range"] {
+      width: 100%;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--cyan);
+      cursor: pointer;
+    }
+
+    .button-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .cmd-button {
+      height: 38px;
+      border: 2px solid var(--dim);
+      border-radius: 0;
+      background: rgba(255, 255, 255, 0.055);
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 11px;
+      font-weight: 900;
+      text-transform: none;
+    }
+
+    .cmd-button:hover,
+    .cmd-button[aria-pressed="true"] {
+      border-color: var(--cyan);
+      background: var(--cyan);
+      color: #06110f;
+    }
+
+    .telemetry-strip {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      border-top: 1px solid var(--dim);
+      border-bottom: 1px solid var(--dim);
+    }
+
+    .telemetry-cell {
+      min-width: 0;
+      padding: 9px 6px;
+      border-right: 1px solid var(--dim);
+    }
+
+    .telemetry-cell:last-child {
+      border-right: 0;
+    }
+
+    .telemetry-label {
+      color: var(--muted);
+      font-size: 9px;
+      font-weight: 900;
+      text-transform: none;
+    }
+
+    .telemetry-value {
+      margin-top: 3px;
+      color: var(--ink);
+      font-size: 15px;
+      font-weight: 900;
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .right-stack {
+      position: absolute;
+      z-index: 7;
+      right: 16px;
+      top: 158px;
+      bottom: 80px;
+      width: clamp(250px, 22vw, 352px);
+      display: grid;
+      grid-template-rows: 1fr 1fr 1fr 0.95fr;
+      gap: 8px;
+      border: 0;
+      pointer-events: auto;
+    }
+
+    .status-block {
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      min-height: 0;
+      padding: 16px;
+      border: 2px solid rgba(125, 246, 227, 0.36);
+      background: rgba(241, 237, 223, 0.94);
+      color: #06110f;
+      backdrop-filter: blur(14px);
+    }
+
+    .status-block:nth-child(2) {
+      background: rgba(8, 24, 22, 0.88);
+      color: var(--cyan);
+    }
+
+    .status-block:nth-child(3) {
+      background: rgba(18, 48, 44, 0.86);
+      color: var(--ink);
+    }
+
+    .status-block:last-child {
+      border-bottom: 0;
+      background: rgba(241, 237, 223, 0.94);
+      border-bottom: 2px solid rgba(125, 246, 227, 0.36);
+      color: #06110f;
+    }
+
+    .status-block::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        linear-gradient(rgba(0, 0, 0, 0.1) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0, 0, 0, 0.1) 1px, transparent 1px);
+      background-size: 24px 24px;
+      opacity: 0.22;
+      pointer-events: none;
+    }
+
+    .status-label {
+      position: relative;
+      z-index: 1;
+      margin-bottom: 7px;
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: none;
+    }
+
+    .status-huge {
+      position: relative;
+      z-index: 1;
+      font-family: var(--display);
+      font-size: clamp(48px, 7vw, 92px);
+      line-height: 0.82;
+      font-weight: 900;
+      text-transform: none;
+      letter-spacing: 0;
+      overflow-wrap: anywhere;
+    }
+
+    .status-value {
+      position: relative;
+      z-index: 1;
+      font-size: 19px;
+      line-height: 1.25;
+      font-weight: 900;
+      text-transform: none;
+    }
+
+    .bottom-ticker {
+      position: absolute;
+      z-index: 7;
+      left: 16px;
+      right: 16px;
+      bottom: 16px;
+      height: 46px;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+      border: 2px solid var(--cyan-line);
+      background: var(--surface);
+      color: var(--cyan);
+      pointer-events: auto;
+    }
+
+    .ticker-label {
+      align-self: stretch;
+      display: grid;
+      place-items: center;
+      width: 164px;
+      flex: 0 0 164px;
+      background: var(--cyan);
+      color: #06110f;
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: none;
+    }
+
+    .ticker-window {
+      overflow: hidden;
+      min-width: 0;
+      flex: 1 1 auto;
+      white-space: nowrap;
+    }
+
+    .ticker-track {
+      display: inline-block;
+      padding-left: 16px;
+      font-size: 13px;
+      font-weight: 900;
+      text-transform: none;
+      animation: ticker 24s linear infinite;
+    }
+
+    @keyframes ticker {
+      from { transform: translateX(0); }
+      to { transform: translateX(-50%); }
+    }
+
+    .corner-note {
+      position: absolute;
+      z-index: 7;
+      left: 322px;
+      top: 158px;
+      color: rgba(247, 243, 232, 0.52);
+      font-size: 10px;
+      font-weight: 900;
+      text-transform: none;
+      writing-mode: vertical-rl;
+      pointer-events: none;
+    }
+
+    .mobile-dock {
+      display: none;
+    }
+
+    @media (max-width: 1100px) {
+      .right-stack {
+        width: 270px;
+      }
+
+      .left-panel {
+        width: 256px;
+      }
+
+      .corner-note {
+        left: 292px;
+      }
+    }
+
+    @media (max-width: 860px) {
+      .topbar {
+        grid-template-columns: 1fr;
+      }
+
+      .clock-block {
+        display: none;
+      }
+
+      .left-panel {
+        top: auto;
+        left: 12px;
+        right: 12px;
+        bottom: 70px;
+        width: auto;
+      }
+
+      .panel-body {
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      }
+
+      .right-stack,
+      .corner-note {
+        display: none;
+      }
+
+      .bottom-ticker {
+        left: 12px;
+        right: 12px;
+        bottom: 12px;
+      }
+
+      .ticker-label {
+        width: 110px;
+        flex-basis: 110px;
+      }
+    }
+
+    @media (max-width: 560px) {
+      .brand-block {
+        padding: 10px;
+      }
+
+      .brand-row {
+        gap: 9px;
+      }
+
+      .brand-mark {
+        width: 32px;
+        height: 32px;
+        flex-basis: 32px;
+        font-size: 22px;
+      }
+
+      .brand-meta {
+        font-size: 10px;
+      }
+
+      .left-panel {
+        display: none;
+      }
+
+      .mobile-dock {
+        position: absolute;
+        z-index: 7;
+        left: 12px;
+        right: auto;
+        bottom: 70px;
+        width: min(366px, calc(100vw - 24px));
+        max-width: min(366px, calc(100vw - 24px));
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        border: 2px solid var(--cyan-line);
+        background: var(--surface);
+        pointer-events: auto;
+        overflow: hidden;
+      }
+
+      .mobile-dock button {
+        min-width: 0;
+        width: 100%;
+        height: 40px;
+        padding: 0 4px;
+        border: 0;
+        border-right: 1px solid var(--cyan-line);
+        border-radius: 0;
+        background: transparent;
+        color: var(--ink);
+        font-size: 11px;
+        font-weight: 900;
+        text-transform: none;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .mobile-dock button:last-child {
+        border-right: 0;
+      }
+
+      .mobile-dock button[aria-pressed="true"] {
+        background: var(--cyan);
+        color: #06110f;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .scanline,
+      .ticker-track {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="stage" id="stage" aria-label="服务通信中枢">
+    <canvas id="globe-canvas"></canvas>
+    <canvas id="text-canvas"></canvas>
+    <div class="scanline" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <section class="brand-block" aria-label="系统身份">
+        <div class="brand-row">
+          <div class="brand-mark" aria-hidden="true">通</div>
+          <h1>服务通信中枢</h1>
+        </div>
+        <div class="brand-meta">
+          <span>AI 桌面电话</span>
+          <span>HG113 话机链路</span>
+          <span>接线员服务</span>
+          <span id="drag-state">拖拽旋转：空闲</span>
+        </div>
+      </section>
+
+      <section class="clock-block" aria-label="本地时间">
+        <div class="clock-label">本地时间</div>
+        <div class="clock-time" id="clock">00:00:00</div>
+      </section>
+    </header>
+
+    <aside class="left-panel" aria-label="地球视图控制">
+      <div class="panel-head">
+        <span>视图控制</span>
+        <span>地球</span>
+      </div>
+      <div class="panel-body">
+        <div class="control">
+          <div class="control-row">
+            <label for="speed">地球转速</label>
+            <output id="speed-value">1.00</output>
+          </div>
+          <input id="speed" type="range" min="0" max="2.5" step="0.01" value="1">
+        </div>
+
+        <div class="control">
+          <div class="control-row">
+            <label for="density">字符行距</label>
+            <output id="density-value">14</output>
+          </div>
+          <input id="density" type="range" min="8" max="18" step="1" value="14">
+        </div>
+
+        <div class="control">
+          <div class="control-row">
+            <label for="alpha">字符亮度</label>
+            <output id="alpha-value">0.74</output>
+          </div>
+          <input id="alpha" type="range" min="0.25" max="1" step="0.01" value="0.74">
+        </div>
+
+        <div class="button-grid">
+          <button class="cmd-button" id="pause" type="button" aria-pressed="false">暂停</button>
+          <button class="cmd-button" id="ring" type="button" aria-pressed="true">轨道环</button>
+          <button class="cmd-button" id="wire" type="button" aria-pressed="true">经纬网</button>
+          <button class="cmd-button" id="reset" type="button">复位</button>
+        </div>
+
+        <div class="telemetry-strip" aria-label="运行遥测">
+          <div class="telemetry-cell">
+            <div class="telemetry-label">帧率</div>
+            <div class="telemetry-value" id="fps">--</div>
+          </div>
+          <div class="telemetry-cell">
+            <div class="telemetry-label">旋转</div>
+            <div class="telemetry-value" id="rot">0.00</div>
+          </div>
+          <div class="telemetry-cell">
+            <div class="telemetry-label">遮罩</div>
+            <div class="telemetry-value" id="mask-state">就绪</div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <section class="right-stack" aria-label="服务状态面板">
+      <article class="status-block">
+        <div class="status-label">系统状态</div>
+        <div class="status-huge" id="status-word">在线</div>
+      </article>
+      <article class="status-block">
+        <div class="status-label">AI 服务响应率</div>
+        <div class="status-huge" id="load-word">98.2%</div>
+      </article>
+      <article class="status-block">
+        <div class="status-label">话机链路</div>
+        <div class="status-huge" id="sector-word">正常</div>
+      </article>
+      <article class="status-block">
+        <div class="status-label">当前服务区</div>
+        <div class="status-value" id="coord-a">华东节点 / 上海</div>
+        <div class="status-value" id="coord-b">通道：接线员-01</div>
+      </article>
+    </section>
+
+    <div class="corner-note">地球字符层由陆地遮罩实时生成</div>
+
+    <nav class="mobile-dock" aria-label="移动端控制">
+      <button id="m-pause" type="button" aria-pressed="false">暂停</button>
+      <button id="m-ring" type="button" aria-pressed="true">轨道环</button>
+      <button id="m-reset" type="button">复位</button>
+    </nav>
+
+    <footer class="bottom-ticker" aria-label="事件流">
+      <div class="ticker-label">事件流</div>
+      <div class="ticker-window">
+        <div class="ticker-track">
+          AI 接线员服务在线 / HG113 话机链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
+          AI 接线员服务在线 / HG113 话机链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
+        </div>
+      </div>
+    </footer>
+  </main>
+
+  <script type="module">
+    import * as THREE from "./vendor/three.module.js";
+
+    const stage = document.getElementById("stage");
+    const globeCanvas = document.getElementById("globe-canvas");
+    const textCanvas = document.getElementById("text-canvas");
+    const ctx = textCanvas.getContext("2d", { alpha: true });
+
+    const els = {
+      speed: document.getElementById("speed"),
+      density: document.getElementById("density"),
+      alpha: document.getElementById("alpha"),
+      speedValue: document.getElementById("speed-value"),
+      densityValue: document.getElementById("density-value"),
+      alphaValue: document.getElementById("alpha-value"),
+      pause: document.getElementById("pause"),
+      ring: document.getElementById("ring"),
+      wire: document.getElementById("wire"),
+      reset: document.getElementById("reset"),
+      mobilePause: document.getElementById("m-pause"),
+      mobileRing: document.getElementById("m-ring"),
+      mobileReset: document.getElementById("m-reset"),
+      fps: document.getElementById("fps"),
+      rot: document.getElementById("rot"),
+      mask: document.getElementById("mask-state"),
+      clock: document.getElementById("clock"),
+      drag: document.getElementById("drag-state"),
+      status: document.getElementById("status-word"),
+      load: document.getElementById("load-word"),
+      sector: document.getElementById("sector-word"),
+      coordA: document.getElementById("coord-a"),
+      coordB: document.getElementById("coord-b")
+    };
+
+    const sourceWords = (
+      "LITHOSPHERE METRICS: NOMINAL. SUBDUCTION ZONE SEISMICITY: ELEVATED. " +
+      "CONTINENTAL CRUST THICKNESS: 35KM AVG. MANTLE CONVECTION CURRENTS: STABLE. " +
+      "PANGEA PROJECTION MODEL: RUNNING. TOPOGRAPHICAL DEVIATION: WITHIN TOLERANCE. " +
+      "BIOME SATURATION: 78%. ATMOSPHERIC PRESSURE: 1013 HPA. OCEANIC TRENCH DEPTH: 10994M. " +
+      "TECTONIC BOUNDARY FRICTION: MODERATE. GEOMAGNETIC FIELD STRENGTH: 25 TO 65 MICROTESLAS. " +
+      "CORE TEMPERATURE: 5700K. LIVE SURFACE MAPPING: ACTIVE. OPERATOR CHANNEL: ARMED. "
+    ).repeat(80).trim().split(/\s+/);
+
+    const orbitText = "SATELLITE UPLINK * TELEMETRY * BANDWIDTH * LATENCY * ORBITAL PERIOD * ";
+    const state = {
+      speed: 1,
+      lineHeight: 14,
+      textAlpha: 0.74,
+      paused: false,
+      showRing: true,
+      showWire: true,
+      width: 1,
+      height: 1,
+      dpr: 1,
+      maskWidth: 1,
+      maskHeight: 1,
+      maskPixels: new Uint8Array(4),
+      dragging: false,
+      lastPointer: { x: 0, y: 0 },
+      velocity: { x: 0.0007, y: 0.002 },
+      fpsFrames: 0,
+      fpsLast: performance.now(),
+      fpsValue: 0,
+      ringCacheRadius: 0,
+      ringCacheText: orbitText,
+      ringAngle: 0.02
+    };
+
+    const renderer = new THREE.WebGLRenderer({ canvas: globeCanvas, antialias: true, alpha: false });
+    renderer.setClearColor(0x06110f, 1);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+    camera.position.z = 3.55;
+
+    const maskScene = new THREE.Scene();
+    const maskTarget = new THREE.WebGLRenderTarget(320, 320, {
+      minFilter: THREE.NearestFilter,
+      magFilter: THREE.NearestFilter,
+      depthBuffer: true,
+      stencilBuffer: false
+    });
+
+    const earthGroup = new THREE.Group();
+    earthGroup.rotation.x = -0.24;
+    earthGroup.rotation.y = -1.18;
+    scene.add(earthGroup);
+
+    const maskGroup = new THREE.Group();
+    maskScene.add(maskGroup);
+
+    const sphereGeometry = new THREE.SphereGeometry(1, 96, 96);
+    const textureLoader = new THREE.TextureLoader();
+    const diffuseMap = await textureLoader.loadAsync("./assets/earth-blue-marble.jpg");
+    const waterMap = await textureLoader.loadAsync("./assets/earth-water.png");
+    diffuseMap.colorSpace = THREE.SRGBColorSpace;
+
+    const earthMaterial = new THREE.MeshPhongMaterial({
+      map: diffuseMap,
+      specularMap: waterMap,
+      specular: new THREE.Color(0x333333),
+      shininess: 16
+    });
+
+    const earthMesh = new THREE.Mesh(sphereGeometry, earthMaterial);
+    earthGroup.add(earthMesh);
+
+    const wireMaterial = new THREE.MeshBasicMaterial({
+      color: 0x7df6e3,
+      wireframe: true,
+      transparent: true,
+      opacity: 0.055,
+      depthWrite: false
+    });
+    const wireMesh = new THREE.Mesh(sphereGeometry, wireMaterial);
+    wireMesh.scale.setScalar(1.006);
+    earthGroup.add(wireMesh);
+
+    const atmosphereMaterial = new THREE.MeshBasicMaterial({
+      color: 0x9cf7ee,
+      transparent: true,
+      opacity: 0.12,
+      side: THREE.BackSide,
+      depthWrite: false
+    });
+    const atmosphere = new THREE.Mesh(sphereGeometry, atmosphereMaterial);
+    atmosphere.scale.setScalar(1.055);
+    earthGroup.add(atmosphere);
+
+    const maskMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        waterMap: { value: waterMap }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D waterMap;
+        varying vec2 vUv;
+        void main() {
+          vec4 waterColor = texture2D(waterMap, vUv);
+          if (waterColor.r < 0.5) {
+            gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+          } else {
+            gl_FragColor = vec4(0.0, 1.0, 0.0, 1.0);
+          }
+        }
+      `
+    });
+    const maskMesh = new THREE.Mesh(sphereGeometry, maskMaterial);
+    maskGroup.add(maskMesh);
+
+    scene.add(new THREE.AmbientLight(0xffffff, 0.42));
+    const keyLight = new THREE.DirectionalLight(0xffffff, 1.55);
+    keyLight.position.set(4.5, 2.8, 4.8);
+    scene.add(keyLight);
+    const redLight = new THREE.DirectionalLight(0xe6423e, 0.18);
+    redLight.position.set(-4, -1, 3);
+    scene.add(redLight);
+    const fillLight = new THREE.DirectionalLight(0x7df6e3, 0.42);
+    fillLight.position.set(-3.2, 2.1, 2.8);
+    scene.add(fillLight);
+
+    function resize() {
+      const rect = stage.getBoundingClientRect();
+      state.width = Math.max(1, Math.floor(rect.width));
+      state.height = Math.max(1, Math.floor(rect.height));
+      state.dpr = Math.min(window.devicePixelRatio || 1, 2);
+
+      renderer.setPixelRatio(state.dpr);
+      renderer.setSize(state.width, state.height, false);
+      camera.aspect = state.width / state.height;
+      camera.updateProjectionMatrix();
+
+      textCanvas.width = Math.floor(state.width * state.dpr);
+      textCanvas.height = Math.floor(state.height * state.dpr);
+      textCanvas.style.width = `${state.width}px`;
+      textCanvas.style.height = `${state.height}px`;
+      ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+
+      const maxMaskSide = state.width > 1000 ? 320 : 256;
+      const scale = maxMaskSide / Math.max(state.width, state.height);
+      state.maskWidth = Math.max(96, Math.floor(state.width * scale));
+      state.maskHeight = Math.max(96, Math.floor(state.height * scale));
+      maskTarget.setSize(state.maskWidth, state.maskHeight);
+      state.maskPixels = new Uint8Array(state.maskWidth * state.maskHeight * 4);
+      state.ringCacheRadius = 0;
+    }
+
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+
+    function setPressed(button, value) {
+      button.setAttribute("aria-pressed", String(value));
+    }
+
+    function syncControls() {
+      els.speedValue.textContent = state.speed.toFixed(2);
+      els.densityValue.textContent = String(state.lineHeight);
+      els.alphaValue.textContent = state.textAlpha.toFixed(2);
+      setPressed(els.pause, state.paused);
+      setPressed(els.mobilePause, state.paused);
+      setPressed(els.ring, state.showRing);
+      setPressed(els.mobileRing, state.showRing);
+      setPressed(els.wire, state.showWire);
+      wireMesh.visible = state.showWire;
+    }
+
+    els.speed.addEventListener("input", () => {
+      state.speed = Number(els.speed.value);
+      syncControls();
+    });
+
+    els.density.addEventListener("input", () => {
+      state.lineHeight = Number(els.density.value);
+      syncControls();
+    });
+
+    els.alpha.addEventListener("input", () => {
+      state.textAlpha = Number(els.alpha.value);
+      syncControls();
+    });
+
+    function togglePause() {
+      state.paused = !state.paused;
+      syncControls();
+    }
+
+    function toggleRing() {
+      state.showRing = !state.showRing;
+      syncControls();
+    }
+
+    function resetView() {
+      state.velocity.x = 0.0007;
+      state.velocity.y = 0.002;
+      earthGroup.rotation.x = -0.24;
+      earthGroup.rotation.y = -1.18;
+      state.paused = false;
+      syncControls();
+    }
+
+    els.pause.addEventListener("click", togglePause);
+    els.mobilePause.addEventListener("click", togglePause);
+    els.ring.addEventListener("click", toggleRing);
+    els.mobileRing.addEventListener("click", toggleRing);
+    els.wire.addEventListener("click", () => {
+      state.showWire = !state.showWire;
+      syncControls();
+    });
+    els.reset.addEventListener("click", resetView);
+    els.mobileReset.addEventListener("click", resetView);
+
+    function pointerPoint(event) {
+      const rect = stage.getBoundingClientRect();
+      return {
+        x: event.clientX - rect.left,
+        y: event.clientY - rect.top
+      };
+    }
+
+    stage.addEventListener("pointerdown", (event) => {
+      if (event.target.closest("button, input")) return;
+      state.dragging = true;
+      state.lastPointer = pointerPoint(event);
+      stage.setPointerCapture(event.pointerId);
+      els.drag.textContent = "拖拽旋转：锁定";
+    });
+
+    stage.addEventListener("pointerup", (event) => {
+      state.dragging = false;
+      if (stage.hasPointerCapture(event.pointerId)) {
+        stage.releasePointerCapture(event.pointerId);
+      }
+      els.drag.textContent = "拖拽旋转：空闲";
+    });
+
+    stage.addEventListener("pointercancel", () => {
+      state.dragging = false;
+      els.drag.textContent = "拖拽旋转：空闲";
+    });
+
+    stage.addEventListener("pointermove", (event) => {
+      if (!state.dragging) return;
+      const next = pointerPoint(event);
+      const dx = next.x - state.lastPointer.x;
+      const dy = next.y - state.lastPointer.y;
+      state.velocity.x = clamp(dy * 0.0048, -0.05, 0.05);
+      state.velocity.y = clamp(dx * 0.0048, -0.05, 0.05);
+      state.lastPointer = next;
+    });
+
+    function makeRingText(radius) {
+      if (Math.abs(state.ringCacheRadius - radius) < 1) return;
+      state.ringCacheRadius = radius;
+      ctx.font = "11px Courier New, monospace";
+      const charWidth = Math.max(5, ctx.measureText("M").width * 1.06);
+      const count = Math.max(40, Math.floor((Math.PI * 2 * radius) / charWidth));
+      let text = "";
+      while (text.length < count) text += orbitText;
+      state.ringCacheText = text.slice(0, count);
+      state.ringAngle = (Math.PI * 2) / state.ringCacheText.length;
+    }
+
+    function drawOrbitRing(screenRadius, now) {
+      const ringRadius = screenRadius * 1.25;
+      makeRingText(ringRadius);
+
+      ctx.save();
+      ctx.translate(state.width / 2, state.height / 2);
+      ctx.rotate(now * 0.000045);
+      ctx.font = "11px Courier New, monospace";
+      ctx.fillStyle = "rgba(247, 243, 232, 0.28)";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (let i = 0; i < state.ringCacheText.length; i += 1) {
+        ctx.save();
+        ctx.rotate(i * state.ringAngle);
+        ctx.translate(0, -ringRadius);
+        ctx.fillText(state.ringCacheText[i], 0, 0);
+        ctx.restore();
+      }
+      ctx.restore();
+    }
+
+    function layoutWords(maxWidth, cursor) {
+      const maxChars = Math.max(4, Math.floor(maxWidth / 6.45));
+      let line = "";
+      let used = 0;
+      let guard = 0;
+      while (guard < 80) {
+        const word = sourceWords[cursor.index % sourceWords.length];
+        const extra = line ? word.length + 1 : word.length;
+        if (line && used + extra > maxChars) break;
+        line = line ? `${line} ${word}` : word;
+        used += extra;
+        cursor.index += 1;
+        guard += 1;
+        if (used > maxChars * 0.92) break;
+      }
+      return line;
+    }
+
+    function drawSurfaceText(now) {
+      ctx.font = "bold 11px Courier New, monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "top";
+      ctx.fillStyle = `rgba(255, 255, 255, ${state.textAlpha})`;
+      ctx.shadowColor = "rgba(255, 255, 255, 0.36)";
+      ctx.shadowBlur = 2;
+
+      const cursor = { index: Math.floor(now * 0.002) % sourceWords.length };
+      const scaleX = state.maskWidth / state.width;
+      const scaleY = state.maskHeight / state.height;
+      const stepX = state.width > 900 ? 4 : 5;
+
+      for (let y = 0; y < state.height; y += state.lineHeight) {
+        const maskY = Math.floor((state.height - 1 - y) * scaleY);
+        if (maskY < 0 || maskY >= state.maskHeight) continue;
+
+        let inLand = false;
+        let startX = 0;
+
+        for (let x = 0; x <= state.width; x += stepX) {
+          const inside = x < state.width;
+          let isLand = false;
+          if (inside) {
+            const maskX = Math.floor(x * scaleX);
+            const idx = (maskY * state.maskWidth + maskX) * 4;
+            isLand = state.maskPixels[idx] > 128;
+          }
+
+          if (isLand && !inLand) {
+            inLand = true;
+            startX = x;
+          } else if ((!isLand || !inside) && inLand) {
+            inLand = false;
+            const segmentWidth = x - startX;
+            if (segmentWidth > 18) {
+              const text = layoutWords(segmentWidth, cursor);
+              if (text) ctx.fillText(text, startX, y);
+            }
+          }
+        }
+      }
+
+      ctx.shadowBlur = 0;
+    }
+
+    function updatePanels(now) {
+      state.fpsFrames += 1;
+      if (now - state.fpsLast > 500) {
+        state.fpsValue = Math.round((state.fpsFrames * 1000) / (now - state.fpsLast));
+        state.fpsFrames = 0;
+        state.fpsLast = now;
+      }
+
+      const load = 96.8 + Math.sin(now * 0.0013) * 1.9;
+      const lat = 34.0522 + Math.sin(earthGroup.rotation.y) * 11.2;
+      const lon = -118.2437 + Math.cos(earthGroup.rotation.y * 0.72) * 23.5;
+      const linkStates = ["正常", "排队", "转接", "同步"];
+      const sector = linkStates[Math.floor(now * 0.00045) % linkStates.length];
+
+      els.fps.textContent = state.fpsValue ? String(state.fpsValue) : "--";
+      els.rot.textContent = earthGroup.rotation.y.toFixed(2);
+      els.mask.textContent = state.maskPixels[0] !== undefined ? "运行" : "就绪";
+      els.status.textContent = state.paused ? "暂停" : "在线";
+      els.load.textContent = `${load.toFixed(1)}%`;
+      els.sector.textContent = sector;
+      els.coordA.textContent = `服务区 ${Math.abs(lat).toFixed(2)} / ${Math.abs(lon).toFixed(2)}`;
+      els.coordB.textContent = `通道：接线员-${String(1 + Math.floor(Math.abs(Math.sin(now * 0.0007)) * 6)).padStart(2, "0")}`;
+    }
+
+    function updateClock() {
+      const now = new Date();
+      els.clock.textContent = now.toLocaleTimeString("en-US", {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit"
+      });
+    }
+
+    function render(now) {
+      requestAnimationFrame(render);
+
+      if (!state.paused) {
+        if (!state.dragging) {
+          state.velocity.x *= 0.95;
+          state.velocity.y *= 0.95;
+          const floor = 0.002 * state.speed;
+          if (Math.abs(state.velocity.y) < floor) state.velocity.y = floor;
+        }
+        earthGroup.rotation.x += state.velocity.x * state.speed;
+        earthGroup.rotation.y += state.velocity.y * state.speed;
+      }
+
+      earthGroup.rotation.x = clamp(earthGroup.rotation.x, -0.92, 0.92);
+      maskGroup.rotation.copy(earthGroup.rotation);
+
+      renderer.setRenderTarget(null);
+      renderer.render(scene, camera);
+
+      renderer.setRenderTarget(maskTarget);
+      renderer.render(maskScene, camera);
+      renderer.readRenderTargetPixels(maskTarget, 0, 0, state.maskWidth, state.maskHeight, state.maskPixels);
+      renderer.setRenderTarget(null);
+
+      ctx.clearRect(0, 0, state.width, state.height);
+
+      const fov = camera.fov * Math.PI / 180;
+      const visibleHeight = 2 * Math.tan(fov / 2) * camera.position.z;
+      const screenRadius = (1 / (visibleHeight / 2)) * (state.height / 2);
+
+      if (state.showRing) drawOrbitRing(screenRadius, now);
+      drawSurfaceText(now);
+      updatePanels(now);
+    }
+
+    window.addEventListener("resize", resize);
+    resize();
+    syncControls();
+    updateClock();
+    setInterval(updateClock, 1000);
+    requestAnimationFrame(render);
+  </script>
+</body>
+</html>
