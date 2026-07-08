@@ -982,6 +982,19 @@
       "CORE TEMPERATURE: 5700K. LIVE SURFACE MAPPING: ACTIVE. OPERATOR CHANNEL: ARMED. "
     ).repeat(80).trim().split(/\s+/);
 
+    const EARTH_AXIAL_TILT = THREE.MathUtils.degToRad(23.44);
+    const EARTH_DEFAULT_ROTATION = {
+      x: -0.12,
+      y: -1.18,
+      z: -EARTH_AXIAL_TILT
+    };
+    const EARTH_NORTHERN_SUMMER_SUN = new THREE.Vector3(-0.98, 0.2, -0.04).normalize();
+    const EARTH_AUTOROTATE_VELOCITY = 0.0019;
+    const EARTH_IDLE_RECENTER_DELAY_MS = 8500;
+    const EARTH_IDLE_RECENTER_EASE = 0.034;
+    const CAMERA_NORTHERN_VIEW_LAT = EARTH_AXIAL_TILT;
+    const CAMERA_VERTICAL_FRAME_SHIFT = 0.04;
+
     const mapCities = [
       { name: "北京", sub: "Beijing", lng: 116.4074, lat: 39.9042 },
       { name: "上海", sub: "Shanghai", lng: 121.4737, lat: 31.2304 },
@@ -1050,7 +1063,9 @@
       pinchStartDistance: 0,
       pinchStartScale: 1,
       lastPointer: { x: 0, y: 0 },
-      velocity: { x: 0.0007, y: 0.002 },
+      velocity: { x: 0, y: EARTH_AUTOROTATE_VELOCITY },
+      lastGlobeInteractionAt: performance.now(),
+      recentering: false,
       fpsFrames: 0,
       fpsLast: performance.now(),
       fpsValue: 0,
@@ -1091,6 +1106,7 @@
 
     const EOX_WMS = "https://tiles.maps.eox.at/wms";
     const EOX_SATELLITE_LAYER = "s2cloudless-2024";
+    const MAP_REAL_STYLE_URL = "https://tiles.openfreemap.org/styles/liberty";
 
     const SATELLITE_STYLE = {
       version: 8,
@@ -1166,7 +1182,7 @@
 
     const map = new maplibregl.Map({
       container: mapNode,
-      style: SATELLITE_STYLE,
+      style: MAP_REAL_STYLE_URL,
       center: [105, 31],
       zoom: 6.2,
       minZoom: 5.4,
@@ -1179,7 +1195,7 @@
 
     function markMapReady() {
       state.mapReady = true;
-      stage.dataset.mapStyle = "satellite-hybrid";
+      stage.dataset.mapStyle = "liberty-vector";
       setMapProjection("mercator");
       if (state.pendingMapTarget) {
         enterMapAtTarget(state.pendingMapTarget);
@@ -1776,12 +1792,22 @@
     scene.add(starField);
 
     const earthGroup = new THREE.Group();
-    earthGroup.rotation.x = -0.24;
-    earthGroup.rotation.y = -1.18;
+    earthGroup.rotation.set(
+      EARTH_DEFAULT_ROTATION.x,
+      0,
+      EARTH_DEFAULT_ROTATION.z
+    );
     scene.add(earthGroup);
+
+    const earthSpinGroup = new THREE.Group();
+    earthSpinGroup.rotation.y = EARTH_DEFAULT_ROTATION.y;
+    earthGroup.add(earthSpinGroup);
 
     const maskGroup = new THREE.Group();
     maskScene.add(maskGroup);
+
+    const maskSpinGroup = new THREE.Group();
+    maskGroup.add(maskSpinGroup);
 
     const sphereGeometry = new THREE.SphereGeometry(1, 96, 96);
 
@@ -1829,6 +1855,42 @@
       return texture;
     }
 
+    function makeAtmosphereGlowTexture() {
+      const canvas = document.createElement("canvas");
+      canvas.width = 512;
+      canvas.height = 512;
+      const glowCtx = canvas.getContext("2d");
+      const imageData = glowCtx.createImageData(canvas.width, canvas.height);
+      const smooth = (edge0, edge1, value) => {
+        const t = Math.min(1, Math.max(0, (value - edge0) / (edge1 - edge0)));
+        return t * t * (3 - 2 * t);
+      };
+
+      for (let y = 0; y < canvas.height; y += 1) {
+        for (let x = 0; x < canvas.width; x += 1) {
+          const nx = (x / (canvas.width - 1)) * 2 - 1;
+          const ny = (y / (canvas.height - 1)) * 2 - 1;
+          const radius = Math.sqrt(nx * nx + ny * ny);
+          const innerLift = smooth(0.84, 0.9, radius);
+          const outerFade = 1 - smooth(0.93, 0.996, radius);
+          const daySide = smooth(0.02, -0.78, nx + ny * 0.04);
+          const upperTaper = 0.58 + smooth(-0.86, -0.08, ny) * 0.42;
+          const haze = Math.pow(Math.max(0, innerLift * outerFade), 1.06) * (0.006 + daySide * 1.28) * upperTaper;
+          const offset = (y * canvas.width + x) * 4;
+          imageData.data[offset] = 255;
+          imageData.data[offset + 1] = 255;
+          imageData.data[offset + 2] = 255;
+          imageData.data[offset + 3] = Math.round(haze * 238);
+        }
+      }
+
+      glowCtx.putImageData(imageData, 0, 0);
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.needsUpdate = true;
+      return texture;
+    }
+
     const textureLoader = new THREE.TextureLoader();
     textureLoader.setCrossOrigin("anonymous");
     const diffuseMap = await textureLoader.loadAsync("./assets/earth-day.jpg");
@@ -1858,7 +1920,8 @@
         uSpecularStrength: { value: 0.18 },
         uAtmosphereScatter: { value: 0.14 },
         uTerminatorSoftness: { value: 0.34 },
-        uSurfaceContrast: { value: 1.04 }
+        uSurfaceContrast: { value: 1.04 },
+        uSunLimbGlow: { value: 0.08 }
       },
       vertexShader: `
         varying vec2 vUv;
@@ -1886,6 +1949,7 @@
         uniform float uAtmosphereScatter;
         uniform float uTerminatorSoftness;
         uniform float uSurfaceContrast;
+        uniform float uSunLimbGlow;
         varying vec2 vUv;
         varying vec3 vWorldNormal;
         varying vec3 vWorldPosition;
@@ -1899,12 +1963,15 @@
           vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
           vec3 lightDirection = normalize(sunDirection);
           float sunAmount = dot(normal, lightDirection);
-          float dayMix = smoothstep(-uTerminatorSoftness, uTerminatorSoftness * 1.18, sunAmount);
-          float nightMix = 1.0 - smoothstep(-uTerminatorSoftness * 0.82, uTerminatorSoftness * 0.58, sunAmount);
+          float dayMix = smoothstep(-uTerminatorSoftness, uTerminatorSoftness, sunAmount);
+          float nightMix = 1.0 - dayMix;
+          float twilightMix = 1.0 - smoothstep(0.0, uTerminatorSoftness * 1.75, abs(sunAmount));
 
           vec3 dayColor = contrastColor(texture2D(dayMap, vUv).rgb * uDayExposure, uSurfaceContrast);
           vec3 nightColor = texture2D(nightMap, vUv).rgb * uNightExposure;
           vec3 color = mix(nightColor, dayColor, dayMix);
+          float directDay = smoothstep(0.02, 0.62, sunAmount);
+          color = mix(color, dayColor * 1.06, directDay * 0.12);
 
           vec3 packed = texture2D(specularCloudsMap, vUv).rgb;
           float oceanMask = smoothstep(0.34, 0.74, packed.r) * (1.0 - smoothstep(0.18, 0.62, packed.g));
@@ -1917,12 +1984,15 @@
           specular *= oceanMask * smoothstep(0.12, 0.84, sunAmount) * uSpecularStrength;
 
           float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 2.0);
-          float atmosphereDayMix = smoothstep(-0.5, 1.0, sunAmount);
-          vec3 atmosphere = atmosphereColor * (0.7 + atmosphereDayMix * 0.42);
-          color = mix(color, atmosphere, clamp(fresnel * atmosphereDayMix * uAtmosphereScatter, 0.0, 0.28));
+          float atmosphereDayMix = smoothstep(-0.12, 0.86, sunAmount);
+          vec3 atmosphere = atmosphereColor * (0.58 + atmosphereDayMix * 0.5);
+          color = mix(color, atmosphere, clamp(fresnel * atmosphereDayMix * uAtmosphereScatter, 0.0, 0.17));
+          float visibleSunLimb = pow(fresnel, 0.72) * smoothstep(-0.1, 0.72, sunAmount);
+          color += mix(vec3(1.0), atmosphereColor, 0.42) * visibleSunLimb * uSunLimbGlow;
+          color += atmosphereColor * twilightMix * uAtmosphereScatter * 0.025;
           color += mix(vec3(1.0), atmosphereColor, 0.64) * specular;
 
-          color *= mix(0.72, 1.0, dayMix + nightMix * 0.55);
+          color *= mix(0.5, 1.0, dayMix + nightMix * 0.24);
           gl_FragColor = vec4(color, 1.0);
           #include <tonemapping_fragment>
           #include <colorspace_fragment>
@@ -1931,9 +2001,9 @@
     });
 
     const earthMesh = new THREE.Mesh(sphereGeometry, earthMaterial);
-    earthGroup.add(earthMesh);
+    earthSpinGroup.add(earthMesh);
 
-    const sunDirection = new THREE.Vector3(-0.62, 0.42, 0.66).normalize();
+    const sunDirection = EARTH_NORTHERN_SUMMER_SUN.clone();
     earthMaterial.uniforms.sunDirection.value = sunDirection;
     const nightOverlayMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -1976,7 +2046,7 @@
     });
     const nightOverlay = new THREE.Mesh(sphereGeometry, nightOverlayMaterial);
     nightOverlay.scale.setScalar(1.002);
-    earthGroup.add(nightOverlay);
+    earthSpinGroup.add(nightOverlay);
 
     textureLoader.loadAsync(eoxSatelliteGlobeUrl())
       .then(texture => {
@@ -2005,7 +2075,7 @@
     const cloudMesh = new THREE.Mesh(sphereGeometry, cloudMaterial);
     cloudMesh.scale.setScalar(1.004);
     cloudMesh.visible = true;
-    earthGroup.add(cloudMesh);
+    earthSpinGroup.add(cloudMesh);
 
     const wireMaterial = new THREE.MeshBasicMaterial({
       color: 0x7df6e3,
@@ -2016,7 +2086,7 @@
     });
     const wireMesh = new THREE.Mesh(sphereGeometry, wireMaterial);
     wireMesh.scale.setScalar(1.006);
-    earthGroup.add(wireMesh);
+    earthSpinGroup.add(wireMesh);
 
     const atmosphereMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -2052,9 +2122,12 @@
           vec3 normal = normalize(vWorldNormal);
           vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
           float fresnel = pow(1.0 - abs(dot(normal, viewDirection)), uRimPower);
-          float sunAmount = smoothstep(-0.05, 0.88, dot(normal, normalize(sunDirection)));
-          float alpha = fresnel * (uBaseGlow + sunAmount * uSunGlow) * 0.42 * uIntensity;
-          vec3 color = atmosphereColor * (0.62 + sunAmount * 0.82);
+          float sunAmount = dot(normal, normalize(sunDirection));
+          float sunSide = smoothstep(-0.18, 0.7, sunAmount);
+          float terminator = 1.0 - smoothstep(0.0, 0.42, abs(sunAmount));
+          float alpha = fresnel * (uBaseGlow + sunSide * uSunGlow + terminator * uSunGlow * 0.18) * 0.26 * uIntensity;
+          alpha *= smoothstep(0.08, 0.86, fresnel);
+          vec3 color = atmosphereColor * (0.5 + sunSide * 0.8 + terminator * 0.16);
           gl_FragColor = vec4(color, alpha);
         }
       `,
@@ -2106,11 +2179,13 @@
           vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
           float ndv = max(dot(normal, viewDirection), 0.0);
           float limb = pow(1.0 - ndv, uPower);
-          float sunAmount = smoothstep(-0.42, 0.84, dot(normal, normalize(sunDirection)));
+          float sunAmount = dot(normal, normalize(sunDirection));
+          float sunSide = smoothstep(-0.22, 0.66, sunAmount);
+          float terminator = 1.0 - smoothstep(0.0, 0.46, abs(sunAmount));
           float grain = mix(1.0, 0.78 + hash(normal * 16.0 + vec3(uTime * 0.03)) * 0.44, uNoise);
-          float alpha = limb * (0.18 + sunAmount * 0.82) * uIntensity * grain;
+          float alpha = limb * (sunSide * 0.82 + terminator * 0.28) * uIntensity * grain;
           alpha *= smoothstep(0.04, 0.72, limb);
-          gl_FragColor = vec4(fogColor * (0.62 + sunAmount * 0.7), alpha);
+          gl_FragColor = vec4(fogColor * (0.48 + sunSide * 0.78 + terminator * 0.14), alpha);
         }
       `,
       transparent: true,
@@ -2121,6 +2196,20 @@
     limbFog.scale.setScalar(1.018);
     limbFog.renderOrder = 5;
     earthGroup.add(limbFog);
+
+    const outerGlowMaterial = new THREE.SpriteMaterial({
+      map: makeAtmosphereGlowTexture(),
+      color: 0x78dfff,
+      opacity: 0.18,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.AdditiveBlending
+    });
+    const outerGlow = new THREE.Sprite(outerGlowMaterial);
+    outerGlow.scale.setScalar(2.3);
+    outerGlow.renderOrder = 2;
+    scene.add(outerGlow);
 
     const twilightMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -2195,7 +2284,7 @@
       `
     });
     const maskMesh = new THREE.Mesh(sphereGeometry, maskMaterial);
-    maskGroup.add(maskMesh);
+    maskSpinGroup.add(maskMesh);
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
     scene.add(ambientLight);
@@ -2217,11 +2306,16 @@
       if (aspect < 1.05) baseZ = 4.14;
       if (aspect > 2.05) baseZ = 3.16;
 
-      camera.position.z = baseZ / state.globeScale;
-
       const shift = desktop ? -clamp((aspect - 1.18) * 0.28, 0.1, 0.42) : 0;
-      earthGroup.position.x = shift;
-      maskGroup.position.x = shift;
+      const verticalShift = desktop ? CAMERA_VERTICAL_FRAME_SHIFT : 0;
+      const cameraZ = baseZ / state.globeScale;
+      const cameraY = verticalShift + Math.tan(CAMERA_NORTHERN_VIEW_LAT) * cameraZ;
+      camera.position.set(0, cameraY, cameraZ);
+      camera.lookAt(0, verticalShift, 0);
+
+      earthGroup.position.set(shift, verticalShift, 0);
+      maskGroup.position.set(shift, verticalShift, 0);
+      outerGlow.position.set(shift, verticalShift, 0);
     }
 
     function resize() {
@@ -2267,6 +2361,29 @@
     const ZOOM_INTERACTION_IDLE_MS = 850;
     const ZOOM_ANCHOR_MOVE_PX = 28;
     const handoffRaycaster = new THREE.Raycaster();
+
+    function markGlobeInteraction(now = performance.now()) {
+      state.lastGlobeInteractionAt = now;
+      state.recentering = false;
+    }
+
+    function dampValue(current, target, amount) {
+      return current + (target - current) * amount;
+    }
+
+    function dampAngle(current, target, amount) {
+      const delta = THREE.MathUtils.euclideanModulo(target - current + Math.PI, Math.PI * 2) - Math.PI;
+      return current + delta * amount;
+    }
+
+    function restoreDefaultSpinPosture() {
+      earthGroup.rotation.x = dampAngle(earthGroup.rotation.x, EARTH_DEFAULT_ROTATION.x, EARTH_IDLE_RECENTER_EASE);
+      earthGroup.rotation.y = dampAngle(earthGroup.rotation.y, 0, EARTH_IDLE_RECENTER_EASE);
+      earthGroup.rotation.z = dampAngle(earthGroup.rotation.z, EARTH_DEFAULT_ROTATION.z, EARTH_IDLE_RECENTER_EASE);
+      state.velocity.x = dampValue(state.velocity.x, 0, 0.12);
+      state.velocity.y = dampValue(state.velocity.y, EARTH_AUTOROTATE_VELOCITY, 0.045);
+      state.recentering = true;
+    }
 
     function lngLatFromUv(uv) {
       const rawLng = uv.x * 360 - 180;
@@ -2713,46 +2830,50 @@
       haze: {
         label: "Soft atmospheric haze",
         sky: `
-          radial-gradient(circle at 18% 24%, rgba(26, 70, 124, 0.18), transparent 30%),
-          radial-gradient(circle at 82% 18%, rgba(62, 118, 169, 0.12), transparent 34%),
-          radial-gradient(circle at 52% 70%, rgba(18, 52, 79, 0.18), transparent 44%),
-          linear-gradient(180deg, #050913 0%, #010309 64%, #000103 100%)
+          radial-gradient(circle at 20% 28%, rgba(28, 56, 92, 0.1), transparent 28%),
+          radial-gradient(circle at 76% 58%, rgba(16, 31, 54, 0.12), transparent 42%),
+          linear-gradient(180deg, #010307 0%, #000104 58%, #000000 100%)
         `,
-        sun: [-0.62, 0.42, 0.66],
-        starExposure: 1.08,
-        twinkleStrength: 0.74,
+        sun: [-0.98, 0.2, -0.04],
+        starExposure: 0.96,
+        twinkleStrength: 0.68,
         atmosphereColor: 0x8bdfff,
-        atmosphereScale: 1.011,
-        atmosphereIntensity: 0.045,
-        rimPower: 5.4,
-        baseGlow: 0.002,
-        sunGlow: 0.2,
+        atmosphereScale: 1.008,
+        atmosphereIntensity: 0.006,
+        rimPower: 7.4,
+        baseGlow: 0.0,
+        sunGlow: 0.32,
         limbFogColor: 0x8bdfff,
-        limbFogScale: 1.006,
-        limbFogIntensity: 0.035,
-        limbFogPower: 3.0,
-        limbFogNoise: 0.18,
+        limbFogScale: 1.004,
+        limbFogIntensity: 0.0,
+        limbFogPower: 4.35,
+        limbFogNoise: 0.08,
+        outerGlowColor: 0x78dfff,
+        outerGlowScale: 1.06,
+        outerGlowIntensity: 0.13,
+        outerGlowPower: 2.7,
         twilightScale: 1.009,
-        twilightIntensity: 0.035,
-        twilightWidth: 0.18,
+        twilightIntensity: 0.046,
+        twilightWidth: 0.16,
         twilightDayColor: 0x9bdfff,
         twilightNightColor: 0x5fbfff,
-        nightStrength: 0.08,
-        nightEdge: 0.14,
-        nightSoftness: 0.42,
+        nightStrength: 0.22,
+        nightEdge: -0.015,
+        nightSoftness: 0.32,
         surface: {
-          dayExposure: 1.02,
-          nightExposure: 1.1,
-          cloudStrength: 0.04,
-          specularStrength: 0.035,
-          atmosphereScatter: 0.42,
-          terminatorSoftness: 0.22,
-          contrast: 1.04
+          dayExposure: 1.14,
+          nightExposure: 1.18,
+          cloudStrength: 0.06,
+          specularStrength: 0.04,
+          atmosphereScatter: 0.02,
+          sunLimbGlow: 0.0,
+          terminatorSoftness: 0.17,
+          contrast: 1.06
         },
-        cloudLayerOpacity: 0.28,
-        keyLight: 2.2,
-        ambientLight: 0.18,
-        fillLight: 0.1,
+        cloudLayerOpacity: 0.34,
+        keyLight: 2.34,
+        ambientLight: 0.09,
+        fillLight: 0.045,
         themeFillLight: 0.24,
         redLight: 0.04,
         themeRedLight: 0.1
@@ -2765,41 +2886,45 @@
           radial-gradient(circle at 86% 66%, rgba(33, 28, 77, 0.2), transparent 42%),
           linear-gradient(160deg, #071529 0%, #020610 50%, #000102 100%)
         `,
-        sun: [-0.74, 0.34, 0.58],
+        sun: [-0.92, 0.23, 0.3],
         starExposure: 1.18,
         twinkleStrength: 0.88,
         atmosphereColor: 0x94ecff,
-        atmosphereScale: 1.016,
-        atmosphereIntensity: 0.09,
-        rimPower: 4.8,
+        atmosphereScale: 1.026,
+        atmosphereIntensity: 0.16,
+        rimPower: 5.25,
         baseGlow: 0.003,
-        sunGlow: 0.28,
+        sunGlow: 0.72,
         limbFogColor: 0x89dfff,
-        limbFogScale: 1.008,
-        limbFogIntensity: 0.06,
-        limbFogPower: 2.8,
+        limbFogScale: 1.016,
+        limbFogIntensity: 0.11,
+        limbFogPower: 2.95,
         limbFogNoise: 0.22,
+        outerGlowColor: 0x7fe2ff,
+        outerGlowScale: 1.078,
+        outerGlowIntensity: 0.14,
+        outerGlowPower: 2.45,
         twilightScale: 1.018,
-        twilightIntensity: 0.08,
-        twilightWidth: 0.24,
+        twilightIntensity: 0.105,
+        twilightWidth: 0.19,
         twilightDayColor: 0xa6e6ff,
         twilightNightColor: 0x5fc7ff,
-        nightStrength: 0.12,
-        nightEdge: 0.18,
-        nightSoftness: 0.5,
+        nightStrength: 0.2,
+        nightEdge: 0.02,
+        nightSoftness: 0.38,
         surface: {
           dayExposure: 1.08,
           nightExposure: 1.3,
-          cloudStrength: 0.08,
+          cloudStrength: 0.09,
           specularStrength: 0.08,
-          atmosphereScatter: 0.58,
-          terminatorSoftness: 0.28,
-          contrast: 1.08
+          atmosphereScatter: 0.3,
+          terminatorSoftness: 0.17,
+          contrast: 1.1
         },
-        cloudLayerOpacity: 0.42,
+        cloudLayerOpacity: 0.44,
         keyLight: 2.34,
-        ambientLight: 0.14,
-        fillLight: 0.07,
+        ambientLight: 0.08,
+        fillLight: 0.04,
         themeFillLight: 0.2,
         redLight: 0.03,
         themeRedLight: 0.08
@@ -2811,41 +2936,45 @@
           radial-gradient(circle at 76% 64%, rgba(21, 51, 86, 0.1), transparent 44%),
           linear-gradient(180deg, #03070e 0%, #010205 70%, #000102 100%)
         `,
-        sun: [-0.54, 0.5, 0.68],
+        sun: [-0.91, 0.28, 0.28],
         starExposure: 0.9,
         twinkleStrength: 0.46,
         atmosphereColor: 0xb2e9ff,
-        atmosphereScale: 1.008,
-        atmosphereIntensity: 0.03,
-        rimPower: 5.7,
+        atmosphereScale: 1.014,
+        atmosphereIntensity: 0.075,
+        rimPower: 6.1,
         baseGlow: 0.001,
-        sunGlow: 0.14,
+        sunGlow: 0.42,
         limbFogColor: 0xa7e6ff,
-        limbFogScale: 1.004,
-        limbFogIntensity: 0.025,
-        limbFogPower: 2.9,
+        limbFogScale: 1.009,
+        limbFogIntensity: 0.045,
+        limbFogPower: 3.2,
         limbFogNoise: 0.1,
+        outerGlowColor: 0x9be7ff,
+        outerGlowScale: 1.048,
+        outerGlowIntensity: 0.045,
+        outerGlowPower: 2.9,
         twilightScale: 1.005,
-        twilightIntensity: 0.025,
-        twilightWidth: 0.16,
+        twilightIntensity: 0.04,
+        twilightWidth: 0.14,
         twilightDayColor: 0xb9ecff,
         twilightNightColor: 0x8bd7ff,
-        nightStrength: 0.06,
-        nightEdge: 0.08,
-        nightSoftness: 0.32,
+        nightStrength: 0.11,
+        nightEdge: -0.01,
+        nightSoftness: 0.3,
         surface: {
           dayExposure: 0.96,
           nightExposure: 0.82,
           cloudStrength: 0.025,
           specularStrength: 0.025,
-          atmosphereScatter: 0.28,
-          terminatorSoftness: 0.2,
+          atmosphereScatter: 0.18,
+          terminatorSoftness: 0.13,
           contrast: 1.0
         },
         cloudLayerOpacity: 0.26,
-        keyLight: 2.08,
-        ambientLight: 0.22,
-        fillLight: 0.12,
+        keyLight: 2.2,
+        ambientLight: 0.12,
+        fillLight: 0.055,
         themeFillLight: 0.22,
         redLight: 0.035,
         themeRedLight: 0.07
@@ -2857,41 +2986,45 @@
           radial-gradient(circle at 78% 24%, rgba(10, 65, 100, 0.1), transparent 32%),
           linear-gradient(180deg, #02030a 0%, #000104 58%, #000000 100%)
         `,
-        sun: [-0.82, 0.2, 0.53],
+        sun: [-0.95, 0.18, 0.22],
         starExposure: 0.82,
         twinkleStrength: 0.62,
         atmosphereColor: 0x68d8ff,
-        atmosphereScale: 1.012,
-        atmosphereIntensity: 0.06,
-        rimPower: 5.2,
+        atmosphereScale: 1.018,
+        atmosphereIntensity: 0.11,
+        rimPower: 5.8,
         baseGlow: 0.002,
-        sunGlow: 0.22,
+        sunGlow: 0.58,
         limbFogColor: 0x62cfff,
-        limbFogScale: 1.006,
-        limbFogIntensity: 0.04,
-        limbFogPower: 2.55,
+        limbFogScale: 1.012,
+        limbFogIntensity: 0.08,
+        limbFogPower: 2.85,
         limbFogNoise: 0.16,
+        outerGlowColor: 0x54cfff,
+        outerGlowScale: 1.064,
+        outerGlowIntensity: 0.105,
+        outerGlowPower: 2.55,
         twilightScale: 1.008,
-        twilightIntensity: 0.06,
-        twilightWidth: 0.18,
+        twilightIntensity: 0.08,
+        twilightWidth: 0.15,
         twilightDayColor: 0x85dcff,
         twilightNightColor: 0x48baff,
-        nightStrength: 0.14,
-        nightEdge: 0.05,
-        nightSoftness: 0.28,
+        nightStrength: 0.22,
+        nightEdge: -0.02,
+        nightSoftness: 0.32,
         surface: {
           dayExposure: 1.0,
           nightExposure: 1.45,
           cloudStrength: 0.045,
           specularStrength: 0.055,
-          atmosphereScatter: 0.46,
-          terminatorSoftness: 0.18,
-          contrast: 1.14
+          atmosphereScatter: 0.22,
+          terminatorSoftness: 0.12,
+          contrast: 1.16
         },
         cloudLayerOpacity: 0.32,
         keyLight: 2.42,
-        ambientLight: 0.1,
-        fillLight: 0.045,
+        ambientLight: 0.055,
+        fillLight: 0.025,
         themeFillLight: 0.16,
         redLight: 0.02,
         themeRedLight: 0.06
@@ -3082,6 +3215,7 @@
       earthMaterial.uniforms.uCloudStrength.value = surface.cloudStrength;
       earthMaterial.uniforms.uSpecularStrength.value = surface.specularStrength;
       earthMaterial.uniforms.uAtmosphereScatter.value = surface.atmosphereScatter;
+      earthMaterial.uniforms.uSunLimbGlow.value = surface.sunLimbGlow || 0;
       earthMaterial.uniforms.uTerminatorSoftness.value = surface.terminatorSoftness;
       earthMaterial.uniforms.uSurfaceContrast.value = surface.contrast;
 
@@ -3091,6 +3225,12 @@
       limbFogMaterial.uniforms.uIntensity.value = preset.limbFogIntensity;
       limbFogMaterial.uniforms.uPower.value = preset.limbFogPower;
       limbFogMaterial.uniforms.uNoise.value = preset.limbFogNoise;
+
+      outerGlow.visible = (preset.outerGlowIntensity || 0) > 0.001;
+      outerGlow.scale.setScalar((preset.outerGlowScale || 1.055) * 2.11);
+      outerGlowMaterial.color.setHex(preset.outerGlowColor || preset.limbFogColor);
+      outerGlowMaterial.opacity = clamp((preset.outerGlowIntensity || 0) * 2.05, 0, 0.32);
+      outerGlowMaterial.needsUpdate = true;
 
       twilightHaze.visible = preset.twilightIntensity > 0.001;
       twilightHaze.scale.setScalar(preset.twilightScale);
@@ -3277,10 +3417,15 @@
     }
 
     function resetView() {
-      state.velocity.x = 0.0007;
-      state.velocity.y = 0.002;
-      earthGroup.rotation.x = -0.24;
-      earthGroup.rotation.y = -1.18;
+      state.velocity.x = 0;
+      state.velocity.y = EARTH_AUTOROTATE_VELOCITY;
+      earthGroup.rotation.set(
+        EARTH_DEFAULT_ROTATION.x,
+        0,
+        EARTH_DEFAULT_ROTATION.z
+      );
+      earthSpinGroup.rotation.y = EARTH_DEFAULT_ROTATION.y;
+      markGlobeInteraction();
       state.zoomAnchorLngLat = null;
       state.zoomAnchorPoint = null;
       state.zoomLockUntil = 0;
@@ -3339,6 +3484,7 @@
       state.activePointers.set(event.pointerId, point);
       state.dragging = state.activePointers.size === 1;
       state.lastPointer = point;
+      markGlobeInteraction();
       if (state.activePointers.size === 2) {
         state.dragging = false;
         state.pinchStartDistance = pinchDistance();
@@ -3380,6 +3526,7 @@
       }
 
       if (state.activePointers.size >= 2) {
+        markGlobeInteraction();
         const distance = pinchDistance();
         if (state.pinchStartDistance > 0) {
           const delta = (distance - state.pinchStartDistance) / Math.max(1, Math.min(state.width, state.height));
@@ -3390,6 +3537,7 @@
       }
 
       if (!state.dragging) return;
+      markGlobeInteraction();
       const dx = next.x - state.lastPointer.x;
       const dy = next.y - state.lastPointer.y;
       state.velocity.x = clamp(dy * 0.0048, -0.05, 0.05);
@@ -3408,6 +3556,7 @@
       const zoomingIn = deltaPixels < 0;
       const wheelPoint = pointerPoint(event);
       const now = performance.now();
+      markGlobeInteraction(now);
       const gestureExpired = now > state.zoomLockUntil;
       const anchorMoved = !state.zoomAnchorPoint ||
         Math.hypot(wheelPoint.x - state.zoomAnchorPoint.x, wheelPoint.y - state.zoomAnchorPoint.y) > ZOOM_ANCHOR_MOVE_PX;
@@ -3549,7 +3698,7 @@
       const phase = COMMAND_PHASES.find(item => item.key === state.console.phase) || COMMAND_PHASES[0];
 
       setText(els.fps, state.fpsValue ? String(state.fpsValue) : "--");
-      setText(els.rot, earthGroup.rotation.y.toFixed(2));
+      setText(els.rot, earthSpinGroup.rotation.y.toFixed(2));
       setText(els.mask, state.maskPixels[0] !== undefined ? "运行" : "就绪");
       setText(els.status, state.paused ? "暂停" : phase.status);
       setText(els.sector, phase.sector);
@@ -3576,16 +3725,22 @@
       }
 
       if (!state.paused) {
-        const zoomInteractionActive = performance.now() < state.zoomLockUntil || state.mapHandoffTriggered;
+        const frameNow = performance.now();
+        const zoomInteractionActive = frameNow < state.zoomLockUntil || state.mapHandoffTriggered;
         if (!state.dragging && !zoomInteractionActive) {
-          state.velocity.x *= 0.95;
-          state.velocity.y *= 0.95;
-          const floor = 0.002 * state.speed;
-          if (Math.abs(state.velocity.y) < floor) state.velocity.y = floor;
+          const idleMs = frameNow - state.lastGlobeInteractionAt;
+          if (idleMs >= EARTH_IDLE_RECENTER_DELAY_MS) {
+            restoreDefaultSpinPosture();
+          } else {
+            state.velocity.x *= 0.95;
+            state.velocity.y *= 0.95;
+            const floor = EARTH_AUTOROTATE_VELOCITY * state.speed;
+            if (Math.abs(state.velocity.y) < floor) state.velocity.y = floor;
+          }
         }
         if (!zoomInteractionActive) {
           earthGroup.rotation.x += state.velocity.x * state.speed;
-          earthGroup.rotation.y += state.velocity.y * state.speed;
+          earthSpinGroup.rotation.y += state.velocity.y * state.speed;
         }
         cloudMesh.rotation.y -= 0.000104719755 * state.speed;
         starField.rotation.z += 0.000004 * state.speed;
@@ -3596,6 +3751,8 @@
 
       earthGroup.rotation.x = clamp(earthGroup.rotation.x, -0.92, 0.92);
       maskGroup.rotation.copy(earthGroup.rotation);
+      maskSpinGroup.rotation.y = earthSpinGroup.rotation.y;
+      outerGlow.position.copy(earthGroup.position);
 
       renderer.setRenderTarget(null);
       renderer.render(scene, camera);
