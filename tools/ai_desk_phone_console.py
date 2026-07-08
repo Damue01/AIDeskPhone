@@ -1236,8 +1236,6 @@ INDEX_HTML = r"""<!doctype html>
         <div class="metric"><div class="label">Digital 状态</div><div id="digitalValue" class="value">--</div></div>
         <div class="metric"><div class="label">解释状态</div><div id="stateValue" class="value">--</div></div>
       </div>
-      <canvas id="chart" width="900" height="240"></canvas>
-      <div class="hint">ADC 曲线用于旧模拟方案；当前 GPIO 测试主要看下面这条数字波形。</div>
       <canvas id="digitalChart" width="900" height="170"></canvas>
       <div class="hint">拨动摘挂机开关时，数字波形应该在 HIGH 和 LOW 之间跳变。</div>
       <div class="state-line">
@@ -1876,6 +1874,7 @@ INDEX_HTML = r"""<!doctype html>
 
     function drawChart() {
       const canvas = $("chart");
+      if (!canvas) return;
       const ctx = canvas.getContext("2d");
       const w = canvas.width;
       const h = canvas.height;
