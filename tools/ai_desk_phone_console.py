@@ -56,7 +56,7 @@ HOOK_SCHEMES: dict[str, dict[str, str]] = {
 BUSINESS_MODES: dict[str, dict[str, str]] = {
     "codex": {
         "label": "方案一：接线员模式",
-        "description": "文字输入任务完成后，按 1 秒响、4 秒停循环提醒；摘机后停止。",
+        "description": "文字输入任务完成后，蜂鸣器和 LED 同步按 1 秒响/亮、4 秒停/灭循环。",
     },
     "doubao": {
         "label": "方案二：豆包语音",
@@ -824,8 +824,7 @@ class AppState:
             alert_thread.join(timeout=wait_seconds)
 
     def operator_alert_worker(self, stop_event: threading.Event) -> None:
-        self.run_hardware_command("led_on", log=False)
-        self.add_action_log("接线员模式已启动：1 秒响、4 秒停；摘机后停止，90 秒无人接听后切忙音。")
+        self.add_action_log("接线员模式已启动：蜂鸣器和 LED 同步 1 秒响/亮、4 秒停/灭；摘机后停止，90 秒无人接听后切忙音。")
         deadline = time.monotonic() + OPERATOR_RING_TIMEOUT_SECONDS
 
         while not stop_event.is_set():
@@ -839,7 +838,6 @@ class AppState:
                 break
 
             self.run_hardware_command("ring_off", log=False)
-            self.run_hardware_command("led_on", log=False)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -854,7 +852,6 @@ class AppState:
             return
 
         self.run_hardware_command("ring_off", log=False)
-        self.run_hardware_command("led_on", log=False)
         self.set_alert_phase("busy", alerting=True)
         self.add_action_log("接线员模式久叫无人接听，已切换忙音；摘机或手动停止后关闭。")
 
@@ -863,7 +860,6 @@ class AppState:
             if stop_event.wait(OPERATOR_BUSY_ON_SECONDS):
                 break
             self.run_hardware_command("ring_off", log=False)
-            self.run_hardware_command("led_on", log=False)
             if stop_event.wait(OPERATOR_BUSY_OFF_SECONDS):
                 break
 
@@ -906,7 +902,7 @@ class AppState:
             self.pending_report_text = None
         self.publish_alert_status()
         alert_thread.start()
-        self.add_action_log(f"接线员 hook 已收到：{source}，开始 1 秒响、4 秒停。")
+        self.add_action_log(f"接线员 hook 已收到：{source}，开始 1 秒响/亮、4 秒停/灭。")
         return True
 
     def set_test_pins(self, hook_pin: int, buzzer_pin: int, led_pin: int = 20) -> bool:
@@ -1359,7 +1355,7 @@ INDEX_HTML = r"""<!doctype html>
           <button id="modeCodexBtn" type="button" onclick="selectBusinessMode('codex')">接线员模式</button>
           <button id="modeDoubaoBtn" type="button" onclick="selectBusinessMode('doubao')">豆包聊天</button>
         </div>
-        <div id="businessModeHint" class="callout">文字输入任务完成后，电话按 1 秒响、4 秒停循环提醒；摘机后停止。</div>
+        <div id="businessModeHint" class="callout">文字输入任务完成后，蜂鸣器和 LED 同步 1 秒响/亮、4 秒停/灭；摘机后停止。</div>
         <div class="button-row">
           <button class="primary" onclick="postAiHook()">触发接线员提醒</button>
           <button onclick="clearAiAlert()">停止提醒</button>
@@ -1492,7 +1488,7 @@ INDEX_HTML = r"""<!doctype html>
       scheme2: "方案 2：LOW = 按下，HIGH = 抬起"
     };
     const businessModeDescriptions = {
-      codex: "接线员模式：文字输入任务完成后，电话 1 秒响、4 秒停循环提醒；摘机后停止，约 90 秒无人接听切忙音。",
+      codex: "接线员模式：文字输入任务完成后，蜂鸣器和 LED 同步 1 秒响/亮、4 秒停/灭；摘机后停止，约 90 秒无人接听切忙音。",
       doubao: "抬起电话后进入豆包语音报告或全双工对话；当前先保留模式入口。"
     };
     let actionPresets = {
@@ -1877,7 +1873,7 @@ INDEX_HTML = r"""<!doctype html>
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({source: "web"})
         }, 10000);
-        setSaveStatus(result.ok ? "接线员提醒已触发：1 秒响、4 秒停，摘机后停止。" : "接线员提醒发送失败", result.ok ? "ok" : "warn");
+        setSaveStatus(result.ok ? "接线员提醒已触发：1 秒响/亮、4 秒停/灭，摘机后停止。" : "接线员提醒发送失败", result.ok ? "ok" : "warn");
       } catch (error) {
         setSaveStatus(`接线员提醒失败：${error.message}`, "warn");
       }
