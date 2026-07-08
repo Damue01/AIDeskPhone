@@ -1175,9 +1175,6 @@ INDEX_HTML = r"""<!doctype html>
     .capture::after { content: "录入"; color: var(--muted); font-size: 12px; }
     .capture.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(18, 104, 214, 0.14); }
     .capture.active::after { content: "按键中"; color: var(--accent); }
-    .help-list { grid-column: 1 / -1; display: grid; gap: 8px; border-top: 1px solid var(--border); padding-top: 12px; }
-    .help-item { display: grid; grid-template-columns: 120px 1fr; gap: 10px; color: var(--muted); font-size: 12px; line-height: 1.45; }
-    .help-item strong { color: #263448; font-size: 12px; }
     .buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
     .save-status { margin-top: 0; min-height: 34px; display: inline-flex; align-items: center; }
     .save-status.ok { color: var(--good); }
@@ -1204,7 +1201,7 @@ INDEX_HTML = r"""<!doctype html>
       header { grid-template-columns: 1fr; }
       .status { grid-template-columns: 1fr 1fr; }
       main { grid-template-columns: 1fr; padding: 12px; }
-      .log-grid, .readout-grid, .state-line, .form-grid, .action-row, .help-item, .pin-grid { grid-template-columns: 1fr; }
+      .log-grid, .readout-grid, .state-line, .form-grid, .action-row, .pin-grid { grid-template-columns: 1fr; }
       .form-wide { grid-column: auto; }
     }
   </style>
@@ -1304,26 +1301,14 @@ INDEX_HTML = r"""<!doctype html>
       </div>
 
       <details>
-        <summary>动作与阈值配置</summary>
+        <summary>动作配置</summary>
         <div class="form-grid">
-          <label>ADC 极性
-            <select id="adc_low_means_pressed">
-              <option value="true">低 ADC = 按下</option>
-              <option value="false">高 ADC = 按下</option>
-            </select>
-          </label>
-          <label>动作执行
+          <label class="form-wide">动作执行
             <select id="enable_actions">
               <option value="true">开启</option>
               <option value="false">只记录日志</option>
             </select>
           </label>
-          <label>按下阈值 <input id="press_threshold" type="number"></label>
-          <label>释放阈值 <input id="release_threshold" type="number"></label>
-          <label>强按下低阈值 <input id="strong_low_press_threshold" type="number"></label>
-          <label>强按下高阈值 <input id="strong_high_press_threshold" type="number"></label>
-          <label>消抖时间（毫秒） <input id="debounce_ms" type="number"></label>
-          <label>按下锁定（毫秒） <input id="press_lockout_ms" type="number"></label>
           <input id="press_action_text" type="hidden">
           <input id="release_action_text" type="hidden">
           <div class="form-wide preset-row">
@@ -1365,11 +1350,6 @@ INDEX_HTML = r"""<!doctype html>
                 <input id="release_follow_hotkey" type="hidden">
               </label>
             </div>
-          </div>
-          <div class="help-list">
-            <div class="help-item"><strong>按下阈值</strong><span>旧 ADC 模式使用；当前 GPIO 数字测试可先不调。</span></div>
-            <div class="help-item"><strong>释放阈值</strong><span>和按下阈值拉开距离，避免抖动。</span></div>
-            <div class="help-item"><strong>消抖/锁定</strong><span>过滤瞬间跳变，避免一次拿起或放下触发多次。</span></div>
           </div>
         </div>
       </details>
@@ -1579,11 +1559,16 @@ INDEX_HTML = r"""<!doctype html>
         "strong_high_press_threshold", "debounce_ms", "press_lockout_ms"
       ];
       const next = {...config};
-      for (const key of numeric) next[key] = Number($(key).value);
+      for (const key of numeric) {
+        const node = $(key);
+        if (node) next[key] = Number(node.value);
+      }
       next.business_mode = $("business_mode").value || "codex";
       next.hook_scheme = $("hook_scheme").value || "scheme1";
-      next.adc_low_means_pressed = $("adc_low_means_pressed").value === "true";
-      next.enable_actions = $("enable_actions").value === "true";
+      const adcPolarity = $("adc_low_means_pressed");
+      if (adcPolarity) next.adc_low_means_pressed = adcPolarity.value === "true";
+      const enableActions = $("enable_actions");
+      if (enableActions) next.enable_actions = enableActions.value === "true";
       next.press_action_text = composeActionText("press");
       next.release_action_text = composeActionText("release");
       $("press_action_text").value = next.press_action_text;
@@ -1702,7 +1687,6 @@ INDEX_HTML = r"""<!doctype html>
 
     async function loadConfig() {
       setConfigForm(await fetchJson("/api/config"));
-      drawChart();
       drawDigitalChart();
     }
 
@@ -1715,7 +1699,6 @@ INDEX_HTML = r"""<!doctype html>
           body: JSON.stringify(getConfigForm())
         }, 30000);
         setConfigForm(savedConfig);
-        drawChart();
         drawDigitalChart();
         setSaveStatus("配置已保存到电脑，并已发送给 ESP32；等待板子确认。", "ok");
       } catch (error) {
@@ -1868,51 +1851,7 @@ INDEX_HTML = r"""<!doctype html>
         : `ADC ${sample.adc}`;
       samples.push(sample);
       while (samples.length > 180) samples.shift();
-      drawChart();
       drawDigitalChart();
-    }
-
-    function drawChart() {
-      const canvas = $("chart");
-      if (!canvas) return;
-      const ctx = canvas.getContext("2d");
-      const w = canvas.width;
-      const h = canvas.height;
-      ctx.clearRect(0, 0, w, h);
-      ctx.fillStyle = "#fbfdff";
-      ctx.fillRect(0, 0, w, h);
-      ctx.strokeStyle = "#e2e8f0";
-      ctx.lineWidth = 1;
-      for (let i = 1; i < 5; i++) {
-        const y = (h / 5) * i;
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-      }
-      const maxAdc = Math.max(140, ...samples.map(s => s.adc), Number(config.release_threshold || 0) + 20);
-      function yFor(adc) { return h - Math.max(0, Math.min(1, adc / maxAdc)) * (h - 24) - 12; }
-      function thresholdLine(value, color, text) {
-        if (!value) return;
-        const y = yFor(Number(value));
-        ctx.setLineDash([8, 7]);
-        ctx.strokeStyle = color;
-        ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle = color;
-        ctx.fillText(text, w - 170, y - 6);
-      }
-      ctx.font = "13px Microsoft YaHei, sans-serif";
-      thresholdLine(config.press_threshold, "#0f8a5f", `按下阈值 ${config.press_threshold}`);
-      thresholdLine(config.release_threshold, "#b7791f", `释放阈值 ${config.release_threshold}`);
-      if (samples.length < 2) return;
-      ctx.strokeStyle = "#1268d6";
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      samples.forEach((sample, index) => {
-        const x = samples.length === 1 ? 0 : (w * index) / (samples.length - 1);
-        const y = yFor(sample.adc);
-        if (index === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
     }
 
     function drawDigitalChart() {
@@ -1981,7 +1920,6 @@ INDEX_HTML = r"""<!doctype html>
           actionLogs.splice(0, actionLogs.length, ...(payload.action_logs || []));
           if (payload.current_sample) updateSample(payload.current_sample);
           renderLogs();
-          drawChart();
           drawDigitalChart();
         } else if (payload.type === "config") {
           setConfigForm(payload.config);
