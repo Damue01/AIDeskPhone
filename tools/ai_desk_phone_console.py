@@ -1187,74 +1187,109 @@ INDEX_HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>AI Desk Phone 本地控制台</title>
+  <link rel="icon" href="data:,">
+  <title>服务处理中心 - HG113 本地控制台</title>
   <style>
     :root {
       color-scheme: light;
       font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-      --bg: #f5f6f8;
+      --bg: #eef1f5;
       --panel: #ffffff;
-      --panel-soft: #f8fafc;
-      --border: #d9e0ea;
-      --border-strong: #b9c3d1;
-      --text: #172033;
-      --muted: #667085;
-      --accent: #1f6fd1;
-      --good: #0f7a5f;
-      --warn: #a76510;
+      --panel-soft: #f7f8fa;
+      --border: #d7dbe2;
+      --border-strong: #aeb7c4;
+      --text: #1f2937;
+      --muted: #5f6b7a;
+      --red: #b3261e;
+      --red-dark: #86190f;
+      --red-soft: #fff4f2;
+      --blue: #2766b1;
+      --good: #08745f;
+      --warn: #9a5b12;
       --danger: #b42318;
-      --dark: #111827;
+      --dark: #101827;
     }
     * { box-sizing: border-box; }
     body { margin: 0; background: var(--bg); color: var(--text); font-size: 14px; }
-    header {
-      display: grid; grid-template-columns: minmax(280px, 1fr) auto; gap: 24px; align-items: start;
-      padding: 16px 20px; border-bottom: 1px solid var(--border); background: #fff;
-      position: sticky; top: 0; z-index: 2;
+    h1, h2, h3, p { margin-top: 0; }
+    h1 { font-size: 32px; margin-bottom: 4px; letter-spacing: 0; line-height: 1.15; font-weight: 750; }
+    h2 { font-size: 19px; margin: 0; line-height: 1.35; font-weight: 750; }
+    h3 { font-size: 16px; margin: 0 0 10px; line-height: 1.35; font-weight: 750; }
+    .utility-bar { background: var(--red-dark); color: #fff; font-size: 13px; }
+    .utility-inner {
+      max-width: 1180px; margin: 0 auto; min-height: 36px; display: flex;
+      justify-content: space-between; align-items: center; gap: 18px; padding: 0 18px;
     }
-    h1 { font-size: 20px; margin: 0 0 4px; line-height: 1.25; }
-    h2 { font-size: 16px; margin: 0; line-height: 1.3; }
-    h3 { font-size: 14px; margin: 0 0 10px; line-height: 1.3; }
+    .utility-links { display: flex; gap: 18px; flex-wrap: wrap; color: rgba(255,255,255,0.86); }
+    .masthead { background: #fff; border-bottom: 1px solid #e4e7ec; }
+    .masthead-inner {
+      max-width: 1180px; margin: 0 auto; min-height: 112px; display: grid;
+      grid-template-columns: minmax(0, 1fr) 350px; gap: 28px; align-items: center; padding: 22px 18px;
+    }
+    .brand { display: flex; align-items: center; gap: 16px; min-width: 0; }
+    .brand-mark {
+      width: 62px; height: 62px; border: 3px solid var(--red); display: grid; place-items: center;
+      color: var(--red); font-weight: 800; font-size: 20px; line-height: 1; background: #fff;
+    }
     .subtitle { margin: 0; color: var(--muted); line-height: 1.45; }
-    main {
-      display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(360px, 0.85fr);
-      gap: 16px; padding: 16px;
+    .search-panel { display: grid; grid-template-columns: minmax(0, 1fr) 84px; gap: 0; border: 2px solid var(--red); min-height: 42px; }
+    .search-panel input { border: 0; min-height: 38px; border-radius: 0; padding: 8px 12px; }
+    .search-panel button { border: 0; border-radius: 0; background: var(--red); color: #fff; min-height: 38px; }
+    .primary-nav { background: var(--red); color: #fff; }
+    .nav-inner { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: repeat(6, 1fr); }
+    .nav-inner a {
+      color: #fff; text-decoration: none; text-align: center; padding: 13px 8px; border-left: 1px solid rgba(255,255,255,0.18);
+      font-weight: 700;
     }
-    .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 16px; }
-    .panel-header { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 14px; }
+    .nav-inner a:last-child { border-right: 1px solid rgba(255,255,255,0.18); }
+    .nav-inner a.active { background: var(--red-dark); }
+    .page-wrap { max-width: 1180px; margin: 18px auto 0; padding: 0 18px 22px; }
+    .crumb {
+      background: #fff; border: 1px solid var(--border); padding: 10px 14px; color: var(--muted);
+      margin-bottom: 12px; line-height: 1.45;
+    }
+    main.portal-main { display: grid; grid-template-columns: minmax(0, 1.28fr) minmax(360px, 0.72fr); gap: 14px; }
+    .panel {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 2px;
+      padding: 16px; box-shadow: 0 1px 0 rgba(16,24,40,0.03);
+    }
+    .panel-header { display: flex; justify-content: space-between; gap: 16px; align-items: start; margin-bottom: 14px; border-bottom: 2px solid #eff1f4; padding-bottom: 10px; }
     .panel-note { margin: 4px 0 0; color: var(--muted); line-height: 1.45; }
-    .status { display: grid; grid-template-columns: repeat(4, max-content); gap: 8px 18px; align-items: baseline; font-size: 12px; color: var(--muted); }
-    .status-item { white-space: nowrap; }
+    .service-status {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; background: var(--border);
+      border: 1px solid var(--border); margin-bottom: 12px;
+    }
+    .status-item { background: var(--panel-soft); padding: 12px; white-space: nowrap; color: var(--muted); }
     .status-value { color: var(--text); font-weight: 700; }
     .status-value.good { color: var(--good); }
     .status-value.warn { color: var(--warn); }
-    .readout-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-    .metric { border: 1px solid var(--border); border-radius: 8px; padding: 12px; min-height: 92px; background: #fff; }
+    .readout-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); margin-bottom: 12px; }
+    .metric { padding: 12px; min-height: 88px; background: #fff; }
     .label { color: var(--muted); font-size: 12px; margin-bottom: 7px; line-height: 1.35; }
-    .value { font-size: 30px; line-height: 1.1; font-weight: 750; word-break: break-word; }
+    .value { font-size: 29px; line-height: 1.1; font-weight: 750; word-break: break-word; }
     .state-pressed { color: var(--good); }
     .state-released { color: var(--warn); }
-    .state-line { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin: 12px 0 0; }
-    .state-line div { padding: 10px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--panel-soft); }
+    .state-line { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); margin: 12px 0 0; }
+    .state-line div { padding: 10px 12px; background: var(--panel-soft); }
     .state-line strong { display: block; margin-top: 4px; color: var(--text); font-size: 16px; }
-    canvas { width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 8px; background: #fbfdff; display: block; }
-    #digitalChart { height: 160px; margin-top: 12px; }
+    canvas { width: 100%; height: 220px; border: 1px solid var(--border); border-radius: 2px; background: #fbfdff; display: block; }
+    #digitalChart { height: 220px; margin-top: 12px; }
     .section-divider { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
-    .control-block { border: 1px solid var(--border); border-radius: 8px; padding: 12px; background: #fff; }
+    .control-block { border: 1px solid var(--border); border-radius: 2px; padding: 12px; background: #fff; }
     .control-block + .control-block { margin-top: 12px; }
     .mode-row { display: grid; gap: 10px; margin-bottom: 10px; }
-    .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--border-strong); border-radius: 7px; overflow: hidden; background: #fff; }
+    .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--border-strong); border-radius: 2px; overflow: hidden; background: #fff; }
     .segmented button { border: 0; border-radius: 0; border-right: 1px solid var(--border); min-height: 38px; }
     .segmented button:last-child { border-right: 0; }
-    .segmented button.active { background: var(--accent); color: #fff; }
+    .segmented button.active { background: var(--red); color: #fff; }
     .mode-hint, .callout { color: var(--muted); font-size: 12px; line-height: 1.5; min-height: 18px; }
-    .callout { border-left: 3px solid var(--accent); padding: 8px 10px; background: var(--panel-soft); }
+    .callout { border-left: 4px solid var(--red); padding: 8px 10px; background: var(--red-soft); }
     .pin-grid, .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     .pin-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .button-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
     label { display: grid; gap: 6px; font-size: 13px; color: #263448; }
     input, select, textarea {
-      width: 100%; min-height: 34px; border: 1px solid #cbd5e1; border-radius: 6px;
+      width: 100%; min-height: 34px; border: 1px solid #cbd5e1; border-radius: 2px;
       padding: 6px 9px; font: inherit; background: #fff; color: var(--text);
     }
     textarea { resize: vertical; min-height: 72px; line-height: 1.45; }
@@ -1271,85 +1306,132 @@ INDEX_HTML = r"""<!doctype html>
       display: flex; justify-content: space-between; align-items: center; gap: 10px;
     }
     .capture::after { content: "录入"; color: var(--muted); font-size: 12px; }
-    .capture.active { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(18, 104, 214, 0.14); }
-    .capture.active::after { content: "按键中"; color: var(--accent); }
+    .capture.active { border-color: var(--red); box-shadow: 0 0 0 2px rgba(179, 38, 30, 0.12); }
+    .capture.active::after { content: "按键中"; color: var(--red); }
     .buttons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 12px; }
     .save-status { margin-top: 0; min-height: 34px; display: inline-flex; align-items: center; }
     .save-status.ok { color: var(--good); }
     .save-status.warn { color: var(--warn); }
     button {
-      border: 1px solid #b8c4d6; border-radius: 6px; background: #fff; color: #132033;
+      border: 1px solid #b8c4d6; border-radius: 2px; background: #fff; color: #132033;
       padding: 8px 10px; cursor: pointer; font: inherit; min-height: 36px;
     }
-    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.primary { background: var(--red); color: #fff; border-color: var(--red); }
     button.danger { border-color: #e6b2ad; color: var(--danger); }
     details { border-top: 1px solid var(--border); padding-top: 10px; }
     details + details { margin-top: 12px; }
     summary { cursor: pointer; font-weight: 700; margin-bottom: 10px; }
     .logs { padding: 0; overflow: hidden; grid-column: 1 / -1; }
-    .log-head { display:flex; justify-content:space-between; align-items:center; gap: 12px; padding: 12px 14px; }
-    .log-grid { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 1px; background: #243145; }
+    .log-head { display:flex; justify-content:space-between; align-items:center; gap: 12px; padding: 14px 16px; border-bottom: 2px solid #eff1f4; }
+    .log-grid { display: grid; grid-template-columns: 1.35fr 1fr 1fr; gap: 1px; background: var(--border); border-top: 1px solid var(--border); }
     pre {
       margin: 0; min-height: 250px; max-height: 360px; overflow: auto; padding: 12px;
-      background: var(--dark); color: #dbeafe; white-space: pre-wrap; font: 12px/1.45 Consolas, monospace;
+      background: #fff; color: #27364a; white-space: pre-wrap; font: 12px/1.45 Consolas, monospace;
+    }
+    pre::before {
+      content: attr(data-title); display: block; margin: -2px 0 8px; padding-bottom: 7px;
+      color: var(--red-dark); border-bottom: 1px solid #e4e7ec; font: 700 13px/1.35 "Microsoft YaHei", "Segoe UI", sans-serif;
     }
     .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .muted { color: var(--muted); }
+    .full-width { grid-column: 1 / -1; }
+    .info-board { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; background: var(--border); border: 1px solid var(--border); }
+    .info-board div { background: #fff; padding: 12px; min-height: 74px; }
+    .info-board strong { display: block; margin-bottom: 5px; color: var(--red-dark); }
+    .portal-footer { margin-top: 18px; background: #fff; border-top: 3px solid var(--red); }
+    .footer-inner {
+      max-width: 1180px; margin: 0 auto; padding: 18px; display: grid;
+      grid-template-columns: minmax(0, 1fr) auto; gap: 18px; color: var(--muted);
+    }
+    .footer-links { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 8px; color: var(--text); }
+    .code-blocks { display: flex; gap: 10px; }
+    .qr {
+      width: 68px; height: 68px; border: 1px solid var(--border); background:
+        linear-gradient(90deg, #1f2937 10px, transparent 10px 18px, #1f2937 18px 28px, transparent 28px),
+        linear-gradient(#1f2937 10px, transparent 10px 18px, #1f2937 18px 28px, transparent 28px);
+      background-size: 34px 34px; opacity: 0.28;
+    }
     @media (max-width: 980px) {
-      header { grid-template-columns: 1fr; }
-      .status { grid-template-columns: 1fr 1fr; }
-      main { grid-template-columns: 1fr; padding: 12px; }
-      .log-grid, .readout-grid, .state-line, .form-grid, .action-row, .pin-grid { grid-template-columns: 1fr; }
+      h1 { font-size: 26px; }
+      .masthead-inner { grid-template-columns: 1fr; }
+      .nav-inner { grid-template-columns: repeat(2, 1fr); }
+      .service-status { grid-template-columns: 1fr 1fr; }
+      main.portal-main { grid-template-columns: 1fr; }
+      .log-grid, .readout-grid, .state-line, .form-grid, .action-row, .pin-grid, .info-board, .footer-inner { grid-template-columns: 1fr; }
       .form-wide { grid-column: auto; }
     }
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>HG113 AI Desk Phone 控制台</h1>
-      <p class="subtitle">电脑端负责页面、波形和业务逻辑；ESP32-C3 只上报 GPIO 状态并执行蜂鸣器、LED 命令。</p>
+  <div class="utility-bar">
+    <div class="utility-inner">
+      <span>HG113 本地服务台</span>
+      <div class="utility-links">
+        <span>设备文档</span>
+        <span>接口约定</span>
+        <span>维护记录</span>
+      </div>
     </div>
-    <div class="status">
-      <div class="status-item">服务 <span id="conn" class="status-value">连接中</span></div>
-      <div class="status-item">串口 <span id="serialStatus" class="status-value warn">扫描中</span></div>
-      <div class="status-item">设备 <span id="deviceStatus" class="status-value">未发现</span></div>
-      <div class="status-item">最新 <span id="lastSample" class="status-value">暂无数据</span></div>
+  </div>
+
+  <header class="masthead">
+    <div class="masthead-inner">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">HG</div>
+        <div>
+          <h1>服务处理中心</h1>
+          <p class="subtitle">HG113 AI Desk Phone Local Service Center</p>
+        </div>
+      </div>
+      <div class="search-panel" aria-label="本地检索">
+        <input aria-label="本地检索关键词" value="GPIO、接线员模式、实时日志" readonly>
+        <button type="button">检索</button>
+      </div>
     </div>
   </header>
 
-  <main>
-    <section class="panel">
-      <div class="panel-header">
-        <div>
-          <h2>电话状态与波形</h2>
-          <p class="panel-note">先看这里：状态是否跳变、波形是否稳定、当前提醒是否已经触发。</p>
-        </div>
-      </div>
-      <div class="readout-grid">
-        <div class="metric"><div class="label">ADC 数值</div><div id="adcValue" class="value">--</div></div>
-        <div class="metric"><div class="label">Digital 状态</div><div id="digitalValue" class="value">--</div></div>
-        <div class="metric"><div class="label">解释状态</div><div id="stateValue" class="value">--</div></div>
-      </div>
-      <canvas id="digitalChart" width="900" height="170"></canvas>
-      <div class="hint">拨动摘挂机开关时，数字波形应该在 HIGH 和 LOW 之间跳变。</div>
-      <div class="state-line">
-        <div>接线员<strong id="alertState">未触发</strong></div>
-        <div>蜂鸣器<strong id="buzzerState">未知</strong></div>
-        <div>LED<strong id="ledState">未知</strong></div>
-      </div>
-    </section>
+  <nav class="primary-nav" aria-label="主导航">
+    <div class="nav-inner">
+      <a class="active" href="#overview">首页</a>
+      <a href="#wave">终端状态</a>
+      <a href="#control">GPIO 配置</a>
+      <a href="#operator">接线员模式</a>
+      <a href="#logs">系统日志</a>
+      <a href="#footer">维护说明</a>
+    </div>
+  </nav>
 
-    <section class="panel">
-      <div class="panel-header">
-        <div>
-          <h2>方案与测试</h2>
-          <p class="panel-note">先选业务模式，再调 GPIO 和判定方向。</p>
-        </div>
-      </div>
+  <div class="page-wrap">
+    <div class="crumb">当前位置：首页 / HG113 电话接入 / 本地控制台。页面由电脑端渲染，ESP32-C3 只负责上报 GPIO 状态和执行蜂鸣器、LED 命令。</div>
 
-      <div class="control-block">
-        <h3>业务模式</h3>
+    <main class="portal-main">
+      <section id="overview" class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>服务受理概览</h2>
+            <p class="panel-note">用于确认本地服务、串口、Wi-Fi 设备和最新 GPIO 样本是否正常。</p>
+          </div>
+        </div>
+        <div class="service-status">
+          <div class="status-item">服务<br><span id="conn" class="status-value">连接中</span></div>
+          <div class="status-item">串口<br><span id="serialStatus" class="status-value warn">扫描中</span></div>
+          <div class="status-item">设备<br><span id="deviceStatus" class="status-value">未发现</span></div>
+          <div class="status-item">最新样本<br><span id="lastSample" class="status-value">暂无数据</span></div>
+        </div>
+        <div class="state-line">
+          <div>接线员提醒<strong id="alertState">未触发</strong></div>
+          <div>蜂鸣器输出<strong id="buzzerState">未知</strong></div>
+          <div>LED 输出<strong id="ledState">未知</strong></div>
+        </div>
+      </section>
+
+      <section id="operator" class="panel">
+        <div class="panel-header">
+          <div>
+            <h2>接线员模式</h2>
+            <p class="panel-note">文字输入任务完成后触发来电呼叫；摘机后停止提醒。</p>
+          </div>
+        </div>
         <input id="business_mode" type="hidden" value="codex">
         <div class="segmented" aria-label="业务模式">
           <button id="modeCodexBtn" type="button" onclick="selectBusinessMode('codex')">接线员模式</button>
@@ -1359,6 +1441,30 @@ INDEX_HTML = r"""<!doctype html>
         <div class="button-row">
           <button class="primary" onclick="postAiHook()">触发接线员提醒</button>
           <button onclick="clearAiAlert()">停止提醒</button>
+        </div>
+      </section>
+
+      <section id="wave" class="panel full-width">
+      <div class="panel-header">
+        <div>
+          <h2>GPIO 开关波形</h2>
+          <p class="panel-note">数据看板显示摘挂机输入的数字状态，拨动开关时应在 HIGH 与 LOW 之间切换。</p>
+        </div>
+      </div>
+      <div class="readout-grid">
+        <div class="metric"><div class="label">ADC 数值</div><div id="adcValue" class="value">--</div></div>
+        <div class="metric"><div class="label">Digital 状态</div><div id="digitalValue" class="value">--</div></div>
+        <div class="metric"><div class="label">解释状态</div><div id="stateValue" class="value">--</div></div>
+      </div>
+      <canvas id="digitalChart" width="900" height="170"></canvas>
+      <div class="hint">当前页面只看 GPIO 数字量，不再显示旧 ADC 阈值模块。</div>
+    </section>
+
+    <section id="control" class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>GPIO 配置与硬件测试</h2>
+          <p class="panel-note">这里配置开关、蜂鸣器和 LED 引脚，并执行单项测试。</p>
         </div>
       </div>
 
@@ -1459,7 +1565,21 @@ INDEX_HTML = r"""<!doctype html>
       <div class="hint">快捷键支持 Ctrl、Windows、Shift、Alt、字母、数字、Enter、Space、Tab、Esc。</div>
     </section>
 
-    <section class="logs">
+    <section class="panel">
+      <div class="panel-header">
+        <div>
+          <h2>信息展示</h2>
+          <p class="panel-note">把当前方案、硬件职责和 hook 入口放在这里，方便之后接手的人快速看懂。</p>
+        </div>
+      </div>
+      <div class="info-board">
+        <div><strong>文字输入</strong>Codex hook 调用本地接口后，进入 1 秒响/亮、4 秒停/灭的来电呼叫节奏。</div>
+        <div><strong>GPIO 监听</strong>ESP32-C3 上报开关 HIGH/LOW，电脑端负责判定“按下”或“抬起”。</div>
+        <div><strong>音频规划</strong>蓝牙耳机模块负责语音链路，豆包聊天入口先保留为后续全双工对话模式。</div>
+      </div>
+    </section>
+
+    <section id="logs" class="logs panel">
       <div class="log-head">
         <h2>实时日志</h2>
         <div class="buttons" style="margin:0">
@@ -1468,12 +1588,32 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </div>
       <div class="log-grid">
-        <pre id="rawLog">串口原始日志等待中...</pre>
-        <pre id="stateLog">板子判定日志等待中...</pre>
-        <pre id="actionLog">动作日志等待中...</pre>
+        <pre id="rawLog" data-title="原始上报">串口原始日志等待中...</pre>
+        <pre id="stateLog" data-title="状态判定">板子判定日志等待中...</pre>
+        <pre id="actionLog" data-title="动作执行">动作日志等待中...</pre>
       </div>
     </section>
   </main>
+  </div>
+
+  <footer id="footer" class="portal-footer">
+    <div class="footer-inner">
+      <div>
+        <div class="footer-links">
+          <span>系统说明</span>
+          <span>设备文档</span>
+          <span>本地控制台</span>
+          <span>接口约定</span>
+          <span>维护记录</span>
+        </div>
+        <div>服务处理中心仅用于 HG113 电话改造调试；所有数据来自本机、ESP32-C3 与本地网络。</div>
+      </div>
+      <div class="code-blocks" aria-hidden="true">
+        <div class="qr"></div>
+        <div class="qr"></div>
+      </div>
+    </div>
+  </footer>
 
   <script>
     const maxLogLines = 220;
