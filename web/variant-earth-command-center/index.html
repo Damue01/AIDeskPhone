@@ -481,6 +481,11 @@
       overflow-wrap: anywhere;
     }
 
+    #sector-word {
+      font-size: clamp(34px, 4vw, 54px);
+      line-height: 1.02;
+    }
+
     .status-value {
       position: relative;
       z-index: 1;
@@ -699,6 +704,14 @@
           </div>
         </div>
 
+        <div class="control">
+          <div class="control-row">
+            <label for="globe-scale">地球尺寸</label>
+            <output id="globe-scale-value">1.00</output>
+          </div>
+          <input id="globe-scale" type="range" min="0.92" max="1.14" step="0.01" value="1">
+        </div>
+
         <div class="control advanced-control">
           <div class="control-row">
             <label for="speed">地球转速</label>
@@ -753,13 +766,13 @@
         <div class="status-huge" id="status-word">在线</div>
       </article>
       <article class="status-block">
-        <div class="status-label">话机链路</div>
-        <div class="status-huge" id="sector-word">正常</div>
+        <div class="status-label">命令状态</div>
+        <div class="status-huge" id="sector-word">接收命令中</div>
       </article>
       <article class="status-block">
         <div class="status-label">当前服务区</div>
-        <div class="status-value" id="coord-a">华东节点 / 上海</div>
-        <div class="status-value" id="coord-b">通道：接线员-01</div>
+        <div class="status-value" id="coord-a">服务区计算中</div>
+        <div class="status-value" id="coord-b">接线员分配中</div>
       </article>
     </section>
 
@@ -773,8 +786,8 @@
       <div class="ticker-label">实时播报</div>
       <div class="ticker-window">
         <div class="ticker-track">
-          AI 接线员服务在线 / HG113 话机链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
-          AI 接线员服务在线 / HG113 话机链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
+          AI 接线员服务在线 / 命令链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
+          AI 接线员服务在线 / 命令链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
         </div>
       </div>
     </footer>
@@ -808,6 +821,8 @@
       paletteButtons: [...document.querySelectorAll(".palette-button[data-palette]")],
       earthToneValue: document.getElementById("earth-tone-value"),
       earthToneButtons: [...document.querySelectorAll(".tone-button[data-earth-tone]")],
+      globeScale: document.getElementById("globe-scale"),
+      globeScaleValue: document.getElementById("globe-scale-value"),
       fps: document.getElementById("fps"),
       rot: document.getElementById("rot"),
       mask: document.getElementById("mask-state"),
@@ -833,6 +848,7 @@
       speed: 1,
       lineHeight: 14,
       textAlpha: 0.74,
+      globeScale: 1,
       palette: "teal",
       earthTone: "natural",
       paused: false,
@@ -954,6 +970,21 @@
     fillLight.position.set(-3.2, 2.1, 2.8);
     scene.add(fillLight);
 
+    function updateGlobeFrame() {
+      const aspect = state.width / state.height;
+      const desktop = state.width > 860;
+      let baseZ = desktop ? 3.32 : 3.82;
+
+      if (aspect < 1.05) baseZ = 4.14;
+      if (aspect > 2.05) baseZ = 3.16;
+
+      camera.position.z = baseZ / state.globeScale;
+
+      const shift = desktop ? -clamp((aspect - 1.18) * 0.28, 0.1, 0.42) : 0;
+      earthGroup.position.x = shift;
+      maskGroup.position.x = shift;
+    }
+
     function resize() {
       const rect = stage.getBoundingClientRect();
       state.width = Math.max(1, Math.floor(rect.width));
@@ -964,6 +995,7 @@
       renderer.setSize(state.width, state.height, false);
       camera.aspect = state.width / state.height;
       camera.updateProjectionMatrix();
+      updateGlobeFrame();
 
       textCanvas.width = Math.floor(state.width * state.dpr);
       textCanvas.height = Math.floor(state.height * state.dpr);
@@ -1000,6 +1032,63 @@
       red: { clear: 0x120305, wire: 0xff5151, atmosphere: 0xff7a70, fill: 0xff5151, alert: 0xffd06f }
     };
 
+    function hashText(text) {
+      let hash = 0;
+      for (let i = 0; i < text.length; i += 1) {
+        hash = ((hash << 5) - hash + text.charCodeAt(i)) | 0;
+      }
+      return Math.abs(hash);
+    }
+
+    function resolveServiceArea() {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "";
+      const language = navigator.language || "zh-CN";
+      const knownZones = [
+        [/^Asia\/Shanghai$/i, "上海服务区"],
+        [/^Asia\/Chongqing$/i, "成都服务区"],
+        [/^Asia\/Urumqi$/i, "西北服务区"],
+        [/^Asia\/Hong_Kong$/i, "香港服务区"],
+        [/^Asia\/Taipei$/i, "台北服务区"],
+        [/^Asia\/Singapore$/i, "新加坡服务区"],
+        [/^Asia\/Tokyo$/i, "东京服务区"],
+        [/^Asia\/Seoul$/i, "首尔服务区"],
+        [/^Europe\/London$/i, "伦敦服务区"],
+        [/^Europe\/Paris$/i, "巴黎服务区"],
+        [/^Europe\/Berlin$/i, "柏林服务区"],
+        [/^America\/Los_Angeles$/i, "洛杉矶服务区"],
+        [/^America\/New_York$/i, "纽约服务区"]
+      ];
+      const matched = knownZones.find(([pattern]) => pattern.test(timeZone));
+      if (matched) return { area: matched[1], source: "安全定位" };
+
+      const fallbackAreas = ["本地一号服务区", "本地二号服务区", "本地三号服务区", "本地四号服务区"];
+      const area = fallbackAreas[hashText(`${timeZone}|${language}`) % fallbackAreas.length];
+      return { area, source: "本机安全推断" };
+    }
+
+    function pickOperatorSeat() {
+      let last = "";
+      try {
+        last = sessionStorage.getItem("hg113-last-operator-seat") || "";
+      } catch {
+        last = "";
+      }
+      let seat = last;
+      let guard = 0;
+      while (seat === last && guard < 8) {
+        seat = String(1 + Math.floor(Math.random() * 36)).padStart(2, "0");
+        guard += 1;
+      }
+      try {
+        sessionStorage.setItem("hg113-last-operator-seat", seat);
+      } catch {
+      }
+      return `接线员：${seat}号席位`;
+    }
+
+    const serviceProfile = resolveServiceArea();
+    const operatorSeat = pickOperatorSeat();
+
     function setPressed(button, value) {
       if (!button) return;
       button.setAttribute("aria-pressed", String(value));
@@ -1010,6 +1099,7 @@
       els.speedValue.textContent = state.speed.toFixed(2);
       els.densityValue.textContent = String(state.lineHeight);
       els.alphaValue.textContent = state.textAlpha.toFixed(2);
+      els.globeScaleValue.textContent = state.globeScale.toFixed(2);
       els.paletteValue.textContent = paletteLabels[state.palette] || "青绿";
       els.paletteButtons.forEach(button => setPressed(button, button.dataset.palette === state.palette));
       els.earthToneValue.textContent = earthToneLabels[state.earthTone] || "原色";
@@ -1069,6 +1159,12 @@
 
     els.alpha.addEventListener("input", () => {
       state.textAlpha = Number(els.alpha.value);
+      syncControls();
+    });
+
+    els.globeScale.addEventListener("input", () => {
+      state.globeScale = Number(els.globeScale.value);
+      updateGlobeFrame();
       syncControls();
     });
 
@@ -1259,9 +1355,7 @@
         state.fpsLast = now;
       }
 
-      const lat = 34.0522 + Math.sin(earthGroup.rotation.y) * 11.2;
-      const lon = -118.2437 + Math.cos(earthGroup.rotation.y * 0.72) * 23.5;
-      const linkStates = ["正常", "排队", "转接", "同步"];
+      const linkStates = ["接收命令中", "执行命令中", "汇报工作中"];
       const sector = linkStates[Math.floor(now * 0.00045) % linkStates.length];
 
       els.fps.textContent = state.fpsValue ? String(state.fpsValue) : "--";
@@ -1269,8 +1363,8 @@
       els.mask.textContent = state.maskPixels[0] !== undefined ? "运行" : "就绪";
       els.status.textContent = state.paused ? "暂停" : "在线";
       els.sector.textContent = sector;
-      els.coordA.textContent = `服务区 ${Math.abs(lat).toFixed(2)} / ${Math.abs(lon).toFixed(2)}`;
-      els.coordB.textContent = `通道：接线员-${String(1 + Math.floor(Math.abs(Math.sin(now * 0.0007)) * 6)).padStart(2, "0")}`;
+      els.coordA.textContent = `${serviceProfile.area} / ${serviceProfile.source}`;
+      els.coordB.textContent = operatorSeat;
     }
 
     function updateClock() {
