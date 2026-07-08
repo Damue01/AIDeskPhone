@@ -30,15 +30,21 @@ except ImportError:  # pragma: no cover - exercised on machines without pyserial
 try:
     from volcengine_speech import VolcengineSpeech, VolcengineSpeechError, upsert_dotenv_values
 except ImportError:  # pragma: no cover - kept optional for partial deployments
-    VolcengineSpeech = None  # type: ignore[assignment]
-    VolcengineSpeechError = RuntimeError  # type: ignore[assignment]
-    upsert_dotenv_values = None  # type: ignore[assignment]
+    try:
+        from tools.volcengine_speech import VolcengineSpeech, VolcengineSpeechError, upsert_dotenv_values
+    except ImportError:  # pragma: no cover - kept optional for partial deployments
+        VolcengineSpeech = None  # type: ignore[assignment]
+        VolcengineSpeechError = RuntimeError  # type: ignore[assignment]
+        upsert_dotenv_values = None  # type: ignore[assignment]
 
 try:
     from audio_recorder import AudioRecorder, AudioRecorderError
 except ImportError:  # pragma: no cover - kept optional for partial deployments
-    AudioRecorder = None  # type: ignore[assignment]
-    AudioRecorderError = RuntimeError  # type: ignore[assignment]
+    try:
+        from tools.audio_recorder import AudioRecorder, AudioRecorderError
+    except ImportError:  # pragma: no cover - kept optional for partial deployments
+        AudioRecorder = None  # type: ignore[assignment]
+        AudioRecorderError = RuntimeError  # type: ignore[assignment]
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -433,6 +439,26 @@ def extract_reply_text_from_hook(data: dict[str, Any]) -> str:
     return "任务已经完成，通讯员等待向首长回报。"
 
 
+VOICE_CANCEL_PATTERNS = (
+    "撤回",
+    "取消",
+    "不用了",
+    "算了",
+    "不要执行",
+    "别执行",
+    "先别",
+    "停一下",
+    "作废",
+)
+
+
+def is_voice_cancel_command(text: str) -> bool:
+    clean = re.sub(r"\s+", "", str(text or "").strip())
+    if not clean:
+        return False
+    return any(pattern in clean for pattern in VOICE_CANCEL_PATTERNS)
+
+
 def parse_action_text(text: str) -> list[dict[str, Any]]:
     steps: list[dict[str, Any]] = []
     parts = [part.strip() for part in re.split(r"[,，;；]", text) if part.strip()]
@@ -668,6 +694,8 @@ class AppState:
         self.voice_recording_path: str | None = None
         self.voice_last_result: dict[str, Any] | None = None
         self.voice_last_error: str | None = None
+        self.voice_last_partial: str | None = None
+        self.voice_asr_session: Any | None = None
         self.voice_session_id = 0
         self.voice_monitor_thread: threading.Thread | None = None
         self.voice_processing = False
@@ -885,6 +913,7 @@ class AppState:
             "tts_speaker": config.tts_speaker,
             "tts_format": config.tts_format,
             "tts_sample_rate": config.tts_sample_rate,
+            "tts_streaming_playback_enabled": config.tts_streaming_playback_enabled,
             "tts_explicit_language": config.tts_explicit_language,
             "tts_explicit_dialect": config.tts_explicit_dialect,
             "tts_disable_markdown_filter": config.tts_disable_markdown_filter,
@@ -892,6 +921,16 @@ class AppState:
             "asr_endpoint": config.asr_endpoint,
             "asr_resource_id": config.asr_resource_id,
             "asr_model": config.asr_model,
+            "asr_chunk_ms": config.asr_chunk_ms,
+            "asr_streaming_enabled": config.asr_streaming_enabled,
+            "asr_hotwords": config.asr_hotwords,
+            "asr_boosting_table_id": config.asr_boosting_table_id,
+            "asr_boosting_table_name": config.asr_boosting_table_name,
+            "asr_hotwords_configured": bool(config.asr_hotwords or config.asr_boosting_table_id or config.asr_boosting_table_name),
+            "operator_ready": self.speech.is_operator_ready() if hasattr(self.speech, "is_operator_ready") else False,
+            "operator_polish_enabled": config.operator_polish_enabled,
+            "operator_model": config.operator_model,
+            "operator_endpoint": config.operator_endpoint,
         }
 
     def update_speech_env(self, values: dict[str, str]) -> dict[str, Any]:
@@ -949,6 +988,8 @@ class AppState:
                 "recording_path": self.voice_recording_path,
                 "last_result": self.voice_last_result,
                 "last_error": self.voice_last_error,
+                "partial_text": self.voice_last_partial,
+                "streaming_asr": self.voice_asr_session is not None,
                 "cancel_reason": self.voice_cancel_reason,
                 "sample_rate": self.config.voice_record_sample_rate,
                 "device": self.config.voice_record_device,
@@ -958,6 +999,21 @@ class AppState:
 
     def publish_voice_status(self) -> None:
         self.publish({"type": "voice_status", **self.voice_status()})
+
+    def handle_streaming_asr_result(self, result: dict[str, Any]) -> None:
+        text = str(result.get("text", "") or "").strip()
+        if not text:
+            return
+        with self.lock:
+            self.voice_last_partial = text
+            self.voice_last_result = {**result, "partial": True}
+        self.publish_voice_status()
+
+    def should_start_streaming_asr(self) -> bool:
+        if self.speech is None:
+            return False
+        config = self.speech.config
+        return bool(config.asr_streaming_enabled and self.config.voice_auto_transcribe and self.speech.is_asr_ready())
 
     def start_voice_recording(self, reason: str = "manual") -> dict[str, Any]:
         with self.lock:
@@ -984,16 +1040,45 @@ class AppState:
             self.add_action_log("Agent 语音录音已在进行，复用当前录音会话。")
             return {"ok": True, "recording": True, "already_active": True, "session_id": session_id}
 
+        stream_session: Any | None = None
+        if self.should_start_streaming_asr():
+            try:
+                assert self.speech is not None
+                stream_session = self.speech.start_streaming_asr(sample_rate, on_result=self.handle_streaming_asr_result)
+                self.add_action_log(f"豆包 BigASR 流式识别已启动：chunk={self.speech.config.asr_chunk_ms}ms")
+            except Exception as exc:
+                stream_session = None
+                self.add_action_log(f"豆包 BigASR 流式识别未启动，稍后回退文件识别：{exc}")
+
         self.add_action_log(f"Agent 语音录音请求：sample_rate={sample_rate} device={device or '默认'} reason={reason}")
         try:
-            self.recorder.start(sample_rate=sample_rate, channels=1, device=device)
+            self.recorder.start(
+                sample_rate=sample_rate,
+                channels=1,
+                device=device,
+                on_audio_chunk=stream_session.submit_audio if stream_session is not None else None,
+            )
         except AudioRecorderError as exc:
+            if stream_session is not None:
+                stream_session.cancel()
             with self.lock:
                 self.voice_recording = False
+                self.voice_asr_session = None
                 self.voice_last_error = str(exc)
             self.add_action_log(f"语音录音启动失败：{exc}")
             self.publish_voice_status()
             return {"ok": False, "recording": False, "error": str(exc)}
+        except Exception as exc:
+            if stream_session is not None:
+                stream_session.cancel()
+            error = f"audio input failed: {exc}"
+            with self.lock:
+                self.voice_recording = False
+                self.voice_asr_session = None
+                self.voice_last_error = error
+            self.add_action_log(f"语音录音启动异常：{exc}")
+            self.publish_voice_status()
+            return {"ok": False, "recording": False, "error": error}
 
         output_path = ROOT / "data" / "recordings" / f"voice-{int(time.time())}-{uuid.uuid4().hex}.wav"
         with self.lock:
@@ -1002,10 +1087,24 @@ class AppState:
             self.voice_recording = True
             self.voice_recording_path = str(output_path)
             self.voice_last_error = None
+            self.voice_last_partial = None
+            self.voice_asr_session = stream_session
             self.voice_cancel_reason = None
         self.add_action_log(f"语音录音已启动：{reason}")
         self.publish_voice_status()
         return {"ok": True, "recording": True, "path": str(output_path), "session_id": session_id}
+
+    def resolve_voice_reply_behavior(self, requested_behavior: str, configured_policy: str) -> str:
+        requested = str(requested_behavior or "legacy").strip().lower()
+        if requested in {"direct", "callback", "none"}:
+            return requested
+
+        policy = str(configured_policy or "direct").strip().lower()
+        if policy == "silent":
+            return "none"
+        if policy == "callback":
+            return "callback"
+        return "direct"
 
     def stop_voice_recording(
         self,
@@ -1027,6 +1126,7 @@ class AppState:
             auto_transcribe = self.config.voice_auto_transcribe
             reply_policy = self.config.voice_reply_policy
             active_session_id = self.voice_session_id
+            stream_session = self.voice_asr_session
             self.voice_processing = True
 
         try:
@@ -1035,28 +1135,50 @@ class AppState:
             with self.lock:
                 self.voice_recording = False
                 self.voice_processing = False
+                self.voice_asr_session = None
                 self.voice_last_error = str(exc)
             self.add_action_log(f"语音录音停止失败：{exc}")
+            if stream_session is not None:
+                stream_session.cancel()
             self.publish_voice_status()
             return {"ok": False, "recording": False, "error": str(exc)}
 
         with self.lock:
             self.voice_recording = False
             self.voice_recording_path = str(recording.path)
+            self.voice_asr_session = None
         self.add_action_log(f"语音录音已停止：{reason}，时长 {recording.duration_seconds:.1f}s")
 
         transcript: dict[str, Any] | None = None
         if auto_transcribe:
-            self.add_action_log(f"豆包 ASR 请求已发送：{recording.path.name}")
-            transcript = self.transcribe_audio_file(recording.path)
+            if stream_session is not None:
+                self.add_action_log("豆包 BigASR 流式识别正在收尾。")
+                transcript = stream_session.finish(timeout=25)
+                if transcript.get("success") and str(transcript.get("text", "") or "").strip():
+                    self.add_action_log(
+                        f"豆包 BigASR 流式识别完成：chunks={transcript.get('chunks_submitted')} dropped={transcript.get('chunks_dropped')}"
+                    )
+                else:
+                    self.add_action_log(f"豆包 BigASR 流式结果不可用，回退文件识别：{transcript.get('error') or 'empty text'}")
+                    transcript = None
+            if transcript is None:
+                self.add_action_log(f"豆包 ASR 文件识别请求已发送：{recording.path.name}")
+                transcript = self.transcribe_audio_file(recording.path)
             with self.lock:
                 self.voice_last_result = transcript
                 self.voice_last_error = None if transcript.get("success") else str(transcript.get("error", "ASR failed"))
+                self.voice_last_partial = str(transcript.get("text", "") or "").strip() or self.voice_last_partial
             if transcript.get("success"):
                 text = str(transcript.get("text", "") or "").strip()
                 self.add_action_log(f"豆包 ASR 识别结果：{text or '（空）'}")
-                if text and reply_policy in {"direct", "callback"}:
-                    completion_behavior = "direct" if reply_policy == "direct" else "legacy"
+                if is_voice_cancel_command(text):
+                    with self.lock:
+                        self.voice_cancel_reason = f"语音取消：{text}"
+                    self.add_action_log(f"语音命令已取消：{text}")
+                    self.clear_voice_replies("语音取消")
+                    text = ""
+                completion_behavior = self.resolve_voice_reply_behavior(reply_behavior, reply_policy)
+                if text and completion_behavior != "none":
                     self.handle_voice_reply_text(text, completion_behavior, active_session_id)
             else:
                 self.add_action_log(f"豆包 ASR 识别失败：{transcript.get('error')}")
@@ -1074,31 +1196,44 @@ class AppState:
             phone_off_hook = self.last_state == "RELEASED"
             callback_enabled = self.config.enable_callback
 
-        if reply_behavior == "direct":
-            if not still_current or not phone_off_hook:
-                self.add_action_log("语音回复已丢弃：电话已挂机或会话已取消。")
-                return
-            self.enqueue_reply("voice-asr", reply_text, title="语音识别回报")
-            with self.lock:
-                self.callback_session_active = True
-            self.start_reply_playback("语音会话直接回报")
+        if not still_current:
+            self.add_action_log("语音回复已丢弃：会话已取消或已被新会话替换。")
             return
 
         if reply_behavior == "none":
             return
 
+        if reply_behavior == "direct":
+            self.enqueue_reply("voice-asr", reply_text, title="语音识别回报")
+            if phone_off_hook:
+                with self.lock:
+                    self.callback_session_active = True
+                self.start_reply_playback("语音会话直接回报")
+            elif callback_enabled:
+                self.add_action_log("电话已挂机：语音回报转入回拨提醒。")
+                self.start_operator_alert("voice-asr")
+            else:
+                self.add_action_log("语音回报已入队：电话已挂机且回拨开关关闭。")
+            return
+
         self.enqueue_reply("voice-asr", reply_text, title="语音识别回报")
         with self.lock:
+            phone_off_hook = self.last_state == "RELEASED"
             should_alert = self.last_state == "PRESSED" and callback_enabled
+        if phone_off_hook:
+            with self.lock:
+                self.callback_session_active = True
+            self.start_reply_playback("语音回拨已接听")
+            return
         if should_alert:
             self.start_operator_alert("voice-asr")
 
-    def start_agent_voice_session(self, reason: str = "摘机通话") -> dict[str, Any]:
+    def start_agent_voice_session(self, reason: str = "摘机通话", *, allow_on_hook: bool = False) -> dict[str, Any]:
         with self.lock:
             if normalize_business_mode(self.config.business_mode) != "doubao":
                 self.add_action_log("Agent 语音会话未启动：当前不是 Agent 模式。")
                 return {"ok": False, "error": "not in doubao mode"}
-            if self.last_state != "RELEASED":
+            if self.last_state != "RELEASED" and not allow_on_hook:
                 self.add_action_log(f"Agent 语音会话未启动：电话状态为 {hook_state_label(self.last_state)}，需要先处于抬起状态。")
                 return {"ok": False, "error": "phone is on-hook"}
             if self.active_reply is not None or (self.playback_thread is not None and self.playback_thread.is_alive()):
@@ -1113,20 +1248,27 @@ class AppState:
             return result
 
         session_id = int(result.get("session_id", 0))
-        thread = threading.Thread(target=self.voice_turn_monitor_worker, args=(session_id,), daemon=True)
+        thread = threading.Thread(
+            target=self.voice_turn_monitor_worker,
+            args=(session_id,),
+            kwargs={"require_off_hook": not allow_on_hook},
+            daemon=True,
+        )
         with self.lock:
             self.voice_monitor_thread = thread
         thread.start()
         return result
 
-    def voice_turn_monitor_worker(self, session_id: int) -> None:
+    def voice_turn_monitor_worker(self, session_id: int, *, require_off_hook: bool = True) -> None:
         while True:
             time.sleep(0.12)
             with self.lock:
                 still_current = session_id == self.voice_session_id
                 phone_off_hook = self.last_state == "RELEASED"
                 processing = self.voice_processing
-            if not still_current or not phone_off_hook or processing:
+            if not still_current or processing:
+                return
+            if require_off_hook and not phone_off_hook:
                 return
             if self.recorder is None or not self.recorder.is_recording():
                 return
@@ -1136,11 +1278,38 @@ class AppState:
             silence = activity["silence_seconds"]
             has_voice = activity["peak_level"] >= VOICE_LEVEL_THRESHOLD
             if has_voice and duration >= VOICE_TURN_MAX_SECONDS:
-                self.stop_voice_recording("达到最长语音轮次，自动提交", reply_behavior="direct", session_id=session_id)
+                self.stop_voice_recording("达到最长语音轮次，自动提交", reply_behavior="legacy", session_id=session_id)
                 return
             if has_voice and duration >= VOICE_TURN_MIN_SECONDS and silence >= VOICE_TURN_SILENCE_SECONDS:
-                self.stop_voice_recording("静音自动提交", reply_behavior="direct", session_id=session_id)
+                self.stop_voice_recording("静音自动提交", reply_behavior="legacy", session_id=session_id)
                 return
+
+    def submit_agent_voice_turn_after_hangup(self, reason: str = "电话挂机") -> bool:
+        with self.lock:
+            session_id = self.voice_session_id
+            processing = self.voice_processing
+            recording = self.voice_recording
+
+        if processing:
+            self.add_action_log("电话已挂机：语音命令继续在后台处理，完成后进入回拨。")
+            self.publish_voice_status()
+            return True
+
+        if not recording or self.recorder is None or not self.recorder.is_recording():
+            return False
+
+        self.add_action_log("电话已挂机：已把当前语音命令提交到后台，完成后进入回拨。")
+        thread = threading.Thread(
+            target=self.stop_voice_recording,
+            args=(reason,),
+            kwargs={"reply_behavior": "legacy", "session_id": session_id},
+            daemon=True,
+        )
+        with self.lock:
+            self.voice_monitor_thread = thread
+        thread.start()
+        self.publish_voice_status()
+        return True
 
     def cancel_agent_voice_session(self, reason: str = "电话挂机") -> None:
         with self.lock:
@@ -1149,10 +1318,14 @@ class AppState:
             self.voice_processing = False
             self.voice_recording = False
             self.callback_session_active = False
+            stream_session = self.voice_asr_session
+            self.voice_asr_session = None
 
         if self.recorder is not None and self.recorder.is_recording():
             self.recorder.cancel()
             self.add_action_log(f"语音会话已取消：{reason}")
+        if stream_session is not None:
+            stream_session.cancel()
 
         self.stop_reply_playback(reason, wait_seconds=0.8)
         self.clear_voice_replies(reason)
@@ -1196,6 +1369,29 @@ class AppState:
         self.add_action_log(f"回话已入队：{reply.title}（队列 {self.reply_status()['queue_size']} 条）")
         self.publish_reply_status()
         return reply
+
+    def prepare_operator_report_text(self, source: str, text: str) -> str:
+        clean_text = compact_hook_text(text) or "任务已经完成，通讯员等待向首长回报。"
+        if self.speech is None:
+            return clean_text
+        is_ready = getattr(self.speech, "is_operator_ready", None)
+        format_report = getattr(self.speech, "format_operator_report", None)
+        if not callable(is_ready) or not callable(format_report) or not is_ready():
+            return clean_text
+        try:
+            result = format_report(clean_text, source=source)
+        except Exception as exc:
+            self.add_action_log(f"通讯员润色失败，回退原文：{exc}")
+            return clean_text
+        if isinstance(result, dict) and result.get("success"):
+            report_text = compact_hook_text(result.get("text", ""))
+            if report_text:
+                latency = float(result.get("inference_latency") or 0)
+                self.add_action_log(f"通讯员润色完成：model={result.get('model', 'doubao')} {latency:.1f}s")
+                return report_text
+        error = result.get("error") if isinstance(result, dict) else "unknown"
+        self.add_action_log(f"通讯员润色不可用，回退原文：{error}")
+        return clean_text
 
     def clear_reply_queue(self, reason: str = "manual") -> None:
         self.stop_reply_playback(f"{reason} 清空回话队列", wait_seconds=0.8)
@@ -1374,7 +1570,85 @@ class AppState:
             text, fallback_rate, fallback_volume
         )
 
+    def play_doubao_tts_streaming(
+        self,
+        text: str,
+        stop_event: threading.Event,
+    ) -> tuple[bool, str | None] | None:
+        with self.lock:
+            enabled = self.config.enable_tts_playback
+            speech_rate = max(-50, min(100, int(self.config.tts_speech_rate)))
+            loudness_rate = max(-50, min(100, int(self.config.tts_loudness_rate)))
+            pitch = max(-12, min(12, int(self.config.tts_pitch)))
+            output_device = self.config.audio_output_device.strip() or None
+
+        if (
+            not enabled
+            or self.speech is None
+            or not self.speech.is_tts_ready()
+            or not self.speech.config.tts_streaming_playback_enabled
+        ):
+            return None
+
+        try:
+            import sounddevice as sd
+        except ImportError:
+            self.add_action_log("豆包 TTS 流式播放未启动：缺少 sounddevice，回退整段播放。")
+            return None
+
+        sample_rate = int(self.speech.config.tts_sample_rate or 24000)
+        device = None if output_device in {None, "", "default"} else output_device
+        stream: Any | None = None
+        wrote_audio = False
+        self.add_action_log(f"豆包 TTS 2.0 流式播放已请求：pcm {sample_rate}Hz chars={len(text)}")
+        try:
+            stream = sd.RawOutputStream(
+                samplerate=sample_rate,
+                channels=1,
+                dtype="int16",
+                device=device,
+            )
+            stream.start()
+            for chunk in self.speech.synthesize_tts_pcm_chunks(
+                text,
+                speech_rate=speech_rate,
+                loudness_rate=loudness_rate,
+                pitch=pitch,
+                sample_rate=sample_rate,
+            ):
+                if stop_event.is_set():
+                    return False, "stopped"
+                if not chunk:
+                    continue
+                wrote_audio = True
+                stream.write(chunk)
+                if stop_event.is_set():
+                    return False, "stopped"
+        except VolcengineSpeechError as exc:
+            self.add_action_log(f"豆包 TTS 2.0 流式播放未完成，回退整段播放：{exc}")
+            return (False, "streaming_tts_failed") if wrote_audio else None
+        except Exception as exc:
+            self.add_action_log(f"豆包 TTS 2.0 流式播放异常，回退整段播放：{exc}")
+            return (False, "streaming_tts_failed") if wrote_audio else None
+        finally:
+            if stream is not None:
+                try:
+                    stream.stop()
+                    stream.close()
+                except Exception:
+                    pass
+
+        if not wrote_audio:
+            self.add_action_log("豆包 TTS 2.0 流式播放没有收到音频，回退整段播放。")
+            return None
+        self.add_action_log("豆包 TTS 2.0 流式播放完成。")
+        return True, None
+
     def wait_for_reply_audio(self, reply: ReplyTask, stop_event: threading.Event) -> tuple[bool, str | None]:
+        streaming_result = self.play_doubao_tts_streaming(reply.text, stop_event)
+        if streaming_result is not None:
+            return streaming_result
+
         process = self.start_tts_process(reply.text)
         with self.lock:
             self.playback_process = process
@@ -1633,12 +1907,19 @@ class AppState:
 
         if state == "PRESSED":
             with self.lock:
-                playing = self.active_reply is not None
+                playing = self.active_reply is not None or (self.playback_thread is not None and self.playback_thread.is_alive())
                 callback_session_active = self.callback_session_active
                 self.callback_session_active = False
                 business_mode = normalize_business_mode(self.config.business_mode)
             if business_mode == "doubao":
-                self.cancel_agent_voice_session("电话挂机")
+                if playing or callback_session_active:
+                    self.stop_reply_playback("电话挂机停止当前回报", wait_seconds=0.8)
+                    self.clear_voice_replies("电话挂机结束当前语音回话")
+                    self.clear_ai_alert("电话挂机")
+                    return
+                if self.submit_agent_voice_turn_after_hangup("电话挂机"):
+                    return
+                self.clear_ai_alert("电话挂机")
                 return
             if playing or callback_session_active:
                 self.stop_reply_playback("挂机停止播放", wait_seconds=0.8)
@@ -1969,7 +2250,8 @@ class AppState:
 
     def run_ai_hook_signal(self, source: str = "ai", text: str | None = None) -> bool:
         source = (source or "ai").strip() or "ai"
-        self.enqueue_reply(source, text or "任务已经完成，通讯员等待向首长回报。")
+        report_text = self.prepare_operator_report_text(source, text or "任务已经完成，通讯员等待向首长回报。")
+        self.enqueue_reply(source, report_text, title=f"{source} 通讯员回报")
         with self.lock:
             already_off_hook = self.last_state == "RELEASED"
             callback_enabled = self.config.enable_callback
@@ -4483,6 +4765,34 @@ INDEX_HTML = r"""<!doctype html>
       display: grid;
       gap: 12px;
     }
+    .settings-advanced {
+      border-top: 1px solid var(--line-soft);
+      padding-top: 10px;
+    }
+    .settings-advanced summary {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: #333;
+      font-weight: 600;
+      cursor: pointer;
+      list-style: none;
+    }
+    .settings-advanced summary::-webkit-details-marker { display: none; }
+    .settings-advanced summary::after {
+      content: "+";
+      color: var(--muted);
+      font-weight: 600;
+      font-size: 18px;
+    }
+    .settings-advanced[open] summary::after { content: "-"; }
+    .settings-advanced-body {
+      display: grid;
+      gap: 0;
+      padding-bottom: 6px;
+    }
     .voice-persona-card strong {
       display: block;
       font-size: 15px;
@@ -4764,6 +5074,13 @@ INDEX_HTML = r"""<!doctype html>
       overflow: hidden;
       text-overflow: ellipsis;
     }
+    .debug-status-grid .hardware-status-item strong {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
     .hardware-actions {
       display: flex;
       flex-wrap: wrap;
@@ -5022,7 +5339,7 @@ INDEX_HTML = r"""<!doctype html>
           <div id="agentModeSettings" class="mode-fields">
             <div class="settings-row">
               <span class="icon-cell"><i data-lucide="wrench"></i></span>
-              <div class="row-label"><strong>工具调用</strong><span>对话模型可调用本机工具</span></div>
+              <div class="row-label"><strong>工具调用</strong></div>
               <div class="row-control">
                 <select id="agentPermissionProfile">
                   <option value="commander">允许</option>
@@ -5033,7 +5350,7 @@ INDEX_HTML = r"""<!doctype html>
 
             <div class="settings-row">
               <span class="icon-cell"><i data-lucide="route"></i></span>
-              <div class="row-label"><strong>回拨入口</strong><span>工具完成后使用全局入口</span></div>
+              <div class="row-label"><strong>回拨入口</strong></div>
               <div class="row-control">
                 <input type="text" value="使用全局回话入口" readonly>
               </div>
@@ -5041,7 +5358,7 @@ INDEX_HTML = r"""<!doctype html>
 
             <div class="settings-row">
               <span class="icon-cell"><i data-lucide="message-square-reply"></i></span>
-              <div class="row-label"><strong>完成回报</strong><span>AI 对话轮次完成后的处理方式</span></div>
+              <div class="row-label"><strong>完成回报</strong></div>
               <div class="row-control">
                 <select id="voiceReplyPolicy">
                   <option value="direct">直接播报</option>
@@ -5055,7 +5372,7 @@ INDEX_HTML = r"""<!doctype html>
           <div id="inputModeSettings" class="mode-fields" hidden>
             <div class="settings-row">
               <span class="icon-cell"><i data-lucide="list"></i></span>
-              <div class="row-label"><strong>当前方案</strong><span>手动切换当前软件要用的快捷键方案</span></div>
+              <div class="row-label"><strong>当前方案</strong></div>
               <div class="row-control">
                 <select id="activeInputProfile" onchange="selectInputProfile(this.value)"></select>
               </div>
@@ -5065,7 +5382,7 @@ INDEX_HTML = r"""<!doctype html>
             <div class="shortcut-editor">
               <div class="shortcut-row">
                 <span class="icon-cell"><i data-lucide="phone-off"></i></span>
-                <div class="row-label"><strong>抬起动作</strong><span>快捷键 1，可选等待，再触发快捷键 2</span></div>
+                <div class="row-label"><strong>抬起动作</strong></div>
                 <div class="shortcut-control"><span class="field-caption">快捷键 1</span><button id="release_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_primary_hotkey')">无</button></div>
                 <label class="delay-field"><span class="field-caption">等待毫秒</span><input id="release_delay_ms" type="number" min="0" max="10000" step="100" value="0"></label>
                 <div class="shortcut-control"><span class="field-caption">快捷键 2</span><button id="release_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_follow_hotkey')">无</button></div>
@@ -5073,7 +5390,7 @@ INDEX_HTML = r"""<!doctype html>
 
               <div class="shortcut-row">
                 <span class="icon-cell"><i data-lucide="phone-call"></i></span>
-                <div class="row-label"><strong>按下动作</strong><span>快捷键 1，可选等待，再触发快捷键 2</span></div>
+                <div class="row-label"><strong>按下动作</strong></div>
                 <div class="shortcut-control"><span class="field-caption">快捷键 1</span><button id="press_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_primary_hotkey')">无</button></div>
                 <label class="delay-field"><span class="field-caption">等待毫秒</span><input id="press_delay_ms" type="number" min="0" max="10000" step="100" value="0"></label>
                 <div class="shortcut-control"><span class="field-caption">快捷键 2</span><button id="press_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_follow_hotkey')">无</button></div>
@@ -5088,7 +5405,7 @@ INDEX_HTML = r"""<!doctype html>
             <div id="shortcutManagerPanel" class="manager-panel" hidden>
               <div class="settings-row">
                 <span class="icon-cell"><i data-lucide="pencil"></i></span>
-                <div class="row-label"><strong>方案名称</strong><span>例如 Codex 输入、豆包客户端、浏览器语音</span></div>
+                <div class="row-label"><strong>方案名称</strong></div>
                 <div class="row-control">
                   <input id="inputProfileName" type="text" placeholder="例如：Codex 输入">
                 </div>
@@ -5131,7 +5448,7 @@ INDEX_HTML = r"""<!doctype html>
 
           <div class="settings-row">
             <span class="icon-cell"><i data-lucide="key-round"></i></span>
-            <div class="row-label"><strong>火山 API Key</strong><span>用于 ASR / TTS，请从火山语音控制台获取</span></div>
+            <div class="row-label"><strong>API Key</strong><span>ASR / TTS / 通讯员共用</span></div>
             <div class="row-control read-only-control">
               <input id="speechApiKey" class="secret-field" type="password" autocomplete="off" placeholder="保存后写入本机 .env">
               <button class="small-action" type="button" onclick="saveConfig()">保存</button>
@@ -5139,8 +5456,17 @@ INDEX_HTML = r"""<!doctype html>
           </div>
 
           <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="message-square-text"></i></span>
+            <div class="row-label"><strong>通讯员润色</strong></div>
+            <label class="switch" aria-label="通讯员润色">
+              <input id="operatorPolishEnabled" type="checkbox">
+              <span></span>
+            </label>
+          </div>
+
+          <div class="settings-row">
             <span class="icon-cell"><i data-lucide="audio-lines"></i></span>
-            <div class="row-label"><strong>语音识别</strong><span>摘机对话使用 ASR</span></div>
+            <div class="row-label"><strong>语音识别</strong></div>
             <label class="switch" aria-label="语音识别">
               <input id="enableVoiceAsr" type="checkbox">
               <span></span>
@@ -5156,40 +5482,86 @@ INDEX_HTML = r"""<!doctype html>
             </label>
           </div>
 
-          <div class="voice-config-block" aria-label="音色与播报参数">
-            <div class="settings-row">
-              <span class="icon-cell"><i data-lucide="user-round"></i></span>
-              <div class="row-label"><strong>默认音色</strong><span id="voicePersonaMeta">使用当前默认音色</span></div>
-              <div class="row-control read-only-control">
-                <select id="speechSpeaker" aria-label="默认音色">
-                  <option value="">正在读取音色列表...</option>
-                </select>
-                <button class="small-action" type="button" onclick="refreshSpeechSpeakers()">刷新</button>
+          <details class="settings-advanced">
+            <summary>高级模型与播报参数</summary>
+            <div class="settings-advanced-body">
+              <div class="settings-row">
+                <span class="icon-cell"><i data-lucide="bot"></i></span>
+                <div class="row-label"><strong>角色模型</strong></div>
+                <div class="row-control">
+                  <input id="operatorModel" type="text" placeholder="doubao-seed-character-260628">
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <span class="icon-cell"><i data-lucide="radio-receiver"></i></span>
+                <div class="row-label"><strong>实时识别</strong></div>
+                <div class="row-control read-only-control">
+                  <select id="asrChunkMs" aria-label="ASR 分包间隔">
+                    <option value="100">100ms</option>
+                    <option value="150">150ms</option>
+                    <option value="200">200ms</option>
+                  </select>
+                  <label class="switch" aria-label="实时识别">
+                    <input id="asrStreamingEnabled" type="checkbox">
+                    <span></span>
+                  </label>
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <span class="icon-cell"><i data-lucide="whole-word"></i></span>
+                <div class="row-label"><strong>ASR 热词</strong></div>
+                <div class="row-control">
+                  <input id="asrHotwords" type="text" placeholder="键斗,Codex,HG113">
+                </div>
+              </div>
+
+              <div class="settings-row">
+                <span class="icon-cell"><i data-lucide="waves"></i></span>
+                <div class="row-label"><strong>流式播报</strong></div>
+                <label class="switch" aria-label="流式播报">
+                  <input id="ttsStreamingPlayback" type="checkbox">
+                  <span></span>
+                </label>
+              </div>
+
+              <div class="voice-config-block" aria-label="音色与播报参数">
+                <div class="settings-row">
+                  <span class="icon-cell"><i data-lucide="user-round"></i></span>
+                  <div class="row-label"><strong>默认音色</strong><span id="voicePersonaMeta">使用当前默认音色</span></div>
+                  <div class="row-control read-only-control">
+                    <select id="speechSpeaker" aria-label="默认音色">
+                      <option value="">正在读取音色列表...</option>
+                    </select>
+                    <button class="small-action" type="button" onclick="refreshSpeechSpeakers()">刷新</button>
+                  </div>
+                </div>
+
+                <label class="voice-slider">
+                  <span class="voice-slider-head"><strong>音调</strong><output id="ttsPitchValue" for="ttsPitch">0</output></span>
+                  <input id="ttsPitch" type="range" min="-12" max="12" step="1">
+                  <span class="voice-slider-scale"><span>低</span><span>高</span></span>
+                </label>
+
+                <label class="voice-slider">
+                  <span class="voice-slider-head"><strong>语速</strong><output id="ttsSpeechRateValue" for="ttsSpeechRate">0</output></span>
+                  <input id="ttsSpeechRate" type="range" min="-50" max="100" step="1">
+                  <span class="voice-slider-scale"><span>慢</span><span>快</span></span>
+                </label>
+
+                <label class="voice-slider">
+                  <span class="voice-slider-head"><strong>音量</strong><output id="ttsLoudnessRateValue" for="ttsLoudnessRate">0</output></span>
+                  <input id="ttsLoudnessRate" type="range" min="-50" max="100" step="1">
+                  <span class="voice-slider-scale"><span>低</span><span>高</span></span>
+                </label>
               </div>
             </div>
-
-            <label class="voice-slider">
-              <span class="voice-slider-head"><strong>音调</strong><output id="ttsPitchValue" for="ttsPitch">0</output></span>
-              <input id="ttsPitch" type="range" min="-12" max="12" step="1">
-              <span class="voice-slider-scale"><span>低</span><span>高</span></span>
-            </label>
-
-            <label class="voice-slider">
-              <span class="voice-slider-head"><strong>语速</strong><output id="ttsSpeechRateValue" for="ttsSpeechRate">0</output></span>
-              <input id="ttsSpeechRate" type="range" min="-50" max="100" step="1">
-              <span class="voice-slider-scale"><span>慢</span><span>快</span></span>
-            </label>
-
-            <label class="voice-slider">
-              <span class="voice-slider-head"><strong>音量</strong><output id="ttsLoudnessRateValue" for="ttsLoudnessRate">0</output></span>
-              <input id="ttsLoudnessRate" type="range" min="-50" max="100" step="1">
-              <span class="voice-slider-scale"><span>低</span><span>高</span></span>
-            </label>
-          </div>
+          </details>
 
           <div class="settings-row">
             <span class="icon-cell"><i data-lucide="key-round"></i></span>
-            <div class="row-label"><strong>密钥状态</strong><span>ASR / TTS</span></div>
+            <div class="row-label"><strong>密钥状态</strong></div>
             <div class="row-control text-value" id="speechState">未就绪</div>
           </div>
 
@@ -5204,7 +5576,7 @@ INDEX_HTML = r"""<!doctype html>
 
           <div class="settings-row">
             <span class="icon-cell"><i data-lucide="link"></i></span>
-            <div class="row-label"><strong>回话入口</strong><span>任务完成回拨入口</span></div>
+            <div class="row-label"><strong>回话入口</strong></div>
             <div class="row-control read-only-control">
               <input id="callbackEndpoint" type="text" readonly>
               <button class="small-action" type="button" onclick="copyCallbackEndpoint()">复制</button>
@@ -5441,10 +5813,11 @@ INDEX_HTML = r"""<!doctype html>
 
     function updateSpeechSecretState(status = {}) {
       const input = $("speechApiKey");
-      if (!input) return;
       const configured = status.credential_mode && status.credential_mode !== "missing";
-      input.classList.toggle("configured", Boolean(configured));
-      input.placeholder = configured ? "••••••••••••（已保存）" : "保存后写入本机 .env";
+      if (input) {
+        input.classList.toggle("configured", Boolean(configured));
+        input.placeholder = configured ? "••••••••••••（已保存）" : "保存后写入本机 .env";
+      }
     }
 
     async function fetchJson(url, options = {}, timeoutMs = 30000) {
@@ -5800,6 +6173,12 @@ INDEX_HTML = r"""<!doctype html>
         setValue("ttsModel", status.tts_model || "seed-tts-2.0-standard");
         setSelectValue("ttsFormat", status.tts_format || "wav");
         setSelectValue("ttsSampleRate", String(status.tts_sample_rate || 24000));
+        setChecked("ttsStreamingPlayback", status.tts_streaming_playback_enabled !== false);
+        setChecked("asrStreamingEnabled", status.asr_streaming_enabled !== false);
+        setSelectValue("asrChunkMs", String(status.asr_chunk_ms || 200));
+        setValue("asrHotwords", status.asr_hotwords || "");
+        setChecked("operatorPolishEnabled", status.operator_polish_enabled !== false);
+        setValue("operatorModel", status.operator_model || "doubao-seed-character-260628");
         setSelectValue("ttsExplicitLanguage", status.tts_explicit_language || "");
         setValue("ttsExplicitDialect", status.tts_explicit_dialect || "");
         setChecked("ttsDisableMarkdownFilter", status.tts_disable_markdown_filter !== false);
@@ -5807,6 +6186,7 @@ INDEX_HTML = r"""<!doctype html>
         const readyParts = [];
         if (status.tts_ready) readyParts.push("TTS");
         if (status.asr_ready) readyParts.push("ASR");
+        if (status.operator_ready) readyParts.push("通讯员");
         $("speechState").textContent = readyParts.length ? `${readyParts.join(" / ")} 可用` : "未就绪";
         updateSpeechDebugStatus(status);
         updateSpeechSecretState(status);
@@ -5918,13 +6298,15 @@ INDEX_HTML = r"""<!doctype html>
         state = "缺少 sounddevice";
       } else if (latestVoiceStatus.recording) {
         const seconds = Math.round(Number(latestVoiceStatus.recording_duration_seconds || 0));
-        state = `录音中 ${seconds}s`;
+        state = latestVoiceStatus.streaming_asr ? `实时识别中 ${seconds}s` : `录音中 ${seconds}s`;
       } else if (latestVoiceStatus.processing) {
         state = "识别中";
       }
       updateDebugTile("debugVoiceState", state);
       if (latestVoiceStatus.last_error) {
         updateDebugTile("debugModelState", `错误：${String(latestVoiceStatus.last_error).slice(0, 36)}`);
+      } else if (latestVoiceStatus.partial_text) {
+        updateDebugTile("debugModelState", `识别中：${String(latestVoiceStatus.partial_text).slice(0, 36)}`);
       } else {
         updateDebugTile("debugModelState", summarizeModelResult(latestVoiceStatus.last_result));
       }
@@ -5933,8 +6315,9 @@ INDEX_HTML = r"""<!doctype html>
     function updateSpeechDebugStatus(payload = {}) {
       latestSpeechStatus = {...latestSpeechStatus, ...payload};
       const parts = [];
-      if (latestSpeechStatus.asr_ready) parts.push("ASR");
-      if (latestSpeechStatus.tts_ready) parts.push("TTS");
+      if (latestSpeechStatus.asr_ready) parts.push(latestSpeechStatus.asr_streaming_enabled === false ? "ASR" : "实时 ASR");
+      if (latestSpeechStatus.tts_ready) parts.push(latestSpeechStatus.tts_streaming_playback_enabled === false ? "TTS" : "流式 TTS");
+      if (latestSpeechStatus.operator_ready) parts.push("通讯员润色");
       updateDebugTile("debugSpeechState", parts.length ? `${parts.join(" / ")} 可用` : "未就绪");
     }
 
@@ -6034,16 +6417,21 @@ INDEX_HTML = r"""<!doctype html>
     async function saveSpeechConfigIfNeeded() {
       const apiKey = $("speechApiKey")?.value?.trim() || "";
       const speaker = $("speechSpeaker").value.trim();
-      if (!speaker && !apiKey) return;
       const payload = {
         tts_resource_id: $("ttsResourceId").value.trim(),
         tts_model: $("ttsModel").value.trim(),
         tts_format: $("ttsFormat").value,
         tts_sample_rate: $("ttsSampleRate").value,
+        tts_streaming_playback_enabled: $("ttsStreamingPlayback").checked,
         tts_explicit_language: $("ttsExplicitLanguage").value,
         tts_explicit_dialect: $("ttsExplicitDialect").value.trim(),
         tts_disable_markdown_filter: $("ttsDisableMarkdownFilter").checked,
-        tts_disable_emoji_filter: $("ttsDisableEmojiFilter").checked
+        tts_disable_emoji_filter: $("ttsDisableEmojiFilter").checked,
+        asr_streaming_enabled: $("asrStreamingEnabled").checked,
+        asr_chunk_ms: $("asrChunkMs").value,
+        asr_hotwords: $("asrHotwords").value.trim(),
+        operator_polish_enabled: $("operatorPolishEnabled").checked,
+        operator_model: $("operatorModel").value.trim()
       };
       if (speaker) payload.tts_speaker = speaker;
       if (apiKey) payload.api_key = apiKey;
@@ -6110,7 +6498,7 @@ INDEX_HTML = r"""<!doctype html>
         const result = await fetchJson("/api/agent/start", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({reason: "调试页测试"})
+          body: JSON.stringify({reason: "调试页测试", allow_on_hook: true})
         }, 10000);
         const errorText = result.error === "phone is on-hook" ? "电话状态不是抬起" : (result.error || "未知原因");
         updateVoiceDebugStatus(result.ok ? result : {recording: false, processing: false, last_error: errorText});
@@ -6498,16 +6886,40 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             api_key = str(data.get("api_key") or data.get("VOLCENGINE_API_KEY") or "").strip()
             if api_key:
                 values["VOLCENGINE_API_KEY"] = api_key
+            ark_api_key = str(data.get("ark_api_key") or data.get("ARK_API_KEY") or "").strip()
+            if ark_api_key:
+                values["ARK_API_KEY"] = ark_api_key
             env_mapping = {
                 "tts_speaker": "DOUBAO_TTS_SPEAKER",
                 "tts_resource_id": "DOUBAO_TTS_RESOURCE_ID",
                 "tts_model": "DOUBAO_TTS_MODEL",
                 "tts_format": "DOUBAO_TTS_FORMAT",
                 "tts_sample_rate": "DOUBAO_TTS_SAMPLE_RATE",
+                "tts_streaming_playback_enabled": "DOUBAO_TTS_STREAMING_PLAYBACK_ENABLED",
                 "tts_explicit_language": "DOUBAO_TTS_EXPLICIT_LANGUAGE",
                 "tts_explicit_dialect": "DOUBAO_TTS_EXPLICIT_DIALECT",
                 "tts_disable_markdown_filter": "DOUBAO_TTS_DISABLE_MARKDOWN_FILTER",
                 "tts_disable_emoji_filter": "DOUBAO_TTS_DISABLE_EMOJI_FILTER",
+                "asr_streaming_enabled": "DOUBAO_ASR_STREAMING_ENABLED",
+                "asr_chunk_ms": "DOUBAO_ASR_CHUNK_MS",
+                "asr_boosting_table_id": "DOUBAO_ASR_BOOSTING_TABLE_ID",
+                "asr_boosting_table_name": "DOUBAO_ASR_BOOSTING_TABLE_NAME",
+                "asr_hotwords": "DOUBAO_ASR_HOTWORDS",
+                "operator_polish_enabled": "DOUBAO_OPERATOR_POLISH_ENABLED",
+                "operator_model": "DOUBAO_OPERATOR_MODEL",
+                "operator_endpoint": "ARK_CHAT_COMPLETIONS_ENDPOINT",
+                "operator_system_prompt": "DOUBAO_OPERATOR_SYSTEM_PROMPT",
+                "operator_max_tokens": "DOUBAO_OPERATOR_MAX_TOKENS",
+            }
+            clearable_source_keys = {
+                "tts_explicit_language",
+                "tts_explicit_dialect",
+                "asr_boosting_table_id",
+                "asr_boosting_table_name",
+                "asr_hotwords",
+                "operator_model",
+                "operator_endpoint",
+                "operator_system_prompt",
             }
             for source_key, env_key in env_mapping.items():
                 if source_key not in data:
@@ -6517,7 +6929,7 @@ class ConsoleHandler(BaseHTTPRequestHandler):
                     values[env_key] = "true" if value else "false"
                 else:
                     text = str(value or "").strip()
-                    if text:
+                    if text or source_key in clearable_source_keys:
                         values[env_key] = text
             if not values:
                 self.send_json({"ok": False, "error": "no speech configuration values were provided"})
@@ -6530,7 +6942,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         elif route == "/api/agent/start":
             data = self.read_json()
             reason = str(data.get("reason", "web"))
-            self.send_json(self.app.start_agent_voice_session(reason))
+            allow_on_hook = bool(data.get("allow_on_hook", False))
+            self.send_json(self.app.start_agent_voice_session(reason, allow_on_hook=allow_on_hook))
         elif route == "/api/voice/stop":
             data = self.read_json()
             reason = str(data.get("reason", "web"))

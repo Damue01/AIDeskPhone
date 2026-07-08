@@ -5,7 +5,7 @@ from pathlib import Path
 import threading
 import time
 import wave
-from typing import Any
+from typing import Any, Callable
 
 
 class AudioRecorderError(RuntimeError):
@@ -54,7 +54,14 @@ class AudioRecorder:
             return False
         return True
 
-    def start(self, *, sample_rate: int = 16000, channels: int = 1, device: str | int | None = None) -> None:
+    def start(
+        self,
+        *,
+        sample_rate: int = 16000,
+        channels: int = 1,
+        device: str | int | None = None,
+        on_audio_chunk: Callable[[bytes], None] | None = None,
+    ) -> None:
         if self._stream is not None:
             raise AudioRecorderError("recording already active")
 
@@ -79,21 +86,45 @@ class AudioRecorder:
                 pass
             level = pcm_average_abs(indata)
             now = time.monotonic()
+            audio = bytes(indata)
             with self._lock:
-                self._frames.append(bytes(indata))
+                self._frames.append(audio)
                 self._last_level = level
                 self._peak_level = max(self._peak_level, level)
                 if level >= 650:
                     self._last_voice_at = now
+            if on_audio_chunk is not None:
+                try:
+                    on_audio_chunk(audio)
+                except Exception:
+                    pass
 
-        self._stream = sd.RawInputStream(
-            samplerate=sample_rate,
-            channels=channels,
-            dtype="int16",
-            device=self.device,
-            callback=callback,
-        )
-        self._stream.start()
+        stream: Any | None = None
+        try:
+            stream = sd.RawInputStream(
+                samplerate=sample_rate,
+                channels=channels,
+                dtype="int16",
+                device=self.device,
+                callback=callback,
+            )
+            stream.start()
+        except Exception as exc:
+            if stream is not None:
+                try:
+                    stream.close()
+                except Exception:
+                    pass
+            with self._lock:
+                self._frames = []
+                self._last_level = 0.0
+                self._peak_level = 0.0
+                self._last_voice_at = None
+                self._started_at = None
+            self._stream = None
+            raise AudioRecorderError(f"failed to start audio input: {exc}") from exc
+
+        self._stream = stream
 
     def stop_to_wav(self, output_path: Path) -> RecordingResult:
         if self._stream is None:

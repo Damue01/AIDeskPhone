@@ -13,7 +13,7 @@ ESP32-C3 不发送网页，也不画页面。它只负责 GPIO 状态上报和�
 响铃：1 秒响 -> 4 秒停 -> 循环
 灯光：LED 与蜂鸣器同步，1 秒亮 -> 4 秒灭 -> 循环
 停止：摘机接听，或在页面点击“停止提醒”
-回话：摘机后按队列顺序播放；播放中挂机会立即停止当前播放
+回话：摘机后按队列顺序播放；AI 播报中挂机会立即停止当前播放；用户语音提交后挂机会继续后台处理并在完成后回拨
 超时：约 90 秒无人接听后停止普通响铃，切换忙音节奏
 ```
 
@@ -71,7 +71,32 @@ DOUBAO_TTS_SPEAKER=zh_female_tianmeitaozi_uranus_bigtts
 如果使用旧版语音控制台凭据，再改填 `VOLCENGINE_APP_ID` 和 `VOLCENGINE_ACCESS_TOKEN`。
 新版 API Key 存在时，控制台会优先使用新版 `X-Api-Key` 接入。
 
-回话播放时，控制台会优先调用豆包 TTS 2.0 生成音频；如果 `.env` 未配置或请求失败，会回退到 Windows TTS / 模拟播放。
+回话播放时，控制台会优先调用豆包 TTS 2.0。默认优先使用 SSE 返回的 PCM 音频块做流式播放；
+如果声卡流式播放、`.env` 配置或请求失败，会回退到原来的整段音频 / Windows TTS / 模拟播放。
+录音会话会优先使用 BigASR WebSocket 流式识别，麦克风音频会在录音期间按 `DOUBAO_ASR_CHUNK_MS`
+持续发送，默认 200ms；如果流式结果为空或失败，会自动回退到保存下来的 WAV 文件识别。
+
+Codex hook 文本可以先交给 Ark 角色模型润色成“通讯员回报”再入队。默认复用
+`VOLCENGINE_API_KEY`；如果角色模型要走独立凭据，再额外填写 `ARK_API_KEY`。配置后，`/api/ai/hook`
+和 `/hook` 会把 Codex 原始回复整理成更适合电话播报的口吻；如果模型未配置或请求失败，会直接回退原文，
+不会影响回拨提醒。
+
+```text
+ARK_API_KEY=...  # optional
+ARK_CHAT_COMPLETIONS_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/chat/completions
+DOUBAO_OPERATOR_POLISH_ENABLED=true
+DOUBAO_OPERATOR_MODEL=doubao-seed-character-260628
+DOUBAO_OPERATOR_MAX_TOKENS=900
+```
+
+专业词或自定义词可以放到热词配置里，例如：
+
+```text
+DOUBAO_ASR_HOTWORDS=键斗,Codex,HG113
+DOUBAO_ASR_BOOSTING_TABLE_ID=...
+DOUBAO_ASR_BOOSTING_TABLE_NAME=...
+DOUBAO_TTS_STREAMING_PLAYBACK_ENABLED=true
+```
 
 检查语音服务状态：
 
@@ -95,7 +120,7 @@ GET  http://127.0.0.1:8765/api/voice/status
 ```
 
 在 `business_mode = doubao` 时，电话 `RELEASED` 会进入摘机通话；后台用静音检测自动截断一轮语音并调用豆包 ASR。
-如果电话仍然保持摘机，识别结果会直接播放回话；`PRESSED` 只表示挂机/取消，会停止录音、停止播放并丢弃本轮语音回话。
+如果电话仍然保持摘机，识别结果会按配置直接播放或入队；如果用户说完后 `PRESSED` 挂机，当前录音/识别会继续在后台完成，完成后通过回话队列回拨。只有 AI 正在播报时挂机，才会立即停止当前播报并结束这次语音回话。
 
 ## 抬起 / 按下信号
 

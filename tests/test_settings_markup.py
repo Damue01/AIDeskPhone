@@ -15,8 +15,16 @@ class SettingsMarkupTest(unittest.TestCase):
         self.assertIn("回话入口", INDEX_HTML)
         self.assertIn("工具调用", INDEX_HTML)
         self.assertIn("完成回报", INDEX_HTML)
+        self.assertIn("实时识别", INDEX_HTML)
+        self.assertIn("ASR 热词", INDEX_HTML)
         self.assertIn("音色与播报参数", INDEX_HTML)
-        self.assertIn("火山 API Key", INDEX_HTML)
+        self.assertIn("流式播报", INDEX_HTML)
+        self.assertIn("API Key", INDEX_HTML)
+        self.assertIn("ASR / TTS / 通讯员共用", INDEX_HTML)
+        self.assertIn("高级模型与播报参数", INDEX_HTML)
+        self.assertIn("通讯员润色", INDEX_HTML)
+        self.assertIn("角色模型", INDEX_HTML)
+        self.assertIn("doubao-seed-character-260628", INDEX_HTML)
         self.assertIn("••••••••••••（已保存）", INDEX_HTML)
         self.assertIn("默认音色", INDEX_HTML)
         self.assertIn("音调", INDEX_HTML)
@@ -48,6 +56,9 @@ class SettingsMarkupTest(unittest.TestCase):
         self.assertNotIn('id="ttsRate"', INDEX_HTML)
         self.assertNotIn('id="ttsVolume"', INDEX_HTML)
         self.assertNotIn("Codex hook", INDEX_HTML)
+        self.assertNotIn("火山 API Key", INDEX_HTML)
+        self.assertNotIn("Ark 角色 API Key", INDEX_HTML)
+        self.assertNotIn('id="operatorApiKey"', INDEX_HTML)
 
 
 if __name__ == "__main__":

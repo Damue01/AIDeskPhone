@@ -1,6 +1,22 @@
 import unittest
+import base64
+import json
+import os
+import tempfile
+from pathlib import Path
+from unittest.mock import patch
 
-from tools.volcengine_speech import SpeechConfig, VolcengineSpeech, auth_headers, normalize_speaker_list
+from tools.volcengine_speech import (
+    SpeechConfig,
+    StreamingAsrSession,
+    VolcengineSpeech,
+    auth_headers,
+    build_operator_report_payload,
+    build_asr_init_payload,
+    extract_chat_completion_text,
+    normalize_speaker_list,
+    upsert_dotenv_values,
+)
 
 
 def make_config(**overrides: object) -> SpeechConfig:
@@ -15,6 +31,7 @@ def make_config(**overrides: object) -> SpeechConfig:
         "tts_speaker": "zh_female_demo",
         "tts_format": "wav",
         "tts_sample_rate": 24000,
+        "tts_streaming_playback_enabled": True,
         "tts_explicit_language": "",
         "tts_explicit_dialect": "",
         "tts_disable_markdown_filter": True,
@@ -24,6 +41,16 @@ def make_config(**overrides: object) -> SpeechConfig:
         "asr_resource_id": "volc.seedasr.sauc.duration",
         "asr_model": "bigmodel",
         "asr_chunk_ms": 100,
+        "asr_streaming_enabled": True,
+        "asr_boosting_table_id": "",
+        "asr_boosting_table_name": "",
+        "asr_hotwords": "",
+        "operator_api_key": "",
+        "operator_endpoint": "https://ark.example.test/api/v3/chat/completions",
+        "operator_model": "doubao-seed-character-260628",
+        "operator_polish_enabled": True,
+        "operator_system_prompt": "你是通讯员。",
+        "operator_max_tokens": 900,
     }
     values.update(overrides)
     return SpeechConfig(**values)
@@ -51,6 +78,18 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
             },
         )
 
+    def test_operator_credentials_reuse_main_api_key_by_default(self) -> None:
+        env = {
+            "VOLCENGINE_API_KEY": "main-key",
+            "ARK_API_KEY": "",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = SpeechConfig.from_env()
+
+        self.assertEqual(config.api_key, "main-key")
+        self.assertEqual(config.operator_api_key, "main-key")
+        self.assertTrue(VolcengineSpeech(config).is_operator_ready())
+
     def test_speaker_refresh_without_openapi_keys_keeps_default_path(self) -> None:
         result = VolcengineSpeech(make_config(api_key="api-key")).list_speakers()
 
@@ -77,6 +116,81 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
         self.assertEqual([speaker["id"] for speaker in speakers], ["zh_female_demo", "zh_male_demo"])
         self.assertEqual(speakers[0]["name"], "示例女声")
         self.assertEqual(speakers[0]["model"], "seed-tts-2.0")
+
+    def test_asr_init_payload_includes_optional_hotword_configuration(self) -> None:
+        config = make_config(
+            asr_boosting_table_id="boost-id",
+            asr_boosting_table_name="desk-phone-terms",
+            asr_hotwords="键斗, Codex\nHG113",
+        )
+
+        payload = build_asr_init_payload(config, 16000)
+
+        self.assertEqual(payload["audio"]["sample_rate"], 16000)
+        self.assertEqual(payload["request"]["boosting_table_id"], "boost-id")
+        self.assertEqual(payload["request"]["boosting_table_name"], "desk-phone-terms")
+        self.assertEqual(payload["request"]["hotwords"], "键斗,Codex,HG113")
+
+    def test_streaming_session_buffers_audio_into_configured_chunks(self) -> None:
+        session = StreamingAsrSession(VolcengineSpeech(make_config()), 16000)
+
+        session.submit_audio(b"\x01" * 1000)
+        session.submit_audio(b"\x02" * 2200)
+        packet = session.audio_queue.get_nowait()
+
+        self.assertEqual(len(packet), 3200)
+        self.assertEqual(session.chunks_submitted, 1)
+        self.assertEqual(session.bytes_submitted, 3200)
+
+    def test_tts_payload_can_override_format_for_streaming_pcm(self) -> None:
+        speech = VolcengineSpeech(make_config(tts_format="wav", tts_sample_rate=24000))
+
+        payload = speech.build_tts_payload("测试", audio_format="pcm", sample_rate=16000)
+
+        self.assertEqual(payload["req_params"]["audio_params"]["format"], "pcm")
+        self.assertEqual(payload["req_params"]["audio_params"]["sample_rate"], 16000)
+
+    def test_tts_sse_audio_chunks_are_yielded_incrementally(self) -> None:
+        audio = b"\x01" * 32
+
+        class FakeResponse:
+            headers = {"Content-Type": "text/event-stream"}
+
+            def iter_lines(self, decode_unicode: bool = False):
+                del decode_unicode
+                payload = {"audio": base64.b64encode(audio).decode("ascii")}
+                yield "data: " + json.dumps(payload)
+                yield "data: [DONE]"
+
+        chunks = list(VolcengineSpeech(make_config()).iter_tts_audio_chunks(FakeResponse()))
+
+        self.assertEqual(chunks, [audio])
+
+    def test_operator_report_payload_targets_character_model(self) -> None:
+        config = make_config(operator_model="doubao-seed-character-260628")
+
+        payload = build_operator_report_payload(config, "任务已经完成，改了配置页。", source="codex")
+
+        self.assertEqual(payload["model"], "doubao-seed-character-260628")
+        self.assertEqual(payload["messages"][0]["role"], "system")
+        self.assertIn("任务已经完成", payload["messages"][1]["content"])
+        self.assertEqual(payload["max_tokens"], 900)
+
+    def test_extract_chat_completion_text_accepts_openai_shape(self) -> None:
+        payload = {"choices": [{"message": {"content": "首长，任务已经完成。"}}]}
+
+        self.assertEqual(extract_chat_completion_text(payload), "首长，任务已经完成。")
+
+    def test_clearable_speech_env_values_can_be_saved_empty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            env_path = f"{directory}/.env"
+            with open(env_path, "w", encoding="utf-8") as file:
+                file.write("DOUBAO_ASR_HOTWORDS=键斗,Codex\n")
+
+            upsert_dotenv_values({"DOUBAO_ASR_HOTWORDS": ""}, path=Path(env_path))
+
+            with open(env_path, "r", encoding="utf-8") as file:
+                self.assertIn("DOUBAO_ASR_HOTWORDS=", file.read())
 
 
 if __name__ == "__main__":
