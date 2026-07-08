@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
-  <title>AI 桌面电话服务通信中枢</title>
+  <title>服务通信中枢</title>
   <style>
     :root {
       color-scheme: dark;
@@ -175,23 +175,8 @@
     .brand-row {
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 0;
       min-width: 0;
-    }
-
-    .brand-mark {
-      width: auto;
-      height: auto;
-      display: grid;
-      place-items: center;
-      flex: 0 0 auto;
-      background: transparent;
-      color: var(--cyan);
-      font-family: var(--display);
-      font-size: 34px;
-      font-weight: 900;
-      line-height: 1;
-      text-shadow: 0 0 18px rgba(125, 246, 227, 0.22);
     }
 
     h1 {
@@ -204,17 +189,6 @@
       letter-spacing: 0;
       overflow-wrap: anywhere;
       text-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
-    }
-
-    .brand-meta {
-      margin-top: 8px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px 14px;
-      color: var(--muted);
-      font-size: 11px;
-      font-weight: 800;
-      text-transform: none;
     }
 
     .clock-block {
@@ -247,8 +221,8 @@
       position: absolute;
       z-index: 7;
       left: 16px;
-      top: 158px;
-      width: 300px;
+      top: 140px;
+      width: 260px;
       border: 0;
       background: transparent;
       pointer-events: auto;
@@ -256,17 +230,25 @@
     }
 
     .view-toggle {
-      height: 40px;
-      padding: 0 14px;
-      border: 1px solid var(--cyan-line);
+      height: 32px;
+      padding: 0 10px;
+      border: 0;
+      border-left: 2px solid var(--cyan-line);
       border-radius: 0;
-      background: var(--black-86);
-      color: var(--ink);
+      background: rgba(6, 17, 15, 0.42);
+      color: var(--muted);
       cursor: pointer;
-      font-size: 12px;
+      font-size: 11px;
       font-weight: 900;
       text-transform: none;
-      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
+      box-shadow: none;
+      backdrop-filter: blur(10px);
+    }
+
+    .view-toggle:hover,
+    .left-panel.open .view-toggle {
+      background: rgba(6, 17, 15, 0.68);
+      color: var(--ink);
     }
 
     .panel-head {
@@ -413,6 +395,12 @@
       text-overflow: ellipsis;
     }
 
+    .panel-body .control:not(:first-child),
+    .button-grid,
+    .telemetry-strip {
+      display: none;
+    }
+
     .right-stack {
       position: absolute;
       z-index: 7;
@@ -421,7 +409,7 @@
       bottom: 80px;
       width: clamp(250px, 22vw, 352px);
       display: grid;
-      grid-template-rows: 1fr 1fr 1fr 0.95fr;
+      grid-template-rows: 1fr 1fr 0.95fr;
       gap: 8px;
       border: 0;
       pointer-events: auto;
@@ -442,11 +430,6 @@
     }
 
     .status-block:nth-child(2) {
-      background: rgba(8, 24, 22, 0.88);
-      color: var(--cyan);
-    }
-
-    .status-block:nth-child(3) {
       background: rgba(18, 48, 44, 0.86);
       color: var(--ink);
     }
@@ -550,19 +533,6 @@
       to { transform: translateX(-50%); }
     }
 
-    .corner-note {
-      position: absolute;
-      z-index: 7;
-      left: 322px;
-      top: 158px;
-      color: rgba(247, 243, 232, 0.52);
-      font-size: 10px;
-      font-weight: 900;
-      text-transform: none;
-      writing-mode: vertical-rl;
-      pointer-events: none;
-    }
-
     .mobile-dock {
       display: none;
     }
@@ -574,10 +544,6 @@
 
       .left-panel {
         width: 256px;
-      }
-
-      .corner-note {
-        left: 292px;
       }
     }
 
@@ -602,8 +568,7 @@
         grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       }
 
-      .right-stack,
-      .corner-note {
+      .right-stack {
         display: none;
       }
 
@@ -624,25 +589,6 @@
         padding: 10px;
       }
 
-      .brand-row {
-        gap: 9px;
-      }
-
-      .brand-mark {
-        width: 32px;
-        height: 32px;
-        flex-basis: 32px;
-        font-size: 22px;
-      }
-
-      .brand-meta {
-        font-size: 10px;
-      }
-
-      .left-panel {
-        display: none;
-      }
-
       .mobile-dock {
         position: absolute;
         z-index: 7;
@@ -651,7 +597,7 @@
         bottom: 70px;
         width: min(366px, calc(100vw - 24px));
         max-width: min(366px, calc(100vw - 24px));
-        display: grid;
+        display: none;
         grid-template-columns: repeat(3, minmax(0, 1fr));
         border: 2px solid var(--cyan-line);
         background: var(--surface);
@@ -703,14 +649,7 @@
     <header class="topbar">
       <section class="brand-block" aria-label="系统身份">
         <div class="brand-row">
-          <div class="brand-mark" aria-hidden="true">通</div>
           <h1>服务通信中枢</h1>
-        </div>
-        <div class="brand-meta">
-          <span>AI 桌面电话</span>
-          <span>HG113 话机链路</span>
-          <span>接线员服务</span>
-          <span id="drag-state">拖拽旋转：空闲</span>
         </div>
       </section>
 
@@ -721,10 +660,10 @@
     </header>
 
     <aside class="left-panel" id="view-panel" aria-label="地球视图控制">
-      <button class="view-toggle" id="view-toggle" type="button" aria-expanded="false">视图控制</button>
+      <button class="view-toggle" id="view-toggle" type="button" aria-expanded="false">调整</button>
       <div class="panel-head">
-        <span>视图控制</span>
-        <span>地球</span>
+        <span>界面调整</span>
+        <span>颜色</span>
       </div>
       <div class="panel-body">
         <div class="control">
@@ -767,7 +706,7 @@
         <div class="button-grid">
           <button class="cmd-button" id="pause" type="button" aria-pressed="false">暂停</button>
           <button class="cmd-button" id="ring" type="button" aria-pressed="false">轨道环</button>
-          <button class="cmd-button" id="wire" type="button" aria-pressed="true">经纬网</button>
+          <button class="cmd-button" id="wire" type="button" aria-pressed="false">经纬网</button>
           <button class="cmd-button" id="reset" type="button">复位</button>
         </div>
 
@@ -794,10 +733,6 @@
         <div class="status-huge" id="status-word">在线</div>
       </article>
       <article class="status-block">
-        <div class="status-label">AI 服务响应率</div>
-        <div class="status-huge" id="load-word">98.2%</div>
-      </article>
-      <article class="status-block">
         <div class="status-label">话机链路</div>
         <div class="status-huge" id="sector-word">正常</div>
       </article>
@@ -807,8 +742,6 @@
         <div class="status-value" id="coord-b">通道：接线员-01</div>
       </article>
     </section>
-
-    <div class="corner-note">地球字符层由陆地遮罩实时生成</div>
 
     <nav class="mobile-dock" aria-label="移动端控制">
       <button id="m-pause" type="button" aria-pressed="false">暂停</button>
@@ -859,7 +792,6 @@
       clock: document.getElementById("clock"),
       drag: document.getElementById("drag-state"),
       status: document.getElementById("status-word"),
-      load: document.getElementById("load-word"),
       sector: document.getElementById("sector-word"),
       coordA: document.getElementById("coord-a"),
       coordB: document.getElementById("coord-b")
@@ -882,7 +814,7 @@
       palette: "teal",
       paused: false,
       showRing: false,
-      showWire: true,
+      showWire: false,
       width: 1,
       height: 1,
       dpr: 1,
@@ -943,7 +875,7 @@
       color: 0x7df6e3,
       wireframe: true,
       transparent: true,
-      opacity: 0.055,
+      opacity: 0,
       depthWrite: false
     });
     const wireMesh = new THREE.Mesh(sphereGeometry, wireMaterial);
@@ -1040,6 +972,7 @@
     };
 
     function setPressed(button, value) {
+      if (!button) return;
       button.setAttribute("aria-pressed", String(value));
     }
 
@@ -1137,7 +1070,7 @@
       state.dragging = true;
       state.lastPointer = pointerPoint(event);
       stage.setPointerCapture(event.pointerId);
-      els.drag.textContent = "拖拽旋转：锁定";
+      if (els.drag) els.drag.textContent = "拖拽旋转：锁定";
     });
 
     stage.addEventListener("pointerup", (event) => {
@@ -1145,12 +1078,12 @@
       if (stage.hasPointerCapture(event.pointerId)) {
         stage.releasePointerCapture(event.pointerId);
       }
-      els.drag.textContent = "拖拽旋转：空闲";
+      if (els.drag) els.drag.textContent = "拖拽旋转：空闲";
     });
 
     stage.addEventListener("pointercancel", () => {
       state.dragging = false;
-      els.drag.textContent = "拖拽旋转：空闲";
+      if (els.drag) els.drag.textContent = "拖拽旋转：空闲";
     });
 
     stage.addEventListener("pointermove", (event) => {
@@ -1268,7 +1201,6 @@
         state.fpsLast = now;
       }
 
-      const load = 96.8 + Math.sin(now * 0.0013) * 1.9;
       const lat = 34.0522 + Math.sin(earthGroup.rotation.y) * 11.2;
       const lon = -118.2437 + Math.cos(earthGroup.rotation.y * 0.72) * 23.5;
       const linkStates = ["正常", "排队", "转接", "同步"];
@@ -1278,7 +1210,6 @@
       els.rot.textContent = earthGroup.rotation.y.toFixed(2);
       els.mask.textContent = state.maskPixels[0] !== undefined ? "运行" : "就绪";
       els.status.textContent = state.paused ? "暂停" : "在线";
-      els.load.textContent = `${load.toFixed(1)}%`;
       els.sector.textContent = sector;
       els.coordA.textContent = `服务区 ${Math.abs(lat).toFixed(2)} / ${Math.abs(lon).toFixed(2)}`;
       els.coordB.textContent = `通道：接线员-${String(1 + Math.floor(Math.abs(Math.sin(now * 0.0007)) * 6)).padStart(2, "0")}`;
