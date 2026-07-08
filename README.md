@@ -41,7 +41,7 @@ ESP32-C3 不负责承载网页。它只发送状态数据，并执行蜂鸣器�
 ## 已实现内容
 
 - 本地网页控制台：状态显示、GPIO 波形、GPIO 配置、蜂鸣器测试、LED 测试、方案切换。
-- Agent 待命页：`Start_AI_Desk_Phone.bat` 默认打开 `http://127.0.0.1:8765/command-center/`，用于展示地球屏保和当前 Agent 阶段。
+- Agent 待命页：`Start_AI_Desk_Phone.bat` 默认同时打开配置页 `http://127.0.0.1:8765/` 和 `http://127.0.0.1:8765/command-center/`，后者用于展示地球屏保和当前 Agent 阶段。
 - 摘挂机判定方案可切换：
   - 方案 1：`HIGH = 按下`，`LOW = 抬起`。
   - 方案 2：`LOW = 按下`，`HIGH = 抬起`。
@@ -51,6 +51,8 @@ ESP32-C3 不负责承载网页。它只发送状态数据，并执行蜂鸣器�
 - 接线员模式提醒逻辑：任务完成后蜂鸣器和 LED 同步 `1 秒响/亮 -> 4 秒停/灭` 循环；摘机后停止。
 - 约 90 秒无人接听后，普通响铃停止并切换为忙音节奏。
 - 回话队列：hook 文本或手动回话会进入队列，Codex hook 可先经 Ark 角色模型润色成通讯员回报，默认复用主 API Key，摘机后播放；AI 播报中挂机会立即停止当前播报。
+- 默认只使用 Wi-Fi UDP / 模拟链路，不扫描 USB 串口；需要串口调试时，在配置页“调试与校准”打开“串口调试”。
+- 配置页“调试与校准 -> 维护”提供固件烧录按钮，烧录前会先释放串口调试连接。
 - 豆包 / 火山引擎语音链路：支持 TTS 2.0 流式回话播放、BigASR 流式识别、摘机录音和本地模拟页调试；用户说完后挂机会提交后台处理，完成后进入 Agent loop，再电话回拨。
 - 最小 Agent loop：`tools/agent_runtime.py` 已接入 `command_center.earth` skill，可把语音或 `POST /api/agent/turn` 文本转换成地球页面的城市定位、经纬度跳转、返回地球屏保等 tool call。
 - 控制指挥中心地球页：`web/variant-earth-command-center/index.html` 已融合 Three.js 地球和 MapLibre 卫星地图，支持城市级缩放探索。外部 AI 可通过页面桥接接口直接切换状态、跳转城市或经纬度位置。

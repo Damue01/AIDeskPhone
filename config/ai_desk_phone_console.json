@@ -6,8 +6,8 @@
   "release_threshold": 100,
   "strong_low_press_threshold": 70,
   "strong_high_press_threshold": 110,
-  "debounce_ms": 30,
-  "press_lockout_ms": 355,
+  "debounce_ms": 120,
+  "press_lockout_ms": 900,
   "press_score_step": 2,
   "strong_press_score_step": 3,
   "release_score_step": 1,
@@ -40,5 +40,6 @@
   "voice_record_device": "",
   "voice_auto_transcribe": true,
   "voice_reply_policy": "direct",
-  "agent_permission_profile": "commander"
+  "agent_permission_profile": "commander",
+  "enable_serial_debug": false
 }

@@ -64,6 +64,13 @@ class ConsoleConfigInputProfilesTest(unittest.TestCase):
         self.assertEqual(config.active_input_profile()["id"], "codex")
         self.assertEqual(config.active_input_profile_id, "codex")
 
+    def test_serial_debug_is_opt_in(self) -> None:
+        config = ConsoleConfig.from_dict({})
+        enabled = ConsoleConfig.from_dict({"enable_serial_debug": True})
+
+        self.assertFalse(config.enable_serial_debug)
+        self.assertTrue(enabled.enable_serial_debug)
+
 
 if __name__ == "__main__":
     unittest.main()

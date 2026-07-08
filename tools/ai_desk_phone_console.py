@@ -60,6 +60,7 @@ except ImportError:  # pragma: no cover - kept optional for package imports
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "ai_desk_phone_console.json"
 COMMAND_CENTER_DIR = ROOT / "web" / "variant-earth-command-center"
+FIRMWARE_PROJECT_DIR = ROOT / "firmware" / "esp32c3_gpio0_21_test"
 DEFAULT_WEB_PORT = 8765
 DEFAULT_BAUD = 115200
 DEFAULT_UDP_TELEMETRY_PORT = 8766
@@ -67,6 +68,10 @@ DEFAULT_UDP_COMMAND_PORT = 8767
 SERIAL_SCAN_INTERVAL_SECONDS = 2.0
 SERIAL_LOG_INTERVAL_SECONDS = 15.0
 FIRMWARE_DATA_WAIT_SECONDS = 3.0
+RAW_LOG_PUBLISH_INTERVAL_SECONDS = 0.25
+SAMPLE_PUBLISH_INTERVAL_SECONDS = 0.12
+REAL_SAMPLE_SUPPRESS_SIMULATION_SECONDS = 4.0
+FIRMWARE_UPLOAD_TIMEOUT_SECONDS = 180.0
 OPERATOR_RING_ON_SECONDS = 1.0
 OPERATOR_RING_OFF_SECONDS = 4.0
 OPERATOR_RING_TIMEOUT_SECONDS = 90.0
@@ -161,8 +166,8 @@ class ConsoleConfig:
     release_threshold: int = 92
     strong_low_press_threshold: int = 45
     strong_high_press_threshold: int = 120
-    debounce_ms: int = 30
-    press_lockout_ms: int = 350
+    debounce_ms: int = 120
+    press_lockout_ms: int = 900
     press_score_step: int = 2
     strong_press_score_step: int = 3
     release_score_step: int = 1
@@ -189,6 +194,7 @@ class ConsoleConfig:
     voice_auto_transcribe: bool = True
     voice_reply_policy: str = "direct"
     agent_permission_profile: str = "commander"
+    enable_serial_debug: bool = False
 
     def __post_init__(self) -> None:
         self.business_mode = normalize_business_mode(self.business_mode)
@@ -347,9 +353,9 @@ def parse_serial_line(line: str) -> SensorSample | None:
             if firmware_state is None and isinstance(hook, str):
                 hook_upper = hook.upper()
                 if hook_upper == "OFF_HOOK":
-                    firmware_state = "PRESSED"
-                elif hook_upper == "ON_HOOK":
                     firmware_state = "RELEASED"
+                elif hook_upper == "ON_HOOK":
+                    firmware_state = "PRESSED"
 
             return SensorSample(
                 ms=int(payload.get("ms", now_ms)),
@@ -579,17 +585,27 @@ class HookStateMachine:
         self.stable_state = "RELEASED"
         self.raw_state = "RELEASED"
         self.last_change_ms = 0
+        self.last_stable_change_ms = 0
         self.last_press_evidence_ms: int | None = None
         self.last_press_trigger_ms: int | None = None
+        self.initialized = False
+
+    def reset_to_state(self, state: str, ms: int | None = None) -> None:
+        normalized = state if state in {"PRESSED", "RELEASED"} else "RELEASED"
+        timestamp_ms = int(time.monotonic() * 1000) if ms is None else ms
+        self.score = self.config.score_trigger if normalized == "PRESSED" else 0
+        self.stable_state = normalized
+        self.raw_state = normalized
+        self.last_change_ms = timestamp_ms
+        self.last_stable_change_ms = timestamp_ms
+        self.last_press_evidence_ms = timestamp_ms if normalized == "PRESSED" else None
+        self.last_press_trigger_ms = timestamp_ms if normalized == "PRESSED" else None
+        self.initialized = True
 
     def update_config(self, config: ConsoleConfig) -> None:
+        current_state = self.stable_state if self.initialized else "RELEASED"
         self.config = config
-        self.score = 0
-        self.stable_state = "RELEASED"
-        self.raw_state = "RELEASED"
-        self.last_change_ms = 0
-        self.last_press_evidence_ms = None
-        self.last_press_trigger_ms = None
+        self.reset_to_state(current_state)
 
     def is_press_evidence(self, adc: int) -> bool:
         if self.config.adc_low_means_pressed:
@@ -638,24 +654,48 @@ class HookStateMachine:
             return "RELEASED"
         return fallback
 
-    def update(self, sample: SensorSample) -> list[StateEvent]:
+    def update(self, sample: SensorSample, observed_state: str) -> list[StateEvent]:
+        next_raw_state = observed_state if observed_state in {"PRESSED", "RELEASED"} else self.raw_state
+
+        if not self.initialized:
+            self.initialized = True
+            self.stable_state = next_raw_state
+            self.raw_state = next_raw_state
+            self.last_change_ms = sample.ms
+            self.last_stable_change_ms = sample.ms
+            self.score = self.config.score_trigger if next_raw_state == "PRESSED" else 0
+            return []
+
         self.update_score(sample)
-        next_raw_state = self.state_from_score(self.raw_state)
 
         if next_raw_state != self.raw_state:
             self.raw_state = next_raw_state
             self.last_change_ms = sample.ms
 
         events: list[StateEvent] = []
-        if sample.ms - self.last_change_ms >= self.config.debounce_ms and self.raw_state != self.stable_state:
+        if self.raw_state == self.stable_state:
+            return events
+
+        hold_ms = sample.ms - self.last_change_ms
+        debounce_ms = max(0, int(self.config.debounce_ms))
+        lockout_ms = max(0, int(self.config.press_lockout_ms))
+        since_stable_ms = sample.ms - self.last_stable_change_ms
+        if hold_ms >= debounce_ms and not (
+            self.stable_state == "RELEASED"
+            and self.raw_state == "PRESSED"
+            and since_stable_ms < lockout_ms
+        ):
             previous = self.stable_state
             self.stable_state = self.raw_state
+            self.last_stable_change_ms = sample.ms
+            if self.stable_state == "PRESSED":
+                self.last_press_trigger_ms = sample.ms
             events.append(
                 StateEvent(
                     from_state=previous,
                     to_state=self.stable_state,
                     sample=sample,
-                    reason=f"score={self.score} debounce={self.config.debounce_ms}ms",
+                    reason=f"debounce={debounce_ms}ms lockout={lockout_ms}ms hold={hold_ms}ms",
                 )
             )
 
@@ -683,6 +723,22 @@ class AppState:
         self.udp_device_address: tuple[str, int] | None = None
         self.udp_last_seen: float | None = None
         self.udp_lock = threading.Lock()
+        self.serial_debug_lock = threading.Lock()
+        self.serial_debug_allowed = True
+        self.serial_scan_thread: threading.Thread | None = None
+        self.serial_scan_stop: threading.Event | None = None
+        self.serial_preferred_port: str | None = None
+        self.serial_baud = DEFAULT_BAUD
+        self.firmware_lock = threading.Lock()
+        self.firmware_thread: threading.Thread | None = None
+        self.firmware_upload_status: dict[str, Any] = {
+            "active": False,
+            "ok": None,
+            "message": "空闲",
+            "tail": [],
+            "started_at": None,
+            "finished_at": None,
+        }
         self.alerting = False
         self.alert_phase = "idle"
         self.alert_started_at: float | None = None
@@ -728,11 +784,22 @@ class AppState:
         self.sim_started_at: float | None = time.monotonic() if simulation_enabled else None
         self.sim_last_pulse_at = time.monotonic()
         self.sim_auto_pulse_enabled = False
+        self.real_sample_last_seen: float | None = None
+        self.last_raw_log_publish_at = 0.0
+        self.last_sample_publish_at = 0.0
 
     def interpreted_state_for_sample(self, sample: SensorSample) -> str:
         if sample.digital:
             return interpret_hook_state(sample.digital, self.config)
         return sample.firmware_state or self.last_state
+
+    def sample_source(self, sample: SensorSample) -> str:
+        return "simulation" if sample.raw_line.startswith("SIM ") else "device"
+
+    def has_recent_real_sample(self) -> bool:
+        with self.lock:
+            last_seen = self.real_sample_last_seen
+        return last_seen is not None and time.monotonic() - last_seen <= REAL_SAMPLE_SUPPRESS_SIMULATION_SECONDS
 
     def subscribe(self) -> queue.Queue[dict[str, Any]]:
         subscriber: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=200)
@@ -755,9 +822,17 @@ class AppState:
 
     def add_raw_log(self, line: str) -> None:
         text = line.strip()
+        now = time.monotonic()
         with self.lock:
             self.raw_logs.append(text)
-        self.publish({"type": "raw_log", "text": text})
+            should_publish = (
+                text.startswith(">")
+                or now - self.last_raw_log_publish_at >= RAW_LOG_PUBLISH_INTERVAL_SECONDS
+            )
+            if should_publish:
+                self.last_raw_log_publish_at = now
+        if should_publish:
+            self.publish({"type": "raw_log", "text": text})
 
     def add_state_log(self, line: str) -> None:
         stamped = timestamped(line)
@@ -775,7 +850,7 @@ class AppState:
         with self.serial_lock:
             self.serial_handle = ser
             self.serial_port = port
-        self.publish({"type": "serial_status", "serial_connected": True, "port": port})
+        self.publish_serial_status()
 
     def detach_serial(self, ser: Any) -> None:
         disconnected = False
@@ -785,7 +860,7 @@ class AppState:
                 self.serial_port = None
                 disconnected = True
         if disconnected:
-            self.publish({"type": "serial_status", "serial_connected": False, "port": None})
+            self.publish_serial_status()
 
     def is_serial_connected(self) -> bool:
         with self.serial_lock:
@@ -794,6 +869,97 @@ class AppState:
     def current_serial_port(self) -> str | None:
         with self.serial_lock:
             return self.serial_port
+
+    def configure_serial_debug_runtime(self, preferred_port: str | None, baud: int, *, allowed: bool = True) -> None:
+        with self.serial_debug_lock:
+            self.serial_preferred_port = preferred_port
+            self.serial_baud = baud
+            self.serial_debug_allowed = allowed
+
+    def is_serial_debug_running(self) -> bool:
+        with self.serial_debug_lock:
+            thread = self.serial_scan_thread
+            return thread is not None and thread.is_alive()
+
+    def serial_debug_status(self) -> dict[str, Any]:
+        with self.serial_debug_lock:
+            allowed = self.serial_debug_allowed
+            thread = self.serial_scan_thread
+            preferred_port = self.serial_preferred_port
+            baud = self.serial_baud
+            running = thread is not None and thread.is_alive()
+        return {
+            "serial_debug_enabled": bool(self.config.enable_serial_debug and allowed),
+            "serial_debug_allowed": allowed,
+            "serial_debug_running": running,
+            "serial_preferred_port": preferred_port,
+            "serial_baud": baud,
+        }
+
+    def publish_serial_status(self) -> None:
+        self.publish(
+            {
+                "type": "serial_status",
+                "serial_connected": self.is_serial_connected(),
+                "port": self.current_serial_port(),
+                **self.serial_debug_status(),
+            }
+        )
+
+    def start_serial_debug(self, reason: str = "manual") -> bool:
+        with self.serial_debug_lock:
+            if not self.serial_debug_allowed:
+                return False
+            current = self.serial_scan_thread
+            if current is not None and current.is_alive():
+                return True
+            stop_event = threading.Event()
+            thread = threading.Thread(
+                target=serial_worker,
+                args=(self, self.serial_preferred_port, self.serial_baud, stop_event),
+                daemon=True,
+            )
+            self.serial_scan_stop = stop_event
+            self.serial_scan_thread = thread
+        thread.start()
+        self.add_state_log(f"串口调试已开启：{reason}。")
+        self.publish_serial_status()
+        return True
+
+    def stop_serial_debug(self, reason: str = "manual", wait_seconds: float = 0.0) -> bool:
+        with self.serial_debug_lock:
+            stop_event = self.serial_scan_stop
+            thread = self.serial_scan_thread
+            self.serial_scan_stop = None
+            self.serial_scan_thread = None
+        if stop_event is None and thread is None and not self.is_serial_connected():
+            self.publish_serial_status()
+            return False
+        if stop_event is not None:
+            stop_event.set()
+        with self.serial_lock:
+            handle = self.serial_handle
+        if handle is not None:
+            try:
+                handle.close()
+            except Exception:
+                pass
+        if (
+            wait_seconds > 0
+            and thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=wait_seconds)
+        self.add_state_log(f"串口调试已关闭：{reason}。")
+        self.publish_serial_status()
+        return True
+
+    def apply_serial_debug_config(self, reason: str = "配置同步") -> None:
+        if self.config.enable_serial_debug:
+            self.start_serial_debug(reason)
+        else:
+            self.stop_serial_debug(reason)
 
     def attach_udp_socket(self, sock: socket.socket) -> None:
         with self.udp_lock:
@@ -881,12 +1047,14 @@ class AppState:
         return {
             "ok": True,
             **udp,
+            **self.serial_debug_status(),
             "serial_connected": self.is_serial_connected(),
             "serial_port": self.current_serial_port(),
             "real_device_connected": bool(udp["udp_device"]) or source == "device",
             "simulation_enabled": simulation_enabled,
             "sample_count": sample_count,
             "current_sample": current_sample,
+            "firmware_upload": self.firmware_status(),
         }
 
     def next_reply_text_locked(self) -> str | None:
@@ -1910,7 +2078,14 @@ class AppState:
         released_level = "LOW" if pressed_level == "HIGH" else "HIGH"
         return pressed_level if state == "PRESSED" else released_level
 
-    def emit_simulated_sample(self, state: str | None = None, reason: str = "manual", *, log_raw: bool = True) -> dict[str, Any] | None:
+    def emit_simulated_sample(
+        self,
+        state: str | None = None,
+        reason: str = "manual",
+        *,
+        log_raw: bool = True,
+        force: bool = False,
+    ) -> dict[str, Any] | None:
         with self.lock:
             if not self.simulation_enabled:
                 return self.current_sample
@@ -1938,6 +2113,10 @@ class AppState:
         }
         if log_raw:
             self.add_raw_log(f"<sim> {json.dumps(payload_for_log, ensure_ascii=False, separators=(',', ':'))}")
+        if not force and self.has_recent_real_sample():
+            self.publish_simulation_status()
+            with self.lock:
+                return self.current_sample
         sample = SensorSample(
             ms=int(time.monotonic() * 1000),
             adc=0 if digital == "LOW" else 4095,
@@ -2041,13 +2220,24 @@ class AppState:
             self.run_configured_shortcut_for_state(state)
 
     def add_sample(self, sample: SensorSample) -> None:
-        state = self.interpreted_state_for_sample(sample)
-        previous_state = self.last_state
-        if state:
+        source = self.sample_source(sample)
+        if source == "device":
+            with self.lock:
+                self.real_sample_last_seen = time.monotonic()
+
+        observed_state = self.interpreted_state_for_sample(sample)
+        events = self.machine.update(sample, observed_state)
+        state = self.machine.stable_state
+        transition = events[-1] if events else None
+        with self.lock:
             self.last_state = state
-        if state and state != previous_state:
-            source_label = "模拟信号" if sample.raw_line.startswith("SIM ") else "设备信号"
-            self.add_state_log(f"{source_label}判定：{hook_state_label(previous_state)} -> {hook_state_label(state)}")
+
+        if transition is not None:
+            previous_state = transition.from_state
+            source_label = "模拟信号" if source == "simulation" else "设备信号"
+            self.add_state_log(
+                f"{source_label}判定：{hook_state_label(previous_state)} -> {hook_state_label(state)}（{transition.reason}）"
+            )
             self.handle_hook_transition(previous_state, state)
 
         scheme = normalize_hook_scheme(self.config.hook_scheme)
@@ -2065,6 +2255,7 @@ class AppState:
             "digital_value": 0 if sample.digital == "LOW" else 1,
             "firmware_state": sample.firmware_state,
             "python_state": state,
+            "observed_state": observed_state,
             "hook_scheme": scheme,
             "hook_scheme_label": HOOK_SCHEMES[scheme]["label"],
             "hook_scheme_description": HOOK_SCHEMES[scheme]["description"],
@@ -2076,8 +2267,8 @@ class AppState:
             "alert_phase": alert_phase,
             "alert_elapsed_seconds": alert_elapsed_seconds,
             "pending_report_text": pending_report_text,
-            "sample_source": "simulation" if sample.raw_line.startswith("SIM ") else "device",
-            "score": sample.score,
+            "sample_source": source,
+            "score": sample.score if sample.score is not None else self.machine.score,
             "pin": sample.pin,
             "hook": sample.hook,
             "buzzer": sample.buzzer,
@@ -2090,10 +2281,15 @@ class AppState:
             "wifi_disconnect_reason": sample.wifi_disconnect_reason,
             "adc_synthetic": sample.adc_synthetic,
         }
+        now = time.monotonic()
         with self.lock:
             self.current_sample = payload
             self.samples.append(payload)
-        self.publish({"type": "sample", "sample": payload})
+            should_publish = transition is not None or now - self.last_sample_publish_at >= SAMPLE_PUBLISH_INTERVAL_SECONDS
+            if should_publish:
+                self.last_sample_publish_at = now
+        if should_publish:
+            self.publish({"type": "sample", "sample": payload})
 
     def set_hook_scheme(self, scheme: str) -> ConsoleConfig:
         scheme = normalize_hook_scheme(scheme)
@@ -2104,12 +2300,16 @@ class AppState:
             if current_sample is not None and current_sample.get("digital") is not None:
                 state = interpret_hook_state(current_sample["digital"], self.config)
                 current_sample["python_state"] = state
+                current_sample["observed_state"] = state
                 current_sample["hook_scheme"] = scheme
                 current_sample["hook_scheme_label"] = HOOK_SCHEMES[scheme]["label"]
                 current_sample["hook_scheme_description"] = HOOK_SCHEMES[scheme]["description"]
                 current_sample["pressed_level"] = hook_pressed_level(self.config)
                 current_sample["hook_label"] = hook_state_label(state)
                 self.last_state = state
+                self.machine.reset_to_state(state, int(current_sample.get("ms") or time.monotonic() * 1000))
+            else:
+                self.machine.update_config(self.config)
         self.add_state_log(f"已切换开关判定：{HOOK_SCHEMES[scheme]['label']}（{HOOK_SCHEMES[scheme]['description']}）")
         self.publish({"type": "config", "config": self.config.to_dict()})
         if current_sample is not None:
@@ -2135,6 +2335,8 @@ class AppState:
         save_config(self.config_path, config)
         with self.lock:
             self.config = config
+            self.machine.update_config(config)
+            self.last_state = self.machine.stable_state
             simulation_enabled = self.simulation_enabled
             sim_state = self.sim_hook_state
         if self.is_serial_connected() and self.send_serial_command(build_device_config_command(config)):
@@ -2145,6 +2347,7 @@ class AppState:
         else:
             self.add_state_log("配置已保存到电脑，但没有成功写入 ESP32。")
         self.publish({"type": "config", "config": config.to_dict()})
+        self.apply_serial_debug_config("配置保存")
 
     def snapshot(self) -> dict[str, Any]:
         with self.lock:
@@ -2158,6 +2361,7 @@ class AppState:
                 "state": self.machine.stable_state,
                 "serial_connected": self.is_serial_connected(),
                 "serial_port": self.current_serial_port(),
+                **self.serial_debug_status(),
                 "udp_device": self.current_udp_device(),
                 "alerting": self.alerting,
                 "alert_phase": self.alert_phase,
@@ -2167,6 +2371,7 @@ class AppState:
                 "agent": self.agent_status(),
                 **self.reply_status(),
                 **self.simulation_status(),
+                "firmware_upload": self.firmware_status(),
             }
 
     def handle_sample(self, sample: SensorSample) -> None:
@@ -2178,7 +2383,7 @@ class AppState:
             simulation_enabled = self.simulation_enabled
         if simulation_enabled:
             self.add_state_log(f"手动模拟{'按下' if state == 'PRESSED' else '抬起'}。")
-            self.emit_simulated_sample(state, command_type)
+            self.emit_simulated_sample(state, command_type, force=True)
             if state == "RELEASED":
                 with self.lock:
                     alerting = self.alerting
@@ -2247,6 +2452,95 @@ class AppState:
             timer.daemon = True
             timer.start()
         return True
+
+    def firmware_status(self) -> dict[str, Any]:
+        with self.firmware_lock:
+            status = dict(self.firmware_upload_status)
+            thread = self.firmware_thread
+            if thread is not None and thread.is_alive():
+                status["active"] = True
+            return status
+
+    def publish_firmware_status(self) -> None:
+        self.publish({"type": "firmware_status", "firmware_upload": self.firmware_status()})
+
+    def platformio_command(self) -> list[str]:
+        executable_name = "platformio.exe" if sys.platform == "win32" else "platformio"
+        local_exe = ROOT / ".venv" / ("Scripts" if sys.platform == "win32" else "bin") / executable_name
+        if local_exe.exists():
+            return [str(local_exe)]
+        return [sys.executable, "-m", "platformio"]
+
+    def start_firmware_upload(self) -> dict[str, Any]:
+        with self.firmware_lock:
+            current = self.firmware_thread
+            if current is not None and current.is_alive():
+                status = dict(self.firmware_upload_status)
+                status["active"] = True
+                return {"ok": False, "error": "firmware upload already running", "firmware_upload": status}
+            self.firmware_upload_status = {
+                "active": True,
+                "ok": None,
+                "message": "烧录固件中",
+                "tail": [],
+                "started_at": time.time(),
+                "finished_at": None,
+            }
+            thread = threading.Thread(target=self.firmware_upload_worker, daemon=True)
+            self.firmware_thread = thread
+            status = dict(self.firmware_upload_status)
+        thread.start()
+        self.add_action_log("固件烧录任务已启动。")
+        self.publish_firmware_status()
+        return {"ok": True, "firmware_upload": status}
+
+    def firmware_upload_worker(self) -> None:
+        restart_serial = self.config.enable_serial_debug and self.is_serial_debug_running()
+        self.stop_serial_debug("烧录固件前释放串口", wait_seconds=2.0)
+        command = self.platformio_command() + ["run", "-d", str(FIRMWARE_PROJECT_DIR), "-t", "upload"]
+        self.add_action_log(f"开始烧录固件：{' '.join(command)}")
+        ok = False
+        message = ""
+        tail: list[str] = []
+        try:
+            startupinfo = None
+            if hasattr(subprocess, "STARTUPINFO"):
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            result = subprocess.run(
+                command,
+                cwd=str(ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=FIRMWARE_UPLOAD_TIMEOUT_SECONDS,
+                startupinfo=startupinfo,
+            )
+            combined = "\n".join(part for part in [result.stdout, result.stderr] if part)
+            tail = [line for line in combined.splitlines() if line.strip()][-40:]
+            ok = result.returncode == 0
+            message = "固件烧录完成。" if ok else f"固件烧录失败：exit {result.returncode}"
+        except subprocess.TimeoutExpired as exc:
+            text = "\n".join(str(part or "") for part in [exc.stdout, exc.stderr])
+            tail = [line for line in text.splitlines() if line.strip()][-40:]
+            message = "固件烧录超时。"
+        except Exception as exc:
+            message = f"固件烧录异常：{exc}"
+        finally:
+            with self.firmware_lock:
+                self.firmware_upload_status = {
+                    "active": False,
+                    "ok": ok,
+                    "message": message,
+                    "tail": tail,
+                    "started_at": self.firmware_upload_status.get("started_at"),
+                    "finished_at": time.time(),
+                }
+            self.add_action_log(message)
+            self.publish_firmware_status()
+            if restart_serial and self.config.enable_serial_debug:
+                self.start_serial_debug("烧录完成后恢复串口调试")
 
     def publish_alert_status(self) -> None:
         with self.lock:
@@ -4781,6 +5075,18 @@ INDEX_HTML = r"""<!doctype html>
       border-color: var(--red);
       box-shadow: 0 0 0 2px rgba(201, 37, 29, 0.1);
     }
+    .filter-control-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .filter-control-grid label {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .level-meter {
       width: 112px;
       display: grid;
@@ -5201,6 +5507,10 @@ INDEX_HTML = r"""<!doctype html>
       flex-wrap: wrap;
       gap: 10px;
     }
+    .hardware-action-details .settings-advanced-body {
+      gap: 10px;
+      padding-bottom: 10px;
+    }
     .debug-status-grid {
       display: grid;
       grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -5286,6 +5596,7 @@ INDEX_HTML = r"""<!doctype html>
       }
       .mode-grid { grid-template-columns: 1fr; }
       .mode-card { min-height: 0; }
+      .filter-control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .global-settings-card { position: static; }
       .settings-row {
         grid-template-columns: 34px minmax(100px, 150px) minmax(0, 1fr);
@@ -5356,6 +5667,7 @@ INDEX_HTML = r"""<!doctype html>
       .checkbox-grid,
       .read-only-control,
       .voice-config-block,
+      .filter-control-grid,
       .hardware-status-grid,
       .debug-status-grid {
         grid-template-columns: 1fr;
@@ -5729,17 +6041,65 @@ INDEX_HTML = r"""<!doctype html>
               <div class="hardware-status-item"><span>蜂鸣器</span><strong id="hardwareBuzzerState">--</strong></div>
             </div>
 
-            <div class="hardware-actions">
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="usb"></i></span>
+              <div class="row-label"><strong>串口调试</strong><span>平时关闭，只用 Wi-Fi UDP；调试或烧录前再打开。</span></div>
+              <label class="switch" aria-label="串口调试">
+                <input id="enableSerialDebug" type="checkbox">
+                <span></span>
+              </label>
+            </div>
+
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="filter"></i></span>
+              <div class="row-label"><strong>信号滤波</strong></div>
+              <div class="row-control filter-control-grid">
+                <label><span>开关判定</span><select id="hook_scheme"><option value="scheme1">HIGH 按下</option><option value="scheme2">LOW 按下</option></select></label>
+                <label><span>ADC 极性</span><select id="adc_low_means_pressed"><option value="true">低值按下</option><option value="false">高值按下</option></select></label>
+                <label><span>防抖 ms</span><input id="debounce_ms" type="number" min="0" max="3000" step="10"></label>
+                <label><span>抬起锁定 ms</span><input id="press_lockout_ms" type="number" min="0" max="5000" step="50"></label>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="activity"></i></span>
+              <div class="row-label"><strong>阈值参数</strong></div>
+              <div class="row-control filter-control-grid">
+                <label><span>按下阈值</span><input id="press_threshold" type="number" min="0" max="4095" step="1"></label>
+                <label><span>抬起阈值</span><input id="release_threshold" type="number" min="0" max="4095" step="1"></label>
+                <label><span>触发分数</span><input id="score_trigger" type="number" min="1" max="20" step="1"></label>
+                <label><span>峰值保持 ms</span><input id="peak_hold_ms" type="number" min="0" max="5000" step="50"></label>
+              </div>
+            </div>
+
+            <div class="hardware-actions" aria-label="常用硬件测试">
               <button class="small-action" type="button" onclick="postHardwareCommand('led_on')">测试 LED</button>
               <button class="small-action" type="button" onclick="postHardwareCommand('led_off')">关闭 LED</button>
               <button class="small-action" type="button" onclick="postHardwareCommand('beep')">测试蜂鸣器</button>
               <button class="small-action" type="button" onclick="postHardwareCommand('ring_off')">停止蜂鸣器</button>
-              <button class="small-action" type="button" onclick="postAgentVoiceTest()">测试 Agent</button>
-              <button class="small-action" type="button" onclick="postVoiceStop()">停止录音</button>
-              <button class="small-action" type="button" onclick="postSimulationState('RELEASED')">模拟抬起</button>
-              <button class="small-action" type="button" onclick="postSimulationState('PRESSED')">模拟按下</button>
-              <button class="small-action" type="button" onclick="openSimulator()">打开模拟台</button>
             </div>
+
+            <details class="settings-advanced hardware-action-details">
+              <summary>语音与模拟</summary>
+              <div class="settings-advanced-body">
+                <div class="hardware-actions">
+                  <button class="small-action" type="button" onclick="postAgentVoiceTest()">测试 Agent</button>
+                  <button class="small-action" type="button" onclick="postVoiceStop()">停止录音</button>
+                  <button class="small-action" type="button" onclick="postSimulationState('RELEASED')">模拟抬起</button>
+                  <button class="small-action" type="button" onclick="postSimulationState('PRESSED')">模拟按下</button>
+                </div>
+              </div>
+            </details>
+
+            <details class="settings-advanced hardware-action-details">
+              <summary>维护</summary>
+              <div class="settings-advanced-body">
+                <div class="hardware-actions">
+                  <button class="small-action" type="button" onclick="openSimulator()">打开模拟台</button>
+                  <button class="small-action" type="button" onclick="postFirmwareUpload()">烧录固件</button>
+                </div>
+              </div>
+            </details>
 
             <div class="debug-status-grid" aria-label="Agent 调试状态">
               <div class="hardware-status-item"><span>设备链路</span><strong id="debugDeviceState">--</strong></div>
@@ -5822,6 +6182,7 @@ INDEX_HTML = r"""<!doctype html>
     let latestReplyStatus = {};
     let latestSpeechStatus = {};
     let latestHardwareStatus = {};
+    let latestFirmwareStatus = {};
 
     const businessModeDescriptions = {
       codex: "输入法模式：手动切换快捷键方案；任务完成后可电话回拨。",
@@ -6232,6 +6593,23 @@ INDEX_HTML = r"""<!doctype html>
       config = {...nextConfig};
       ensureInputProfiles();
       applyBusinessModeUi(config.business_mode || "doubao");
+      setChecked("enableSerialDebug", config.enable_serial_debug === true);
+      setValue("hook_scheme", config.hook_scheme || "scheme1");
+      setValue("adc_low_means_pressed", String(config.adc_low_means_pressed !== false));
+      const filterDefaults = {
+        press_threshold: 75,
+        release_threshold: 92,
+        debounce_ms: 120,
+        press_lockout_ms: 900,
+        score_trigger: 5,
+        peak_hold_ms: 350
+      };
+      for (const key of [
+        "press_threshold", "release_threshold", "debounce_ms", "press_lockout_ms",
+        "score_trigger", "peak_hold_ms"
+      ]) {
+        setValue(key, config[key] ?? filterDefaults[key]);
+      }
       setChecked("enableCallback", config.enable_callback !== false);
       setChecked("enableTts", config.enable_tts_playback !== false);
       setChecked("enableVoiceAsr", config.enable_voice_asr !== false && config.voice_auto_transcribe !== false);
@@ -6253,6 +6631,17 @@ INDEX_HTML = r"""<!doctype html>
       syncActiveInputProfile();
       const next = {...config};
       next.business_mode = $("business_mode").value || "doubao";
+      next.enable_serial_debug = $("enableSerialDebug")?.checked === true;
+      next.hook_scheme = $("hook_scheme")?.value || next.hook_scheme || "scheme1";
+      const adcPolarity = $("adc_low_means_pressed");
+      if (adcPolarity) next.adc_low_means_pressed = adcPolarity.value === "true";
+      for (const key of [
+        "press_threshold", "release_threshold", "debounce_ms", "press_lockout_ms",
+        "score_trigger", "peak_hold_ms"
+      ]) {
+        const node = $(key);
+        if (node && node.value !== "") next[key] = Number(node.value);
+      }
       next.enable_actions = true;
       next.enable_callback = $("enableCallback").checked;
       next.enable_tts_playback = $("enableTts").checked;
@@ -6454,6 +6843,10 @@ INDEX_HTML = r"""<!doctype html>
       let state = "未监听";
       if (payload.real_device_connected || sample.sample_source === "device" || latestHardwareStatus.udp_device) {
         state = "设备在线";
+      } else if (latestHardwareStatus.serial_connected) {
+        state = `串口 ${latestHardwareStatus.serial_port || latestHardwareStatus.port || "已连接"}`;
+      } else if (latestHardwareStatus.serial_debug_enabled || latestHardwareStatus.serial_debug_running) {
+        state = latestHardwareStatus.serial_debug_running ? "串口扫描" : "串口待启用";
       } else if (latestHardwareStatus.simulation_enabled) {
         state = "模拟模式";
       } else if (latestHardwareStatus.udp_listening) {
@@ -6462,6 +6855,19 @@ INDEX_HTML = r"""<!doctype html>
       const hook = hardwareHookLabel(sample);
       if (hook !== "--") state = `${state} · ${hook}`;
       updateDebugTile("debugDeviceState", state);
+    }
+
+    function updateFirmwareStatus(status = {}) {
+      if (!status || !Object.keys(status).length) return;
+      const previousMessage = latestFirmwareStatus.message || "";
+      latestFirmwareStatus = {...latestFirmwareStatus, ...status};
+      const message = latestFirmwareStatus.message || "固件任务状态已更新";
+      if (latestFirmwareStatus.active) {
+        updateDebugTile("debugDeviceState", "固件烧录中");
+      }
+      if (message && message !== previousMessage) {
+        appendDebugLog("维护", message);
+      }
     }
 
     function clearDebugLog() {
@@ -6479,6 +6885,7 @@ INDEX_HTML = r"""<!doctype html>
           fetchJson("/api/speech/status", {}, 10000)
         ]);
         updateHardwareDebugStatus(hardware);
+        updateFirmwareStatus(hardware.firmware_upload);
         if (hardware.current_sample) updateHardwareSample(hardware.current_sample);
         updateVoiceDebugStatus(voice);
         updateReplyStatus(replies);
@@ -6692,6 +7099,7 @@ INDEX_HTML = r"""<!doctype html>
       if (payload.current_sample) updateHardwareSample(payload.current_sample);
       else drawHardwarePulseChart();
       updateHardwareDebugStatus(payload);
+      updateFirmwareStatus(payload.firmware_upload);
       updateVoiceDebugStatus(payload);
       updateReplyStatus(payload);
       setDebugLogsFromSnapshot(payload);
@@ -6781,6 +7189,8 @@ INDEX_HTML = r"""<!doctype html>
           updateVoiceDebugStatus(payload);
         } else if (payload.type === "udp_status" || payload.type === "serial_status" || payload.type === "simulation_status") {
           updateHardwareDebugStatus(payload);
+        } else if (payload.type === "firmware_status") {
+          updateFirmwareStatus(payload.firmware_upload);
         } else if (payload.type === "config") {
           setConfigForm(payload.config);
         }
@@ -6826,6 +7236,22 @@ INDEX_HTML = r"""<!doctype html>
 
     function openSimulator() {
       window.location.href = "/simulator";
+    }
+
+    async function postFirmwareUpload() {
+      setSaveStatus("正在启动固件烧录...");
+      appendDebugLog("请求", "POST /api/firmware/upload");
+      try {
+        const result = await fetchJson("/api/firmware/upload", {method: "POST"}, 10000);
+        updateFirmwareStatus(result.firmware_upload || result);
+        const ok = result.ok !== false;
+        const message = ok ? "固件烧录已开始，串口会暂时释放。" : (result.error || result.message || "固件烧录未启动。");
+        setSaveStatus(message, ok ? "ok" : "warn");
+        appendDebugLog(ok ? "维护" : "错误", message);
+      } catch (error) {
+        setSaveStatus(`固件烧录启动失败：${error.message}`, "warn");
+        appendDebugLog("错误", `固件烧录启动失败：${error.message}`);
+      }
     }
 
     function applyPreset(name) {
@@ -6890,6 +7316,7 @@ INDEX_HTML = r"""<!doctype html>
       toggleCalibration,
       toggleShortcutManager,
       openSimulator,
+      postFirmwareUpload,
       applyPreset,
       clearReplyQueue,
       copyCallbackEndpoint,
@@ -6955,6 +7382,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self.send_json(self.app.simulation_status())
         elif route == "/api/hardware/status":
             self.send_json(self.app.hardware_status())
+        elif route == "/api/firmware/status":
+            self.send_json({"ok": True, "firmware_upload": self.app.firmware_status()})
         elif route == "/api/replies":
             self.send_json(self.app.reply_status())
         elif route == "/api/speech/status":
@@ -7138,6 +7567,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             led_pin = int(data.get("led_pin", 20))
             ok = self.app.set_test_pins(hook_pin, buzzer_pin, led_pin)
             self.send_json({"ok": ok, "hook_pin": hook_pin, "buzzer_pin": buzzer_pin, "led_pin": led_pin})
+        elif route == "/api/firmware/upload":
+            self.send_json(self.app.start_firmware_upload())
         else:
             self.send_error(404)
 
@@ -7257,6 +7688,9 @@ def main() -> int:
     app = AppState(config, args.config, simulation_enabled=not args.no_simulation)
     stop = threading.Event()
     preferred_port = normalize_port_name(args.port)
+    if preferred_port:
+        config.enable_serial_debug = True
+    app.configure_serial_debug_runtime(preferred_port, args.baud, allowed=not args.no_serial)
 
     if not args.no_simulation:
         app.add_state_log("本机模拟发送端已启动：没有 ESP32 时也会生成稳定 GPIO/Wi-Fi 样本。")
@@ -7273,14 +7707,15 @@ def main() -> int:
     udp_thread.start()
 
     if args.no_serial:
-        app.add_state_log("已按 --no-serial 启动，页面只用于调试配置和动作。")
-    else:
+        app.add_state_log("已按 --no-serial 启动，串口调试不可用，页面只使用 Wi-Fi / 模拟链路。")
+        app.publish_serial_status()
+    elif config.enable_serial_debug:
         if preferred_port:
-            app.add_state_log(f"串口优先使用 {preferred_port}；不可用时会继续扫描其他 USB 串口。")
-        else:
-            app.add_state_log("串口自动扫描已启动；插入或重插 ESP32-C3 后会自动连接。")
-        thread = threading.Thread(target=serial_worker, args=(app, preferred_port, args.baud, stop), daemon=True)
-        thread.start()
+            app.add_state_log(f"串口调试将优先使用 {preferred_port}；不可用时会继续扫描其他 USB 串口。")
+        app.start_serial_debug("启动配置")
+    else:
+        app.add_state_log("串口调试未开启；当前只使用 Wi-Fi UDP / 模拟链路，不扫描 COM 口。")
+        app.publish_serial_status()
 
     server = make_server(args.host, args.web_port, app)
     url = f"http://localhost:{args.web_port}"
@@ -7293,6 +7728,7 @@ def main() -> int:
         pass
     finally:
         stop.set()
+        app.stop_serial_debug("控制台停止", wait_seconds=1.0)
         server.server_close()
 
     return 0

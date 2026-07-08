@@ -8,6 +8,7 @@ set "ARG2=%~2"
 set "SERIAL_PORT="
 set "WEB_PORT=8765"
 set "OPEN_PATH=/command-center/"
+set "CONFIG_PATH=/"
 
 if not "%ARG1%"=="" (
   echo %ARG1%| findstr /r "^[0-9][0-9]*$" >nul
@@ -76,6 +77,7 @@ echo Agent page: http://127.0.0.1:%WEB_PORT%%OPEN_PATH%
 echo Console URL: http://127.0.0.1:%WEB_PORT%/
 
 if not "%AI_DESK_PHONE_NO_BROWSER%"=="1" (
+  start "" "http://127.0.0.1:%WEB_PORT%%CONFIG_PATH%"
   start "" "http://127.0.0.1:%WEB_PORT%%OPEN_PATH%"
 )
 
