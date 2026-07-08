@@ -1,0 +1,54 @@
+import unittest
+
+from tools.ai_desk_phone_console import INDEX_HTML
+
+
+class SettingsMarkupTest(unittest.TestCase):
+    def test_settings_page_uses_visual_target_structure(self) -> None:
+        self.assertIn('class="settings-app"', INDEX_HTML)
+        self.assertIn("选择模式", INDEX_HTML)
+        self.assertIn("本模式设置（Agent 模式）", INDEX_HTML)
+        self.assertIn("测试通话", INDEX_HTML)
+        self.assertIn("输入法模式", INDEX_HTML)
+        self.assertIn("管理快捷键方案", INDEX_HTML)
+        self.assertIn("全局音频与回拨", INDEX_HTML)
+        self.assertIn("回话入口", INDEX_HTML)
+        self.assertIn("工具调用", INDEX_HTML)
+        self.assertIn("完成回报", INDEX_HTML)
+        self.assertIn("音色与播报参数", INDEX_HTML)
+        self.assertIn("火山 API Key", INDEX_HTML)
+        self.assertIn("••••••••••••（已保存）", INDEX_HTML)
+        self.assertIn("默认音色", INDEX_HTML)
+        self.assertIn("音调", INDEX_HTML)
+        self.assertIn("语速", INDEX_HTML)
+        self.assertIn("音量", INDEX_HTML)
+        self.assertIn("调试与校准", INDEX_HTML)
+        self.assertIn("开关脉冲", INDEX_HTML)
+        self.assertIn("hardwarePulseChart", INDEX_HTML)
+        self.assertIn("测试 LED", INDEX_HTML)
+        self.assertIn("测试蜂鸣器", INDEX_HTML)
+        self.assertIn("测试 Agent", INDEX_HTML)
+        self.assertIn("调试日志", INDEX_HTML)
+        self.assertIn("Agent 录音", INDEX_HTML)
+        self.assertIn("模型返回", INDEX_HTML)
+        self.assertIn("refreshDebugStatus", INDEX_HTML)
+        self.assertIn("保存", INDEX_HTML)
+        self.assertIn("还原", INDEX_HTML)
+        self.assertIn("settings-sidebar", INDEX_HTML)
+        self.assertIn("accent-color: var(--red)", INDEX_HTML)
+        self.assertIn("grid-template-columns: repeat(2, minmax(0, 1fr))", INDEX_HTML)
+        self.assertNotIn('showSettingsPage("modeConfigPage");', INDEX_HTML)
+        self.assertNotIn("输入法模式设置", INDEX_HTML)
+        self.assertNotIn("ListSpeakers", INDEX_HTML)
+        self.assertNotIn("X-Api-Resource-Id", INDEX_HTML)
+        self.assertNotIn("audio_params.speech_rate", INDEX_HTML)
+        self.assertNotIn("模型：", INDEX_HTML)
+        self.assertNotIn("单人模式", INDEX_HTML)
+        self.assertNotIn("双人对话", INDEX_HTML)
+        self.assertNotIn('id="ttsRate"', INDEX_HTML)
+        self.assertNotIn('id="ttsVolume"', INDEX_HTML)
+        self.assertNotIn("Codex hook", INDEX_HTML)
+
+
+if __name__ == "__main__":
+    unittest.main()

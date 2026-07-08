@@ -51,6 +51,9 @@ set "PYTHON=.venv\Scripts\python.exe"
 "%PYTHON%" -c "import serial" >nul 2>nul
 if errorlevel 1 set "NEED_INSTALL=1"
 
+"%PYTHON%" -c "import sounddevice" >nul 2>nul
+if errorlevel 1 set "NEED_INSTALL=1"
+
 if defined NEED_INSTALL (
   echo Installing Python dependencies...
   "%PYTHON%" -m pip install -r requirements.txt

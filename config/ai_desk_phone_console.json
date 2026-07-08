@@ -17,16 +17,28 @@
   "sample_interval_ms": 50,
   "press_action_text": "ctrl+win+shift, 延迟1000毫秒, enter",
   "release_action_text": "ctrl+win+shift",
+  "input_action_profiles": [
+    {
+      "id": "default",
+      "name": "默认输入方案",
+      "press_action_text": "ctrl+win+shift, 延迟1000毫秒, enter",
+      "release_action_text": "ctrl+win+shift"
+    }
+  ],
+  "active_input_profile_id": "default",
   "enable_actions": true,
   "enable_callback": true,
   "enable_tts_playback": true,
+  "tts_speech_rate": 0,
+  "tts_loudness_rate": 0,
   "tts_rate": 0,
   "tts_volume": 100,
+  "tts_pitch": 0,
   "audio_output_device": "default",
   "enable_voice_asr": true,
   "voice_record_sample_rate": 16000,
   "voice_record_device": "",
   "voice_auto_transcribe": true,
-  "voice_reply_policy": "callback",
+  "voice_reply_policy": "direct",
   "agent_permission_profile": "commander"
 }

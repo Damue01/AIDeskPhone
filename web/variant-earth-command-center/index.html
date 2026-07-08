@@ -106,6 +106,45 @@
       touch-action: none;
     }
 
+    #starfield {
+      position: absolute;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 18% 24%, rgba(26, 70, 124, 0.18), transparent 30%),
+        radial-gradient(circle at 82% 18%, rgba(62, 118, 169, 0.12), transparent 34%),
+        radial-gradient(circle at 52% 70%, rgba(18, 52, 79, 0.18), transparent 44%),
+        linear-gradient(180deg, #050913 0%, #010309 64%, #000103 100%);
+      opacity: 1;
+    }
+
+    #starfield::before,
+    #starfield::after {
+      content: "";
+      position: absolute;
+      inset: -12%;
+      pointer-events: none;
+      background:
+        radial-gradient(ellipse at 18% 58%, rgba(61, 122, 192, 0.12), transparent 42%),
+        radial-gradient(ellipse at 72% 38%, rgba(80, 190, 226, 0.08), transparent 48%);
+      opacity: 0.66;
+      animation: starDrift 52s linear infinite;
+    }
+
+    #starfield::after {
+      inset: -20%;
+      opacity: 0.24;
+      transform: scale(1.25);
+      animation-duration: 86s;
+      animation-direction: reverse;
+    }
+
+    @keyframes starDrift {
+      from { transform: translate3d(0, 0, 0); }
+      to { transform: translate3d(-18px, 14px, 0); }
+    }
+
     .stage::before {
       content: "";
       position: absolute;
@@ -144,6 +183,7 @@
       opacity: 0.42;
     }
 
+    #starfield,
     #globe-canvas,
     #map,
     #map-label-layer,
@@ -173,29 +213,40 @@
     .stage[data-mode="map"] #map {
       opacity: 1;
       visibility: visible;
-      filter: saturate(0.78) contrast(0.92) brightness(0.86);
+      filter: saturate(0.92) contrast(1.02) brightness(0.92);
       transform: scale(1);
+    }
+
+    #globe-canvas {
+      z-index: 1;
     }
 
     #map.is-visible {
       opacity: 1;
       visibility: visible;
-      filter: saturate(0.78) contrast(0.92) brightness(0.86);
+      filter: saturate(0.92) contrast(1.02) brightness(0.92);
       transform: scale(1);
     }
 
     body[data-handoff="map"] .stage[data-mode="map"] #map {
       opacity: 0.82;
-      filter: saturate(0.72) contrast(0.88) brightness(0.78);
+      filter: saturate(0.88) contrast(0.98) brightness(0.84);
     }
 
     body[data-handoff="map"] #map.is-visible {
       opacity: 0.82;
-      filter: saturate(0.72) contrast(0.88) brightness(0.78);
+      filter: saturate(0.88) contrast(0.98) brightness(0.84);
     }
 
     .maplibregl-canvas {
       outline: 0;
+    }
+
+    .maplibregl-map,
+    .maplibregl-canvas-container,
+    .maplibregl-canvas {
+      width: 100% !important;
+      height: 100% !important;
     }
 
     .maplibregl-ctrl-bottom-left,
@@ -246,68 +297,6 @@
       visibility: visible;
     }
 
-    .map-city-label {
-      position: absolute;
-      display: grid;
-      gap: 3px;
-      min-width: 78px;
-      padding: 7px 9px 7px 10px;
-      border: 1px solid rgba(255, 255, 255, 0.2);
-      border-radius: 12px;
-      background: linear-gradient(145deg, rgba(8, 12, 11, 0.62), rgba(8, 12, 11, 0.28));
-      color: rgba(247, 243, 232, 0.92);
-      box-shadow: 0 14px 38px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.12);
-      backdrop-filter: blur(18px) saturate(1.25);
-      -webkit-backdrop-filter: blur(18px) saturate(1.25);
-      transform: translate(-50%, -100%);
-      text-shadow: 0 2px 12px rgba(0, 0, 0, 0.72);
-    }
-
-    .map-city-label::after {
-      content: "";
-      position: absolute;
-      left: 50%;
-      bottom: -5px;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: rgba(247, 243, 232, 0.9);
-      box-shadow: 0 0 0 5px rgba(247, 243, 232, 0.08), 0 0 18px rgba(125, 246, 227, 0.34);
-      transform: translateX(-50%);
-    }
-
-    .map-city-label strong {
-      font-size: 13px;
-      line-height: 1;
-      font-weight: 760;
-      letter-spacing: 0;
-      white-space: nowrap;
-    }
-
-    .map-city-label span {
-      color: rgba(247, 243, 232, 0.58);
-      font-size: 10px;
-      line-height: 1;
-      font-weight: 560;
-      white-space: nowrap;
-    }
-
-    .map-city-label.is-focus {
-      border-color: rgba(125, 246, 227, 0.38);
-      background: linear-gradient(145deg, rgba(26, 52, 46, 0.72), rgba(8, 12, 11, 0.34));
-    }
-
-    .map-city-label.is-floating {
-      left: 18px;
-      top: 112px;
-      min-width: 112px;
-      transform: none;
-    }
-
-    .map-city-label.is-floating::after {
-      display: none;
-    }
-
     #text-canvas {
       pointer-events: none;
       z-index: 2;
@@ -327,6 +316,16 @@
       opacity: 1;
       backdrop-filter: blur(10px) saturate(1.05);
       -webkit-backdrop-filter: blur(10px) saturate(1.05);
+    }
+
+    body[data-view-mode="map"] .stage::before {
+      opacity: 1;
+      background:
+        linear-gradient(180deg, rgba(2, 4, 3, 0.48) 0%, rgba(2, 4, 3, 0.2) 18%, transparent 38%),
+        linear-gradient(0deg, rgba(2, 4, 3, 0.5) 0%, rgba(2, 4, 3, 0.18) 16%, transparent 34%),
+        linear-gradient(90deg, rgba(2, 4, 3, 0.18) 0%, transparent 24%, transparent 100%);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
 
     body[data-handoff="map"] #globe-canvas,
@@ -360,6 +359,12 @@
       opacity: 0;
       visibility: hidden;
       pointer-events: none;
+    }
+
+    body[data-view-mode="map"] .bottom-ticker {
+      background: linear-gradient(145deg, rgba(8, 16, 15, 0.78), rgba(8, 16, 15, 0.48));
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
 
     body[data-handoff="map"] .topbar,
@@ -548,24 +553,81 @@
       color: rgba(247, 243, 232, 0.88);
     }
 
+    .right-stack {
+      top: 118px;
+      bottom: auto;
+      width: clamp(260px, 24vw, 360px);
+      grid-template-rows: repeat(3, auto);
+      gap: 20px;
+      justify-items: end;
+      text-align: right;
+      pointer-events: none;
+    }
+
+    .status-block,
+    .status-block:nth-child(2),
+    .status-block:last-child {
+      display: block;
+      width: 100%;
+      min-height: 0;
+      padding: 0;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      box-shadow: none;
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
+      color: rgba(247, 243, 232, 0.94);
+      overflow: visible;
+    }
+
+    .status-block::before {
+      display: none;
+    }
+
+    .status-label {
+      margin-bottom: 6px;
+      font-size: 10px;
+      letter-spacing: 0;
+      color: rgba(247, 243, 232, 0.54);
+    }
+
+    .status-huge {
+      font-size: clamp(24px, 3vw, 42px);
+      line-height: 0.94;
+      text-shadow: 0 10px 26px rgba(0, 0, 0, 0.76);
+    }
+
+    #sector-word {
+      font-size: clamp(20px, 2.1vw, 32px);
+      line-height: 1.02;
+    }
+
+    .status-value {
+      font-size: 13px;
+      line-height: 1.36;
+      font-weight: 680;
+      color: rgba(247, 243, 232, 0.72);
+    }
+
     .bottom-ticker {
       position: absolute;
       z-index: 7;
       left: 16px;
       right: 16px;
       bottom: 16px;
-      height: 52px;
+      height: 56px;
       display: flex;
       align-items: center;
       overflow: hidden;
-      border: 1px solid var(--glass-stroke);
-      border-radius: 26px;
-      background: var(--glass);
+      border: 0;
+      border-radius: 0;
+      background: linear-gradient(90deg, rgba(176, 14, 20, 0.96) 0 118px, rgba(4, 7, 10, 0.78) 118px 100%);
       color: #f7f3e8;
       pointer-events: auto;
-      box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.18);
-      backdrop-filter: blur(28px) saturate(1.35);
-      -webkit-backdrop-filter: blur(28px) saturate(1.35);
+      box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.32);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
 
     .bottom-ticker::before {
@@ -573,8 +635,8 @@
       position: absolute;
       inset: 0;
       z-index: 0;
-      background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 42%);
-      opacity: 0.65;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.1), transparent 46%);
+      opacity: 0.36;
       pointer-events: none;
     }
 
@@ -585,18 +647,18 @@
       display: flex;
       align-items: center;
       gap: 9px;
-      width: 138px;
-      flex: 0 0 138px;
-      margin-left: 7px;
-      padding: 0 15px;
-      border-radius: 999px;
-      background: rgba(255, 255, 255, 0.1);
+      width: 118px;
+      flex: 0 0 118px;
+      margin-left: 0;
+      padding: 0 18px;
+      border-radius: 0;
+      background: transparent;
       color: rgba(247, 243, 232, 0.92);
-      font-size: 12px;
-      font-weight: 700;
+      font-size: 15px;
+      font-weight: 920;
       letter-spacing: 0;
       text-transform: none;
-      text-shadow: 0 8px 22px rgba(0, 0, 0, 0.56);
+      text-shadow: 0 8px 22px rgba(0, 0, 0, 0.72);
     }
 
     .ticker-label::before {
@@ -621,7 +683,7 @@
       align-items: center;
       white-space: nowrap;
       background: transparent;
-      border-left: 8px solid transparent;
+      border-left: 0;
     }
 
     .ticker-window::before,
@@ -646,20 +708,42 @@
     }
 
     .ticker-track {
-      display: inline-block;
-      padding-left: 18px;
-      font-size: 13px;
-      font-weight: 650;
+      display: inline-flex;
+      align-items: center;
+      flex: 0 0 auto;
+      padding-left: 0;
+      font-size: 15px;
+      font-weight: 720;
       letter-spacing: 0;
       text-transform: none;
-      animation: ticker 42s linear infinite;
-      color: rgba(247, 243, 232, 0.76);
+      color: rgba(247, 243, 232, 0.88);
       text-shadow: 0 8px 24px rgba(0, 0, 0, 0.68);
+      transform: translate3d(100%, 0, 0);
+      will-change: transform;
     }
 
-    @keyframes ticker {
-      from { transform: translateX(0); }
-      to { transform: translateX(-50%); }
+    .log-entry {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-right: 24px;
+    }
+
+    .log-keyword {
+      color: #fff7d6;
+      font-weight: 940;
+      text-shadow: 0 0 16px rgba(255, 208, 111, 0.34), 0 8px 22px rgba(0, 0, 0, 0.72);
+    }
+
+    .log-separator {
+      color: rgba(247, 243, 232, 0.34);
+      font-weight: 520;
+    }
+
+    body[data-view-mode="map"] .bottom-ticker {
+      background: linear-gradient(90deg, rgba(176, 14, 20, 0.96) 0 118px, rgba(4, 7, 10, 0.78) 118px 100%);
+      backdrop-filter: none;
+      -webkit-backdrop-filter: none;
     }
 
     @keyframes tickerPulse {
@@ -781,8 +865,7 @@
     }
 
     @media (prefers-reduced-motion: reduce) {
-      .scanline,
-      .ticker-track {
+      .scanline {
         animation: none;
       }
     }
@@ -790,6 +873,7 @@
 </head>
 <body data-palette="teal">
   <main class="stage" id="stage" aria-label="服务通信中枢">
+    <div id="starfield" aria-hidden="true"></div>
     <div id="map" aria-label="真实地图"></div>
     <div id="map-label-layer" aria-hidden="true"></div>
     <canvas id="globe-canvas"></canvas>
@@ -831,13 +915,10 @@
       <button id="m-reset" type="button">复位</button>
     </nav>
 
-    <footer class="bottom-ticker" aria-label="实时播报">
-      <div class="ticker-label">实时播报</div>
+    <footer class="bottom-ticker" aria-label="控制台日志">
+      <div class="ticker-label" id="ticker-label">LOG</div>
       <div class="ticker-window">
-        <div class="ticker-track">
-          AI 接线员在线  /  命令链路稳定  /  地图下钻待命  /  GPIO21 蜂鸣器待命  /  GPIO20 指示灯待命  /  任务队列 3 条  /  最近握手 12 秒前  /
-          AI 接线员在线  /  命令链路稳定  /  地图下钻待命  /  GPIO21 蜂鸣器待命  /  GPIO20 指示灯待命  /  任务队列 3 条  /  最近握手 12 秒前  /
-        </div>
+        <div class="ticker-track" id="ticker-track">[SYS] 等待命令输入  /  [AI] 本地控制台待连接  /</div>
       </div>
     </footer>
   </main>
@@ -847,6 +928,7 @@
     import * as THREE from "./vendor/three.module.js";
 
     const stage = document.getElementById("stage");
+    const starfieldNode = document.getElementById("starfield");
     const mapNode = document.getElementById("map");
     const mapLabelLayer = document.getElementById("map-label-layer");
     const globeCanvas = document.getElementById("globe-canvas");
@@ -886,6 +968,8 @@
       sector: document.getElementById("sector-word"),
       coordA: document.getElementById("coord-a"),
       coordB: document.getElementById("coord-b"),
+      tickerLabel: document.getElementById("ticker-label"),
+      tickerTrack: document.getElementById("ticker-track"),
       mapLabelLayer
     };
 
@@ -947,6 +1031,7 @@
       palette: "teal",
       earthTone: "natural",
       dataMode: "atlas",
+      visualPreset: "haze",
       liveTexture: null,
       satelliteTexture: null,
       liveDate: "",
@@ -976,10 +1061,29 @@
       zoomAnchorLngLat: null,
       zoomAnchorPoint: null,
       zoomLockUntil: 0,
+      globeWheelLockedUntil: 0,
       handoffTargetLngLat: null,
       mapReturnCharge: 0,
       previousMapZoom: 6.2,
-      mapReturnLockedUntil: 0
+      mapReturnLockedUntil: 0,
+      console: {
+        externalUntil: 0,
+        logTimer: 0,
+        phase: "waiting",
+        phaseIndex: 0,
+        source: "本地 AI 控制台",
+        tickerOffset: 0,
+        tickerLastTime: performance.now(),
+        tickerReady: false,
+        tickerSpeed: 52,
+        logs: [
+          "[SYS] 等待命令输入",
+          "[AI] 本地控制台待连接",
+          "[CMD] 地球视图保持唤醒",
+          "[SCREEN] 屏保模式运行中",
+          "[READY] 可接管电脑操作"
+        ]
+      }
     };
 
     document.body.dataset.viewMode = "globe";
@@ -991,28 +1095,70 @@
     const SATELLITE_STYLE = {
       version: 8,
       sources: {
-        satellite: {
+        imagery: {
           type: "raster",
           tiles: [
-            "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg"
+            "https://services.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
           ],
           tileSize: 256,
-          maxzoom: 14,
-          attribution: "EOX Sentinel-2 cloudless"
+          maxzoom: 19,
+          attribution: "Esri World Imagery"
+        },
+        transportation: {
+          type: "raster",
+          tiles: [
+            "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}"
+          ],
+          tileSize: 256,
+          maxzoom: 19,
+          attribution: "Esri"
+        },
+        places: {
+          type: "raster",
+          tiles: [
+            "https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}"
+          ],
+          tileSize: 256,
+          maxzoom: 19,
+          attribution: "Esri"
         }
       },
       layers: [
         {
-          id: "satellite",
+          id: "imagery",
           type: "raster",
-          source: "satellite",
+          source: "imagery",
           paint: {
             "raster-opacity": 1,
             "raster-brightness-min": 0,
-            "raster-brightness-max": 0.88,
-            "raster-contrast": 0.08,
-            "raster-saturation": -0.12,
+            "raster-brightness-max": 0.96,
+            "raster-contrast": 0.02,
+            "raster-saturation": -0.04,
             "raster-fade-duration": 220
+          }
+        },
+        {
+          id: "transportation",
+          type: "raster",
+          source: "transportation",
+          paint: {
+            "raster-opacity": 0.72,
+            "raster-brightness-min": 0,
+            "raster-brightness-max": 1,
+            "raster-contrast": 0.04,
+            "raster-fade-duration": 160
+          }
+        },
+        {
+          id: "places",
+          type: "raster",
+          source: "places",
+          paint: {
+            "raster-opacity": 0.84,
+            "raster-brightness-min": 0,
+            "raster-brightness-max": 1,
+            "raster-contrast": 0.08,
+            "raster-fade-duration": 160
           }
         }
       ]
@@ -1031,10 +1177,9 @@
       attributionControl: false
     });
 
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
     function markMapReady() {
       state.mapReady = true;
-      stage.dataset.mapStyle = "satellite";
+      stage.dataset.mapStyle = "satellite-hybrid";
       setMapProjection("mercator");
       if (state.pendingMapTarget) {
         enterMapAtTarget(state.pendingMapTarget);
@@ -1076,58 +1221,446 @@
     }
 
     function nearestCity(center) {
+      return nearestCityMatch(center).city;
+    }
+
+    function nearestCityMatch(center) {
       return mapCities.reduce((best, city) => {
         const dx = lngDistance(city.lng, center.lng) * Math.cos(center.lat * Math.PI / 180);
         const dy = city.lat - center.lat;
         const distance = Math.hypot(dx, dy);
         return distance < best.distance ? { city, distance } : best;
-      }, { city: mapCities[0], distance: Infinity }).city;
+      }, { city: mapCities[0], distance: Infinity });
     }
+
+    function normalizePlaceName(value) {
+      return String(value || "")
+        .trim()
+        .toLowerCase()
+        .replace(/[，,。.\s]+/g, " ");
+    }
+
+    function cityTerms(city) {
+      return [city.name, city.sub, `${city.name} ${city.sub}`].map(normalizePlaceName);
+    }
+
+    function findCityByName(query) {
+      const normalized = normalizePlaceName(query);
+      if (!normalized) return null;
+
+      const exact = mapCities.find(city => cityTerms(city).some(term => term === normalized));
+      if (exact) return exact;
+
+      return mapCities.find(city => cityTerms(city).some((term) => {
+        if (!term) return false;
+        return normalized.includes(term) || term.includes(normalized);
+      })) || null;
+    }
+
+    const COMMAND_PHASES = [
+      {
+        key: "waiting",
+        status: "等待命令中",
+        sector: "监听输入",
+        area: "AI 控制台待命",
+        log: "[WAIT] 等待命令输入"
+      },
+      {
+        key: "executing",
+        status: "命令正在执行",
+        sector: "执行中",
+        area: "电脑操作链路激活",
+        log: "[ACTION] 命令正在执行"
+      },
+      {
+        key: "feedback",
+        status: "正在反馈结果",
+        sector: "反馈结果",
+        area: "采集屏幕与状态",
+        log: "[RESULT] 正在反馈结果"
+      },
+      {
+        key: "reporting",
+        status: "正在汇报结果",
+        sector: "汇报结果",
+        area: "生成操作摘要",
+        log: "[REPORT] 正在汇报结果"
+      }
+    ];
+
+    const CONSOLE_API_VERSION = "2026.07.08";
+
+    const LOG_KEYWORDS = [
+      "AI",
+      "SYS",
+      "CMD",
+      "WAIT",
+      "ACTION",
+      "RESULT",
+      "REPORT",
+      "READY",
+      "SCREEN",
+      "等待命令中",
+      "命令正在执行",
+      "正在反馈结果",
+      "正在汇报结果",
+      "本地控制台",
+      "电脑操作"
+    ];
+
+    function appendConsoleLog(message) {
+      const text = String(message || "").trim();
+      if (!text) return;
+      state.console.logs.push(text);
+      state.console.logs = state.console.logs.slice(-18);
+      if (state.console.tickerReady) appendConsoleTickerNode(text);
+    }
+
+    function renderHighlightedLog(text) {
+      const fragment = document.createDocumentFragment();
+      const pattern = new RegExp(`(${LOG_KEYWORDS.map(word => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`, "g");
+      let lastIndex = 0;
+      String(text).replace(pattern, (match, _word, offset) => {
+        if (offset > lastIndex) fragment.append(document.createTextNode(text.slice(lastIndex, offset)));
+        const mark = document.createElement("span");
+        mark.className = "log-keyword";
+        mark.textContent = match;
+        fragment.append(mark);
+        lastIndex = offset + match.length;
+        return match;
+      });
+      if (lastIndex < text.length) fragment.append(document.createTextNode(text.slice(lastIndex)));
+      return fragment;
+    }
+
+    function createConsoleLogNode(entry) {
+      const item = document.createElement("span");
+      item.className = "log-entry";
+      item.append(renderHighlightedLog(entry));
+      const separator = document.createElement("span");
+      separator.className = "log-separator";
+      separator.textContent = "/";
+      item.append(separator);
+      return item;
+    }
+
+    function appendConsoleTickerNode(entry) {
+      if (!els.tickerTrack) return;
+      els.tickerTrack.append(createConsoleLogNode(entry));
+    }
+
+    function consoleTickerNodeWidth(node) {
+      if (!node) return 0;
+      const style = window.getComputedStyle(node);
+      const marginLeft = Number.parseFloat(style.marginLeft) || 0;
+      const marginRight = Number.parseFloat(style.marginRight) || 0;
+      return node.getBoundingClientRect().width + marginLeft + marginRight;
+    }
+
+    function updateConsoleTickerTransform() {
+      if (!els.tickerTrack) return;
+      els.tickerTrack.style.transform = `translate3d(${state.console.tickerOffset.toFixed(2)}px, 0, 0)`;
+    }
+
+    function renderConsoleTicker() {
+      if (els.tickerLabel) els.tickerLabel.textContent = "LOG";
+      if (!els.tickerTrack) return;
+      els.tickerTrack.replaceChildren();
+      state.console.logs.forEach(entry => appendConsoleTickerNode(entry));
+      const tickerWindow = els.tickerTrack.parentElement;
+      const startOffset = (tickerWindow ? tickerWindow.clientWidth : state.width) + 24;
+      state.console.tickerOffset = startOffset;
+      state.console.tickerLastTime = performance.now();
+      state.console.tickerReady = true;
+      updateConsoleTickerTransform();
+    }
+
+    function advanceConsoleTicker(now) {
+      if (!els.tickerTrack || !state.console.tickerReady) return;
+      const elapsed = clamp(now - state.console.tickerLastTime, 0, 80);
+      state.console.tickerLastTime = now;
+      state.console.tickerOffset -= (elapsed * state.console.tickerSpeed) / 1000;
+
+      let firstEntry = els.tickerTrack.firstElementChild;
+      while (firstEntry) {
+        const entryWidth = consoleTickerNodeWidth(firstEntry);
+        if (state.console.tickerOffset + entryWidth > -80) break;
+        firstEntry.remove();
+        state.console.tickerOffset += entryWidth;
+        firstEntry = els.tickerTrack.firstElementChild;
+      }
+
+      if (!els.tickerTrack.firstElementChild) {
+        const tickerWindow = els.tickerTrack.parentElement;
+        state.console.tickerOffset = (tickerWindow ? tickerWindow.clientWidth : state.width) + 24;
+      }
+
+      updateConsoleTickerTransform();
+    }
+
+    function setConsolePhase(key, fromExternal = false) {
+      const phase = COMMAND_PHASES.find(item => item.key === key);
+      if (!phase) {
+        appendConsoleLog(`[SYS] 未知状态 ${String(key || "").trim() || "empty"}`);
+        return {
+          ok: false,
+          action: "setPhase",
+          reason: "unknown-phase",
+          phases: COMMAND_PHASES.map(item => item.key)
+        };
+      }
+
+      state.console.phase = phase.key;
+      state.console.phaseIndex = Math.max(0, COMMAND_PHASES.findIndex(item => item.key === phase.key));
+      if (fromExternal) state.console.externalUntil = Date.now() + 30000;
+      appendConsoleLog(phase.log);
+      return {
+        ok: true,
+        action: "setPhase",
+        phase: phase.key,
+        status: phase.status,
+        sector: phase.sector,
+        area: phase.area
+      };
+    }
+
+    function advanceConsolePhase() {
+      if (Date.now() < state.console.externalUntil) return;
+      state.console.phaseIndex = (state.console.phaseIndex + 1) % COMMAND_PHASES.length;
+      const phase = COMMAND_PHASES[state.console.phaseIndex];
+      state.console.phase = phase.key;
+      appendConsoleLog(phase.log);
+    }
+
+    function getConsoleApiState() {
+      const phase = COMMAND_PHASES.find(item => item.key === state.console.phase) || COMMAND_PHASES[0];
+      const mapCenter = state.mapReady ? map.getCenter() : null;
+      return {
+        ok: true,
+        version: CONSOLE_API_VERSION,
+        ready: true,
+        viewMode: document.body.dataset.viewMode || "globe",
+        phase: phase.key,
+        status: phase.status,
+        sector: phase.sector,
+        area: phase.area,
+        source: state.console.source,
+        visualPreset: state.visualPreset,
+        map: {
+          ready: state.mapReady,
+          target: stage.dataset.mapTarget || "",
+          center: mapCenter
+            ? [Number(mapCenter.lng.toFixed(4)), Number(mapCenter.lat.toFixed(4))]
+            : (stage.dataset.mapCenter ? stage.dataset.mapCenter.split(",").map(Number) : null),
+          zoom: state.mapReady ? Number(map.getZoom().toFixed(2)) : Number(stage.dataset.mapZoom || 0),
+          style: stage.dataset.mapStyle || ""
+        }
+      };
+    }
+
+    function getConsoleApiCities() {
+      return mapCities.map(city => ({
+        name: city.name,
+        label: city.name,
+        englishName: city.sub,
+        lng: city.lng,
+        lat: city.lat
+      }));
+    }
+
+    function getConsoleApiPhases() {
+      return COMMAND_PHASES.map(phase => ({
+        key: phase.key,
+        status: phase.status,
+        sector: phase.sector,
+        area: phase.area
+      }));
+    }
+
+    function showGlobeFromConsole(options = {}) {
+      returnToGlobeView(options.keepScale !== false);
+      const result = setConsolePhase(options.phase || "waiting", true);
+      appendConsoleLog("[GLOBE] 已返回地球屏保");
+      return {
+        ok: true,
+        action: "showGlobe",
+        mode: "globe",
+        phase: result.ok ? result.phase : state.console.phase
+      };
+    }
+
+    function runConsoleCommand(action, payload = {}, options = {}) {
+      const command = String(action || "").trim();
+      if (!command) return { ok: false, action: "", reason: "missing-action" };
+
+      switch (command) {
+        case "log":
+        case "pushLog":
+          return consoleBridge.pushLog(payload && payload.message ? payload.message : payload);
+        case "phase":
+        case "setPhase":
+        case "setStatus":
+          return consoleBridge.setPhase(payload && payload.phase ? payload.phase : payload);
+        case "source":
+        case "setSource":
+          return consoleBridge.setSource(payload && payload.source ? payload.source : payload);
+        case "city":
+        case "focusCity":
+          return consoleBridge.focusCity(payload && payload.city ? payload.city : payload, options);
+        case "place":
+        case "focusPlace":
+          return consoleBridge.focusPlace(payload && payload.place ? payload.place : payload, options);
+        case "flyTo":
+        case "navigate":
+          return consoleBridge.flyTo(payload, options);
+        case "globe":
+        case "showGlobe":
+          return consoleBridge.showGlobe(payload || options);
+        case "visual":
+        case "fx":
+        case "setVisualPreset":
+          return consoleBridge.setVisualPreset(payload, options);
+        case "cycleVisualPreset":
+        case "cycleFx":
+          return consoleBridge.cycleVisualPreset(
+            payload && typeof payload === "object" ? Number(payload.step || 1) : Number(payload || 1),
+            options
+          );
+        case "getVisualPresets":
+          return consoleBridge.getVisualPresets();
+        case "state":
+        case "getState":
+          return consoleBridge.getState();
+        default:
+          return { ok: false, action: command, reason: "unknown-action" };
+      }
+    }
+
+    function dispatchConsoleResult(requestId, action, result) {
+      const detail = {
+        channel: "AiLandLineConsole",
+        type: "ailandline:result",
+        requestId: requestId || "",
+        action: action || result.action || "",
+        result
+      };
+      window.dispatchEvent(new CustomEvent("ailandline:result", { detail }));
+      return detail;
+    }
+
+    const consoleBridge = {
+      version: CONSOLE_API_VERSION,
+      ready: true,
+      pushLog(message) {
+        appendConsoleLog(message);
+        return {
+          ok: true,
+          action: "pushLog",
+          message: String(message || "").trim()
+        };
+      },
+      setPhase(key) {
+        return setConsolePhase(key, true);
+      },
+      setStatus(key) {
+        return setConsolePhase(key, true);
+      },
+      setSource(source) {
+        state.console.source = String(source || "本地 AI 控制台");
+        return {
+          ok: true,
+          action: "setSource",
+          source: state.console.source
+        };
+      },
+      flyTo(target, options = {}) {
+        return navigateToMapTarget(target, options);
+      },
+      navigate(target, options = {}) {
+        return navigateToMapTarget(target, options);
+      },
+      focusCity(city, options = {}) {
+        return navigateToCity(city, options);
+      },
+      focusPlace(place, options = {}) {
+        return navigateToMapTarget(place, options);
+      },
+      showGlobe(options = {}) {
+        return showGlobeFromConsole(options);
+      },
+      setVisualPreset(preset, options = {}) {
+        return applyVisualPreset(preset, options);
+      },
+      cycleVisualPreset(step = 1, options = {}) {
+        return cycleVisualPresetByStep(Number(step) || 1, options);
+      },
+      getState() {
+        return getConsoleApiState();
+      },
+      getCities() {
+        return getConsoleApiCities();
+      },
+      getPhases() {
+        return getConsoleApiPhases();
+      },
+      getVisualPresets() {
+        return getConsoleApiVisualPresets();
+      },
+      invoke(action, payload = {}, options = {}) {
+        return runConsoleCommand(action, payload, options);
+      }
+    };
+    window.AiLandLineConsole = consoleBridge;
+    window.AiLandLine = consoleBridge;
+    globalThis.AiLandLineConsole = consoleBridge;
+    globalThis.AiLandLine = consoleBridge;
+    document.body.dataset.consoleBridge = "ready";
+    document.body.dataset.consoleApiVersion = CONSOLE_API_VERSION;
+
+    window.addEventListener("ailandline:log", (event) => {
+      appendConsoleLog(event.detail && event.detail.message ? event.detail.message : event.detail);
+    });
+
+    window.addEventListener("ailandline:phase", (event) => {
+      setConsolePhase(event.detail && event.detail.phase ? event.detail.phase : event.detail, true);
+    });
+
+    window.addEventListener("ailandline:navigate", (event) => {
+      const detail = event.detail || {};
+      const result = navigateFromConsoleDetail(detail);
+      dispatchConsoleResult(detail.requestId || detail.id, "navigate", result);
+    });
+
+    window.addEventListener("ailandline:command", (event) => {
+      const detail = event.detail || {};
+      const action = detail.action || detail.type || "";
+      const payload = Object.prototype.hasOwnProperty.call(detail, "payload") ? detail.payload : detail;
+      const result = runConsoleCommand(action, payload, detail.options || {});
+      dispatchConsoleResult(detail.requestId || detail.id, action, result);
+    });
+
+    window.addEventListener("message", (event) => {
+      const data = event.data || {};
+      if (!data || data.type === "ailandline:result") return;
+      if (data.channel !== "AiLandLineConsole" && data.type !== "ailandline:command") return;
+
+      const action = data.action || data.command || "";
+      const payload = Object.prototype.hasOwnProperty.call(data, "payload") ? data.payload : (data.detail || data.target || {});
+      const result = runConsoleCommand(action, payload, data.options || {});
+      const response = dispatchConsoleResult(data.requestId || data.id, action, result);
+      window.postMessage(response, window.location.origin);
+    });
+
+    window.dispatchEvent(new CustomEvent("ailandline:ready", {
+      detail: getConsoleApiState()
+    }));
 
     function updateMapLabels() {
       if (!els.mapLabelLayer || !state.mapReady || document.body.dataset.viewMode !== "map") return;
       const center = map.getCenter();
-      const zoom = map.getZoom();
-      const labelCount = zoom > 10.5 ? 4 : 3;
-      const candidates = mapCities
-        .map(city => {
-          const projected = map.project([city.lng, city.lat]);
-          const dx = lngDistance(city.lng, center.lng) * Math.cos(center.lat * Math.PI / 180);
-          const dy = city.lat - center.lat;
-          return {
-            city,
-            projected,
-            distance: Math.hypot(dx, dy),
-            visible: projected.x > 18 && projected.x < state.width - 18 && projected.y > 36 && projected.y < state.height - 80
-          };
-        })
-        .filter(item => item.visible)
-        .sort((a, b) => a.distance - b.distance)
-        .slice(0, labelCount);
-
-      const focusName = nearestCity(center).name;
+      const match = nearestCityMatch(center);
+      const focusName = match.city.name;
       els.mapLabelLayer.replaceChildren();
-      const renderLabel = (item, floating = false) => {
-        const label = document.createElement("div");
-        label.className = `map-city-label${item.city.name === focusName ? " is-focus" : ""}${floating ? " is-floating" : ""}`;
-        if (!floating) {
-          label.style.left = `${item.projected.x.toFixed(1)}px`;
-          label.style.top = `${item.projected.y.toFixed(1)}px`;
-        }
-
-        const title = document.createElement("strong");
-        title.textContent = floating ? `${item.city.name}附近` : item.city.name;
-        const sub = document.createElement("span");
-        sub.textContent = item.city.sub;
-        label.append(title, sub);
-        els.mapLabelLayer.append(label);
-      };
-
-      candidates.forEach(item => renderLabel(item));
-      if (!candidates.length) {
-        const city = nearestCity(center);
-        renderLabel({ city, projected: { x: 0, y: 0 }, distance: 0 }, true);
-      }
 
       stage.dataset.mapFocus = focusName;
     }
@@ -1144,8 +1677,8 @@
       }
     });
 
-    const renderer = new THREE.WebGLRenderer({ canvas: globeCanvas, antialias: true, alpha: false });
-    renderer.setClearColor(0x020403, 1);
+    const renderer = new THREE.WebGLRenderer({ canvas: globeCanvas, antialias: true, alpha: true });
+    renderer.setClearColor(0x020403, 0);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
@@ -1158,6 +1691,89 @@
       depthBuffer: true,
       stencilBuffer: false
     });
+
+    const starGeometry = new THREE.BufferGeometry();
+    const starCount = 8200;
+    const starPositions = new Float32Array(starCount * 3);
+    const starSizes = new Float32Array(starCount);
+    const starAlphas = new Float32Array(starCount);
+    const starTwinkles = new Float32Array(starCount);
+    const starSeeds = new Float32Array(starCount);
+    const starWarmths = new Float32Array(starCount);
+    for (let i = 0; i < starCount; i += 1) {
+      const depth = -18 - Math.pow(Math.random(), 0.68) * 70;
+      const spread = Math.abs(depth) * (1.12 + Math.random() * 0.72);
+      const band = Math.random() < 0.34 ? Math.sin(Math.random() * Math.PI * 2) * 0.16 : 0;
+      starPositions[i * 3] = (Math.random() - 0.5) * spread * 2.5;
+      starPositions[i * 3 + 1] = ((Math.random() - 0.5) * 1.36 + band) * spread;
+      starPositions[i * 3 + 2] = depth;
+      const rareBright = Math.random() > 0.965;
+      starSizes[i] = rareBright ? 2.2 + Math.random() * 1.6 : 0.65 + Math.pow(Math.random(), 2.6) * 1.55;
+      starAlphas[i] = rareBright ? 0.78 + Math.random() * 0.22 : 0.2 + Math.random() * 0.54;
+      starTwinkles[i] = 0.45 + Math.random() * 1.45;
+      starSeeds[i] = Math.random() * Math.PI * 2;
+      starWarmths[i] = Math.random();
+    }
+    starGeometry.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
+    starGeometry.setAttribute("aSize", new THREE.BufferAttribute(starSizes, 1));
+    starGeometry.setAttribute("aAlpha", new THREE.BufferAttribute(starAlphas, 1));
+    starGeometry.setAttribute("aTwinkle", new THREE.BufferAttribute(starTwinkles, 1));
+    starGeometry.setAttribute("aSeed", new THREE.BufferAttribute(starSeeds, 1));
+    starGeometry.setAttribute("aWarmth", new THREE.BufferAttribute(starWarmths, 1));
+    const starMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uPixelRatio: { value: Math.min(window.devicePixelRatio || 1, 2) },
+        uExposure: { value: 1 },
+        uTwinkleStrength: { value: 0.78 }
+      },
+      vertexShader: `
+        attribute float aSize;
+        attribute float aAlpha;
+        attribute float aTwinkle;
+        attribute float aSeed;
+        attribute float aWarmth;
+        uniform float uTime;
+        uniform float uPixelRatio;
+        uniform float uExposure;
+        uniform float uTwinkleStrength;
+        varying float vAlpha;
+        varying vec3 vColor;
+
+        void main() {
+          vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+          float pulse = mix(1.0, 0.74 + 0.26 * sin(uTime * aTwinkle + aSeed), uTwinkleStrength);
+          float slow = 0.94 + 0.06 * sin(uTime * 0.19 + aSeed * 2.31);
+          vec3 cold = vec3(0.62, 0.78, 1.0);
+          vec3 warm = vec3(1.0, 0.92, 0.74);
+          vColor = mix(cold, warm, smoothstep(0.18, 0.94, aWarmth));
+          vAlpha = aAlpha * pulse * uExposure;
+          gl_PointSize = aSize * uPixelRatio * mix(1.0, pulse * slow, uTwinkleStrength);
+          gl_Position = projectionMatrix * mvPosition;
+        }
+      `,
+      fragmentShader: `
+        varying float vAlpha;
+        varying vec3 vColor;
+
+        void main() {
+          vec2 uv = gl_PointCoord * 2.0 - 1.0;
+          float r = dot(uv, uv);
+          if (r > 1.0) discard;
+          float core = smoothstep(0.18, 0.0, r);
+          float halo = smoothstep(1.0, 0.0, r) * 0.46;
+          float alpha = (core + halo) * vAlpha;
+          if (alpha < 0.02) discard;
+          gl_FragColor = vec4(vColor, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      depthTest: true,
+      blending: THREE.AdditiveBlending
+    });
+    const starField = new THREE.Points(starGeometry, starMaterial);
+    scene.add(starField);
 
     const earthGroup = new THREE.Group();
     earthGroup.rotation.x = -0.24;
@@ -1215,20 +1831,152 @@
 
     const textureLoader = new THREE.TextureLoader();
     textureLoader.setCrossOrigin("anonymous");
-    const diffuseMap = await textureLoader.loadAsync("./assets/earth-blue-marble.jpg");
+    const diffuseMap = await textureLoader.loadAsync("./assets/earth-day.jpg");
     const waterMap = await textureLoader.loadAsync("./assets/earth-water.png");
+    const nightMap = await textureLoader.loadAsync("./assets/earth-night.jpg");
+    const specularCloudsMap = await textureLoader.loadAsync("./assets/earth-specular-clouds.jpg");
+    const cloudLayerMap = await textureLoader.loadAsync("./assets/earth-clouds.png");
     diffuseMap.colorSpace = THREE.SRGBColorSpace;
-    stage.dataset.globeTexture = "blue-marble";
+    nightMap.colorSpace = THREE.SRGBColorSpace;
+    cloudLayerMap.colorSpace = THREE.SRGBColorSpace;
+    [diffuseMap, waterMap, nightMap, specularCloudsMap, cloudLayerMap].forEach(texture => {
+      texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      texture.needsUpdate = true;
+    });
+    stage.dataset.globeTexture = "reference-day";
 
-    const earthMaterial = new THREE.MeshPhongMaterial({
-      map: diffuseMap,
-      specularMap: waterMap,
-      specular: new THREE.Color(0x333333),
-      shininess: 16
+    const earthMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        dayMap: { value: diffuseMap },
+        nightMap: { value: nightMap },
+        specularCloudsMap: { value: specularCloudsMap },
+        sunDirection: { value: null },
+        atmosphereColor: { value: new THREE.Color(0x8bdfff) },
+        uDayExposure: { value: 1.02 },
+        uNightExposure: { value: 1.1 },
+        uCloudStrength: { value: 0.18 },
+        uSpecularStrength: { value: 0.18 },
+        uAtmosphereScatter: { value: 0.14 },
+        uTerminatorSoftness: { value: 0.34 },
+        uSurfaceContrast: { value: 1.04 }
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vUv = uv;
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform sampler2D dayMap;
+        uniform sampler2D nightMap;
+        uniform sampler2D specularCloudsMap;
+        uniform vec3 sunDirection;
+        uniform vec3 atmosphereColor;
+        uniform float uDayExposure;
+        uniform float uNightExposure;
+        uniform float uCloudStrength;
+        uniform float uSpecularStrength;
+        uniform float uAtmosphereScatter;
+        uniform float uTerminatorSoftness;
+        uniform float uSurfaceContrast;
+        varying vec2 vUv;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        vec3 contrastColor(vec3 color, float contrast) {
+          return clamp((color - 0.5) * contrast + 0.5, 0.0, 1.0);
+        }
+
+        void main() {
+          vec3 normal = normalize(vWorldNormal);
+          vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
+          vec3 lightDirection = normalize(sunDirection);
+          float sunAmount = dot(normal, lightDirection);
+          float dayMix = smoothstep(-uTerminatorSoftness, uTerminatorSoftness * 1.18, sunAmount);
+          float nightMix = 1.0 - smoothstep(-uTerminatorSoftness * 0.82, uTerminatorSoftness * 0.58, sunAmount);
+
+          vec3 dayColor = contrastColor(texture2D(dayMap, vUv).rgb * uDayExposure, uSurfaceContrast);
+          vec3 nightColor = texture2D(nightMap, vUv).rgb * uNightExposure;
+          vec3 color = mix(nightColor, dayColor, dayMix);
+
+          vec3 packed = texture2D(specularCloudsMap, vUv).rgb;
+          float oceanMask = smoothstep(0.34, 0.74, packed.r) * (1.0 - smoothstep(0.18, 0.62, packed.g));
+          float cloudMask = smoothstep(0.44, 0.92, packed.g) * smoothstep(0.08, 0.9, packed.r);
+          float cloudLight = cloudMask * smoothstep(-0.06, 0.7, sunAmount) * uCloudStrength;
+          color = mix(color, vec3(1.0), clamp(cloudLight, 0.0, 0.18));
+
+          vec3 reflection = reflect(-lightDirection, normal);
+          float specular = pow(max(dot(reflection, viewDirection), 0.0), 72.0);
+          specular *= oceanMask * smoothstep(0.12, 0.84, sunAmount) * uSpecularStrength;
+
+          float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 2.0);
+          float atmosphereDayMix = smoothstep(-0.5, 1.0, sunAmount);
+          vec3 atmosphere = atmosphereColor * (0.7 + atmosphereDayMix * 0.42);
+          color = mix(color, atmosphere, clamp(fresnel * atmosphereDayMix * uAtmosphereScatter, 0.0, 0.28));
+          color += mix(vec3(1.0), atmosphereColor, 0.64) * specular;
+
+          color *= mix(0.72, 1.0, dayMix + nightMix * 0.55);
+          gl_FragColor = vec4(color, 1.0);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+        }
+      `
     });
 
     const earthMesh = new THREE.Mesh(sphereGeometry, earthMaterial);
     earthGroup.add(earthMesh);
+
+    const sunDirection = new THREE.Vector3(-0.62, 0.42, 0.66).normalize();
+    earthMaterial.uniforms.sunDirection.value = sunDirection;
+    const nightOverlayMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        sunDirection: { value: sunDirection },
+        uNightStrength: { value: 0.52 },
+        uNightEdge: { value: 0.16 },
+        uNightSoftness: { value: 0.38 }
+      },
+      vertexShader: `
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 sunDirection;
+        uniform float uNightStrength;
+        uniform float uNightEdge;
+        uniform float uNightSoftness;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vec3 normal = normalize(vWorldNormal);
+          vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
+          float day = dot(normal, normalize(sunDirection));
+          float night = smoothstep(uNightEdge, uNightEdge - uNightSoftness, day);
+          float rim = pow(1.0 - max(dot(normal, viewDirection), 0.0), 1.9);
+          float alpha = night * (1.0 - rim * 0.62) * uNightStrength;
+          gl_FragColor = vec4(0.0, 0.012, 0.035, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false
+    });
+    const nightOverlay = new THREE.Mesh(sphereGeometry, nightOverlayMaterial);
+    nightOverlay.scale.setScalar(1.002);
+    earthGroup.add(nightOverlay);
 
     textureLoader.loadAsync(eoxSatelliteGlobeUrl())
       .then(texture => {
@@ -1242,21 +1990,21 @@
         syncControls();
       })
       .catch(() => {
-        stage.dataset.globeTexture = "blue-marble";
+        stage.dataset.globeTexture = "reference-day";
       });
 
-    const cloudMap = makeCloudTexture();
     const cloudMaterial = new THREE.MeshPhongMaterial({
-      map: cloudMap,
+      map: cloudLayerMap,
       transparent: true,
-      opacity: 0,
+      opacity: 0.34,
       depthWrite: false,
+      alphaTest: 0.03,
       specular: new THREE.Color(0x111111),
       shininess: 2
     });
     const cloudMesh = new THREE.Mesh(sphereGeometry, cloudMaterial);
-    cloudMesh.scale.setScalar(1.014);
-    cloudMesh.visible = false;
+    cloudMesh.scale.setScalar(1.004);
+    cloudMesh.visible = true;
     earthGroup.add(cloudMesh);
 
     const wireMaterial = new THREE.MeshBasicMaterial({
@@ -1270,16 +2018,157 @@
     wireMesh.scale.setScalar(1.006);
     earthGroup.add(wireMesh);
 
-    const atmosphereMaterial = new THREE.MeshBasicMaterial({
-      color: 0x9cf7ee,
+    const atmosphereMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        sunDirection: { value: sunDirection },
+        atmosphereColor: { value: new THREE.Color(0x9cf7ee) },
+        uIntensity: { value: 1.0 },
+        uRimPower: { value: 3.1 },
+        uBaseGlow: { value: 0.04 },
+        uSunGlow: { value: 0.82 }
+      },
+      vertexShader: `
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 sunDirection;
+        uniform vec3 atmosphereColor;
+        uniform float uIntensity;
+        uniform float uRimPower;
+        uniform float uBaseGlow;
+        uniform float uSunGlow;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vec3 normal = normalize(vWorldNormal);
+          vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
+          float fresnel = pow(1.0 - abs(dot(normal, viewDirection)), uRimPower);
+          float sunAmount = smoothstep(-0.05, 0.88, dot(normal, normalize(sunDirection)));
+          float alpha = fresnel * (uBaseGlow + sunAmount * uSunGlow) * 0.42 * uIntensity;
+          vec3 color = atmosphereColor * (0.62 + sunAmount * 0.82);
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
       transparent: true,
-      opacity: 0,
       side: THREE.BackSide,
-      depthWrite: false
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
     });
     const atmosphere = new THREE.Mesh(sphereGeometry, atmosphereMaterial);
-    atmosphere.scale.setScalar(1.055);
+    atmosphere.scale.setScalar(1.045);
     earthGroup.add(atmosphere);
+
+    const limbFogMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        sunDirection: { value: sunDirection },
+        fogColor: { value: new THREE.Color(0x8bdfff) },
+        uTime: { value: 0 },
+        uIntensity: { value: 0.46 },
+        uPower: { value: 2.0 },
+        uNoise: { value: 0.18 }
+      },
+      vertexShader: `
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 sunDirection;
+        uniform vec3 fogColor;
+        uniform float uTime;
+        uniform float uIntensity;
+        uniform float uPower;
+        uniform float uNoise;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        float hash(vec3 p) {
+          return fract(sin(dot(p, vec3(17.23, 41.71, 93.17))) * 43758.5453);
+        }
+
+        void main() {
+          vec3 normal = normalize(vWorldNormal);
+          vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
+          float ndv = max(dot(normal, viewDirection), 0.0);
+          float limb = pow(1.0 - ndv, uPower);
+          float sunAmount = smoothstep(-0.42, 0.84, dot(normal, normalize(sunDirection)));
+          float grain = mix(1.0, 0.78 + hash(normal * 16.0 + vec3(uTime * 0.03)) * 0.44, uNoise);
+          float alpha = limb * (0.18 + sunAmount * 0.82) * uIntensity * grain;
+          alpha *= smoothstep(0.04, 0.72, limb);
+          gl_FragColor = vec4(fogColor * (0.62 + sunAmount * 0.7), alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    const limbFog = new THREE.Mesh(sphereGeometry, limbFogMaterial);
+    limbFog.scale.setScalar(1.018);
+    limbFog.renderOrder = 5;
+    earthGroup.add(limbFog);
+
+    const twilightMaterial = new THREE.ShaderMaterial({
+      uniforms: {
+        sunDirection: { value: sunDirection },
+        dayColor: { value: new THREE.Color(0xffc18a) },
+        nightColor: { value: new THREE.Color(0x75cfff) },
+        uIntensity: { value: 0.28 },
+        uWidth: { value: 0.36 }
+      },
+      vertexShader: `
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vWorldNormal = normalize(mat3(modelMatrix) * normal);
+          vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPosition.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPosition;
+        }
+      `,
+      fragmentShader: `
+        uniform vec3 sunDirection;
+        uniform vec3 dayColor;
+        uniform vec3 nightColor;
+        uniform float uIntensity;
+        uniform float uWidth;
+        varying vec3 vWorldNormal;
+        varying vec3 vWorldPosition;
+
+        void main() {
+          vec3 normal = normalize(vWorldNormal);
+          vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
+          float day = dot(normal, normalize(sunDirection));
+          float band = 1.0 - smoothstep(0.0, uWidth, abs(day));
+          float limb = pow(1.0 - max(dot(normal, viewDirection), 0.0), 1.25);
+          vec3 color = mix(nightColor, dayColor, smoothstep(-0.16, 0.16, day));
+          float alpha = band * (0.16 + limb * 0.74) * uIntensity;
+          gl_FragColor = vec4(color, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    });
+    const twilightHaze = new THREE.Mesh(sphereGeometry, twilightMaterial);
+    twilightHaze.scale.setScalar(1.007);
+    twilightHaze.renderOrder = 4;
+    earthGroup.add(twilightHaze);
 
     const maskMaterial = new THREE.ShaderMaterial({
       uniforms: {
@@ -1308,15 +2197,16 @@
     const maskMesh = new THREE.Mesh(sphereGeometry, maskMaterial);
     maskGroup.add(maskMesh);
 
-    scene.add(new THREE.AmbientLight(0xffffff, 0.42));
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.55);
-    keyLight.position.set(4.5, 2.8, 4.8);
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.2);
+    scene.add(ambientLight);
+    const keyLight = new THREE.DirectionalLight(0xffffff, 2.25);
+    keyLight.position.copy(sunDirection).multiplyScalar(7.5);
     scene.add(keyLight);
-    const redLight = new THREE.DirectionalLight(0xffffff, 0);
-    redLight.position.set(-4, -1, 3);
+    const redLight = new THREE.DirectionalLight(0xffffff, 0.05);
+    redLight.position.set(-2.6, -1.4, 2.1);
     scene.add(redLight);
-    const fillLight = new THREE.DirectionalLight(0xffffff, 0.16);
-    fillLight.position.set(-3.2, 2.1, 2.8);
+    const fillLight = new THREE.DirectionalLight(0x8ab8ff, 0.08);
+    fillLight.position.set(2.8, 1.2, 3.2);
     scene.add(fillLight);
 
     function updateGlobeFrame() {
@@ -1342,6 +2232,7 @@
 
       renderer.setPixelRatio(state.dpr);
       renderer.setSize(state.width, state.height, false);
+      starMaterial.uniforms.uPixelRatio.value = state.dpr;
       camera.aspect = state.width / state.height;
       camera.updateProjectionMatrix();
       updateGlobeFrame();
@@ -1362,12 +2253,17 @@
 
     const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
     const MIN_GLOBE_SCALE = 0.78;
-    const MAX_GLOBE_SCALE = 1.72;
-    const WHEEL_ZOOM_SENSITIVITY = 0.00115;
-    const MAP_HANDOFF_WHEEL_THRESHOLD = 130;
+    const MAX_GLOBE_SCALE = 1.84;
+    const WHEEL_ZOOM_SENSITIVITY = 0.00078;
+    const MAP_HANDOFF_WHEEL_THRESHOLD = 260;
     const MAP_HANDOFF_ZOOM = 12.2;
-    const MAP_RETURN_ZOOM = 5.58;
-    const MAP_RETURN_WHEEL_THRESHOLD = 420;
+    const MAP_HANDOFF_START_DELTA = 5.15;
+    const MAP_HANDOFF_EASE_MS = 980;
+    const MAP_HANDOFF_REVEAL_WAIT_MS = 4200;
+    const MAP_RETURN_ZOOM = 6.45;
+    const MAP_RETURN_WHEEL_THRESHOLD = 340;
+    const MAP_RETURN_WHEEL_STEP_MAX = 92;
+    const MAP_RETURN_GLOBE_WHEEL_LOCK_MS = 4200;
     const ZOOM_INTERACTION_IDLE_MS = 850;
     const ZOOM_ANCHOR_MOVE_PX = 28;
     const handoffRaycaster = new THREE.Raycaster();
@@ -1430,8 +2326,47 @@
       return lngLatFromUv(hit.uv);
     }
 
+    function screenPointHasLand(point) {
+      if (!point || !state.maskPixels || !state.maskWidth || !state.maskHeight) return false;
+      const maskX = Math.floor(clamp(point.x / Math.max(1, state.width), 0, 0.999) * state.maskWidth);
+      const maskY = Math.floor(clamp((state.height - 1 - point.y) / Math.max(1, state.height), 0, 0.999) * state.maskHeight);
+      const idx = (maskY * state.maskWidth + maskX) * 4;
+      return state.maskPixels[idx] > 128;
+    }
+
+    function resolveMapHandoffTarget(target, point) {
+      const center = { lng: target[0], lat: target[1] };
+      if (point && screenPointHasLand(point)) {
+        stage.dataset.handoffSnap = "direct";
+        return target;
+      }
+
+      const match = nearestCityMatch(center);
+      stage.dataset.handoffSnap = "city";
+      stage.dataset.handoffSnapDistance = match.distance.toFixed(2);
+      return [match.city.lng, match.city.lat];
+    }
+
     function lockMapReturn(duration = 0) {
       state.mapReturnLockedUntil = Date.now() + duration;
+    }
+
+    function waitForMapWarmup(callback, maxWait = MAP_HANDOFF_REVEAL_WAIT_MS) {
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (map.off) map.off("idle", finish);
+        callback();
+      };
+
+      if (map.areTilesLoaded && map.areTilesLoaded()) {
+        finish();
+        return;
+      }
+
+      map.once("idle", finish);
+      window.setTimeout(finish, maxWait);
     }
 
     function setViewMode(mode) {
@@ -1447,6 +2382,7 @@
         delete stage.dataset.handoff;
         delete stage.dataset.mapStatus;
       }
+      appendConsoleLog(mode === "map" ? "[MAP] 地图视图已接管" : "[GLOBE] 地球屏保视图恢复");
     }
 
     function enterMapAtTarget(target) {
@@ -1460,6 +2396,13 @@
         Number(target.center[1].toFixed(4))
       ];
       const zoom = target.zoom || MAP_HANDOFF_ZOOM;
+      const duration = target.duration || MAP_HANDOFF_EASE_MS;
+      const label = target.label || "";
+      const startZoom = clamp(
+        zoom - MAP_HANDOFF_START_DELTA,
+        (map.getMinZoom ? map.getMinZoom() : 5.4) + 0.24,
+        zoom
+      );
       state.mapHandoffTriggered = true;
       state.previousMapZoom = zoom;
       state.handoffTargetLngLat = center;
@@ -1469,6 +2412,7 @@
       stage.dataset.zoomAnchor = `${center[0]},${center[1]}`;
       stage.dataset.mapZoom = zoom.toFixed(2);
       stage.dataset.mapCenter = `${center[0]},${center[1]}`;
+      if (label) stage.dataset.mapTarget = label;
       document.body.dataset.handoff = "map";
 
       map.resize();
@@ -1477,28 +2421,187 @@
       setMapProjection("mercator");
       map.jumpTo({
         center,
-        zoom,
+        zoom: startZoom,
         pitch: 0,
         bearing: 0
       });
       syncMapDataset();
 
-      window.setTimeout(() => {
+      waitForMapWarmup(() => {
         setViewMode("map");
         map.resize();
+        map.easeTo({
+          center,
+          zoom,
+          pitch: 0,
+          bearing: 0,
+          duration,
+          essential: true,
+          easing: (t) => 1 - Math.pow(1 - t, 3)
+        });
         syncMapDataset();
         window.setTimeout(() => {
-          setMapWheelEnabled(true);
           delete document.body.dataset.handoff;
           delete stage.dataset.handoff;
-        }, 760);
-      }, 180);
+        }, 620);
+        window.setTimeout(() => {
+          setMapWheelEnabled(true);
+        }, duration + 120);
+      }, target.revealWait || MAP_HANDOFF_REVEAL_WAIT_MS);
+    }
+
+    function readNumber(...values) {
+      for (const value of values) {
+        const number = Number(value);
+        if (Number.isFinite(number)) return number;
+      }
+      return null;
+    }
+
+    function normalizeNavigationTarget(input, options = {}) {
+      const source = input && typeof input === "object" && !Array.isArray(input) ? input : {};
+      const query = typeof input === "string"
+        ? input
+        : source.city || source.place || source.query || source.name || options.city || options.place || options.query || options.name || "";
+      const city = query ? findCityByName(query) : null;
+      const centerInput = Array.isArray(input) ? input : source.center || source.lngLat || source.coordinates || options.center || options.lngLat;
+      const lng = centerInput ? readNumber(centerInput[0]) : readNumber(source.lng, source.longitude, options.lng, options.longitude, city && city.lng);
+      const lat = centerInput ? readNumber(centerInput[1]) : readNumber(source.lat, source.latitude, options.lat, options.latitude, city && city.lat);
+
+      if (!Number.isFinite(lng) || !Number.isFinite(lat)) {
+        return {
+          ok: false,
+          reason: "missing-coordinates",
+          query: query || ""
+        };
+      }
+
+      const minZoom = state.mapReady && map.getMinZoom ? map.getMinZoom() : 5.4;
+      const maxZoom = state.mapReady && map.getMaxZoom ? map.getMaxZoom() : 18.8;
+      const defaultZoom = city ? 12.35 : 13.4;
+      const zoom = clamp(readNumber(source.zoom, options.zoom, defaultZoom), minZoom, maxZoom);
+      const duration = clamp(readNumber(source.duration, options.duration, 1480), 420, 4200);
+      const label = source.label || options.label || (city && city.name) || query || "指定位置";
+
+      return {
+        ok: true,
+        center: [
+          Number((((lng + 540) % 360) - 180).toFixed(4)),
+          Number(clamp(lat, -82, 82).toFixed(4))
+        ],
+        zoom,
+        duration,
+        label,
+        city: city ? city.name : ""
+      };
+    }
+
+    function navigateToMapTarget(input, options = {}) {
+      const target = normalizeNavigationTarget(input, options);
+      if (!target.ok) {
+        const query = target.query ? ` ${target.query}` : "";
+        appendConsoleLog(`[NAV] 未找到目标${query}，请传入城市名或 lng/lat`);
+        return target;
+      }
+
+      const payload = {
+        center: target.center,
+        zoom: target.zoom,
+        duration: target.duration,
+        label: target.label
+      };
+      state.previousMapZoom = target.zoom;
+      state.handoffTargetLngLat = target.center;
+      stage.dataset.mapCenter = `${target.center[0]},${target.center[1]}`;
+      stage.dataset.mapZoom = target.zoom.toFixed(2);
+      stage.dataset.mapTarget = target.label;
+      setConsolePhase("executing", true);
+      appendConsoleLog(`[NAV] 跳转 ${target.label}`);
+
+      if (!state.mapReady) {
+        state.pendingMapTarget = payload;
+        return { ...target, pending: true };
+      }
+
+      if (document.body.dataset.viewMode !== "map") {
+        enterMapAtTarget(payload);
+        return { ...target, mode: "handoff" };
+      }
+
+      lockMapReturn(target.duration + 1300);
+      setMapWheelEnabled(false);
+      setMapProjection("mercator");
+      map.resize();
+      if (map.stop) map.stop();
+      map.easeTo({
+        center: target.center,
+        zoom: target.zoom,
+        pitch: 0,
+        bearing: 0,
+        duration: target.duration,
+        essential: true,
+        easing: (t) => 1 - Math.pow(1 - t, 3)
+      });
+      window.setTimeout(() => {
+        setMapWheelEnabled(true);
+        syncMapDataset();
+        updateMapLabels();
+      }, target.duration + 120);
+      return { ...target, mode: "map" };
+    }
+
+    function navigateToCity(query, options = {}) {
+      const city = typeof query === "object" ? findCityByName(query.city || query.name || query.label) : findCityByName(query);
+      if (!city) {
+        const name = typeof query === "string" ? query : query && (query.city || query.name || query.label);
+        appendConsoleLog(`[NAV] 未找到城市 ${name || ""}`.trim());
+        return { ok: false, reason: "unknown-city", query: name || "" };
+      }
+      return navigateToMapTarget({
+        center: [city.lng, city.lat],
+        zoom: options.zoom || 12.35,
+        label: options.label || city.name,
+        duration: options.duration
+      }, options);
+    }
+
+    function navigateFromConsoleDetail(detail = {}) {
+      if (detail.city) return navigateToCity(detail.city, detail);
+      if (detail.place || detail.query || typeof detail === "string") {
+        return navigateToMapTarget(detail.place || detail.query || detail, detail);
+      }
+      return navigateToMapTarget(detail, detail);
+    }
+
+    function applyInitialNavigationFromUrl() {
+      const params = new URLSearchParams(window.location.search);
+      const visualPreset = params.get("fx") || params.get("visual") || params.get("preset");
+      const city = params.get("city");
+      const place = params.get("place") || params.get("focus");
+      const lng = params.get("lng");
+      const lat = params.get("lat");
+      const label = params.get("label") || city || place || "";
+      const zoom = params.get("zoom");
+
+      if (visualPreset) {
+        applyVisualPreset(visualPreset, { silent: true });
+      }
+
+      if (city) {
+        navigateToCity(city, { label, zoom });
+      } else if (lng && lat) {
+        navigateToMapTarget({ lng, lat, label, zoom });
+      } else if (place) {
+        navigateToMapTarget(place, { label, zoom });
+      }
     }
 
     function triggerRealMapHandoff(focusPoint = null) {
       if (state.mapHandoffTriggered) return;
       const focusTarget = !state.zoomAnchorLngLat && focusPoint ? earthLngLatAtPoint(focusPoint, false) : null;
-      const target = state.zoomAnchorLngLat || focusTarget || earthCenterLngLat();
+      const rawTarget = state.zoomAnchorLngLat || focusTarget || earthCenterLngLat();
+      const anchorPoint = state.zoomAnchorPoint || focusPoint;
+      const target = resolveMapHandoffTarget(rawTarget, anchorPoint);
       const [lng, lat] = target;
       state.zoomAnchorLngLat = [lng, lat];
       state.velocity.x = 0;
@@ -1514,6 +2617,7 @@
       state.zoomAnchorLngLat = null;
       state.zoomAnchorPoint = null;
       state.zoomLockUntil = 0;
+      state.globeWheelLockedUntil = performance.now() + MAP_RETURN_GLOBE_WHEEL_LOCK_MS;
       state.handoffTargetLngLat = null;
       state.mapReturnCharge = 0;
       stage.dataset.handoffCharge = "0";
@@ -1535,11 +2639,16 @@
       syncMapDataset();
     });
 
+    map.on("moveend", () => {
+      if (document.body.dataset.viewMode !== "map") return;
+      const center = map.getCenter();
+      const city = nearestCity(center);
+      appendConsoleLog(`[MAP] 视野同步 ${city.sub || city.name}`);
+    });
+
     function handleMapWheel(event) {
       if (document.body.dataset.viewMode !== "map") return;
       if (!state.mapReady) return;
-      event.preventDefault();
-      event.stopPropagation();
       const deltaPixels = wheelDeltaPixels(event);
       const zoomingOut = deltaPixels > 0;
       const currentZoom = map.getZoom();
@@ -1547,23 +2656,19 @@
       if (!zoomingOut) {
         state.mapReturnCharge = 0;
         stage.dataset.mapReturnCharge = "0";
-        const nextZoom = clamp(currentZoom - deltaPixels * 0.00135, map.getMinZoom ? map.getMinZoom() : 5.4, map.getMaxZoom ? map.getMaxZoom() : 14.6);
-        if (map.stop) map.stop();
-        map.easeTo({ zoom: nextZoom, duration: 120 });
         return;
       }
 
-      const nextZoom = clamp(currentZoom - deltaPixels * 0.00135, map.getMinZoom ? map.getMinZoom() : 5.4, map.getMaxZoom ? map.getMaxZoom() : 14.6);
-      if (currentZoom > MAP_RETURN_ZOOM) {
+      if (Date.now() < state.mapReturnLockedUntil || currentZoom > MAP_RETURN_ZOOM) {
         state.mapReturnCharge = 0;
         stage.dataset.mapReturnCharge = "0";
-        if (map.stop) map.stop();
-        map.easeTo({ zoom: nextZoom, duration: 120 });
         return;
       }
 
       if (currentZoom <= MAP_RETURN_ZOOM) {
-        state.mapReturnCharge += Math.abs(deltaPixels);
+        event.preventDefault();
+        event.stopPropagation();
+        state.mapReturnCharge += Math.min(Math.abs(deltaPixels), MAP_RETURN_WHEEL_STEP_MAX);
         stage.dataset.mapReturnCharge = String(Math.min(100, Math.round((state.mapReturnCharge / MAP_RETURN_WHEEL_THRESHOLD) * 100)));
         if (state.mapReturnCharge >= MAP_RETURN_WHEEL_THRESHOLD) {
           if (map.stop) map.stop();
@@ -1601,6 +2706,196 @@
       blue: { clear: 0x050b17, wire: 0x89c7ff, atmosphere: 0xa8d7ff, fill: 0x89c7ff, alert: 0xffb86d },
       amber: { clear: 0x120b05, wire: 0xffbf68, atmosphere: 0xffd995, fill: 0xffbf68, alert: 0x7df6e3 },
       red: { clear: 0x120305, wire: 0xff5151, atmosphere: 0xff7a70, fill: 0xff5151, alert: 0xffd06f }
+    };
+
+    const VISUAL_PRESET_ORDER = ["haze", "cinematic", "scientific", "orbital"];
+    const VISUAL_PRESETS = {
+      haze: {
+        label: "Soft atmospheric haze",
+        sky: `
+          radial-gradient(circle at 18% 24%, rgba(26, 70, 124, 0.18), transparent 30%),
+          radial-gradient(circle at 82% 18%, rgba(62, 118, 169, 0.12), transparent 34%),
+          radial-gradient(circle at 52% 70%, rgba(18, 52, 79, 0.18), transparent 44%),
+          linear-gradient(180deg, #050913 0%, #010309 64%, #000103 100%)
+        `,
+        sun: [-0.62, 0.42, 0.66],
+        starExposure: 1.08,
+        twinkleStrength: 0.74,
+        atmosphereColor: 0x8bdfff,
+        atmosphereScale: 1.011,
+        atmosphereIntensity: 0.045,
+        rimPower: 5.4,
+        baseGlow: 0.002,
+        sunGlow: 0.2,
+        limbFogColor: 0x8bdfff,
+        limbFogScale: 1.006,
+        limbFogIntensity: 0.035,
+        limbFogPower: 3.0,
+        limbFogNoise: 0.18,
+        twilightScale: 1.009,
+        twilightIntensity: 0.035,
+        twilightWidth: 0.18,
+        twilightDayColor: 0x9bdfff,
+        twilightNightColor: 0x5fbfff,
+        nightStrength: 0.08,
+        nightEdge: 0.14,
+        nightSoftness: 0.42,
+        surface: {
+          dayExposure: 1.02,
+          nightExposure: 1.1,
+          cloudStrength: 0.04,
+          specularStrength: 0.035,
+          atmosphereScatter: 0.42,
+          terminatorSoftness: 0.22,
+          contrast: 1.04
+        },
+        cloudLayerOpacity: 0.28,
+        keyLight: 2.2,
+        ambientLight: 0.18,
+        fillLight: 0.1,
+        themeFillLight: 0.24,
+        redLight: 0.04,
+        themeRedLight: 0.1
+      },
+      cinematic: {
+        label: "Cinematic limb glow",
+        sky: `
+          radial-gradient(circle at 8% 78%, rgba(34, 78, 153, 0.22), transparent 33%),
+          radial-gradient(circle at 58% 30%, rgba(98, 173, 220, 0.12), transparent 36%),
+          radial-gradient(circle at 86% 66%, rgba(33, 28, 77, 0.2), transparent 42%),
+          linear-gradient(160deg, #071529 0%, #020610 50%, #000102 100%)
+        `,
+        sun: [-0.74, 0.34, 0.58],
+        starExposure: 1.18,
+        twinkleStrength: 0.88,
+        atmosphereColor: 0x94ecff,
+        atmosphereScale: 1.016,
+        atmosphereIntensity: 0.09,
+        rimPower: 4.8,
+        baseGlow: 0.003,
+        sunGlow: 0.28,
+        limbFogColor: 0x89dfff,
+        limbFogScale: 1.008,
+        limbFogIntensity: 0.06,
+        limbFogPower: 2.8,
+        limbFogNoise: 0.22,
+        twilightScale: 1.018,
+        twilightIntensity: 0.08,
+        twilightWidth: 0.24,
+        twilightDayColor: 0xa6e6ff,
+        twilightNightColor: 0x5fc7ff,
+        nightStrength: 0.12,
+        nightEdge: 0.18,
+        nightSoftness: 0.5,
+        surface: {
+          dayExposure: 1.08,
+          nightExposure: 1.3,
+          cloudStrength: 0.08,
+          specularStrength: 0.08,
+          atmosphereScatter: 0.58,
+          terminatorSoftness: 0.28,
+          contrast: 1.08
+        },
+        cloudLayerOpacity: 0.42,
+        keyLight: 2.34,
+        ambientLight: 0.14,
+        fillLight: 0.07,
+        themeFillLight: 0.2,
+        redLight: 0.03,
+        themeRedLight: 0.08
+      },
+      scientific: {
+        label: "Scientific true-color pass",
+        sky: `
+          radial-gradient(circle at 24% 32%, rgba(42, 86, 137, 0.1), transparent 31%),
+          radial-gradient(circle at 76% 64%, rgba(21, 51, 86, 0.1), transparent 44%),
+          linear-gradient(180deg, #03070e 0%, #010205 70%, #000102 100%)
+        `,
+        sun: [-0.54, 0.5, 0.68],
+        starExposure: 0.9,
+        twinkleStrength: 0.46,
+        atmosphereColor: 0xb2e9ff,
+        atmosphereScale: 1.008,
+        atmosphereIntensity: 0.03,
+        rimPower: 5.7,
+        baseGlow: 0.001,
+        sunGlow: 0.14,
+        limbFogColor: 0xa7e6ff,
+        limbFogScale: 1.004,
+        limbFogIntensity: 0.025,
+        limbFogPower: 2.9,
+        limbFogNoise: 0.1,
+        twilightScale: 1.005,
+        twilightIntensity: 0.025,
+        twilightWidth: 0.16,
+        twilightDayColor: 0xb9ecff,
+        twilightNightColor: 0x8bd7ff,
+        nightStrength: 0.06,
+        nightEdge: 0.08,
+        nightSoftness: 0.32,
+        surface: {
+          dayExposure: 0.96,
+          nightExposure: 0.82,
+          cloudStrength: 0.025,
+          specularStrength: 0.025,
+          atmosphereScatter: 0.28,
+          terminatorSoftness: 0.2,
+          contrast: 1.0
+        },
+        cloudLayerOpacity: 0.26,
+        keyLight: 2.08,
+        ambientLight: 0.22,
+        fillLight: 0.12,
+        themeFillLight: 0.22,
+        redLight: 0.035,
+        themeRedLight: 0.07
+      },
+      orbital: {
+        label: "Low-orbit high contrast",
+        sky: `
+          radial-gradient(circle at 12% 58%, rgba(15, 33, 78, 0.24), transparent 38%),
+          radial-gradient(circle at 78% 24%, rgba(10, 65, 100, 0.1), transparent 32%),
+          linear-gradient(180deg, #02030a 0%, #000104 58%, #000000 100%)
+        `,
+        sun: [-0.82, 0.2, 0.53],
+        starExposure: 0.82,
+        twinkleStrength: 0.62,
+        atmosphereColor: 0x68d8ff,
+        atmosphereScale: 1.012,
+        atmosphereIntensity: 0.06,
+        rimPower: 5.2,
+        baseGlow: 0.002,
+        sunGlow: 0.22,
+        limbFogColor: 0x62cfff,
+        limbFogScale: 1.006,
+        limbFogIntensity: 0.04,
+        limbFogPower: 2.55,
+        limbFogNoise: 0.16,
+        twilightScale: 1.008,
+        twilightIntensity: 0.06,
+        twilightWidth: 0.18,
+        twilightDayColor: 0x85dcff,
+        twilightNightColor: 0x48baff,
+        nightStrength: 0.14,
+        nightEdge: 0.05,
+        nightSoftness: 0.28,
+        surface: {
+          dayExposure: 1.0,
+          nightExposure: 1.45,
+          cloudStrength: 0.045,
+          specularStrength: 0.055,
+          atmosphereScatter: 0.46,
+          terminatorSoftness: 0.18,
+          contrast: 1.14
+        },
+        cloudLayerOpacity: 0.32,
+        keyLight: 2.42,
+        ambientLight: 0.1,
+        fillLight: 0.045,
+        themeFillLight: 0.16,
+        redLight: 0.02,
+        themeRedLight: 0.06
+      }
     };
 
     const GIBS_WMS = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi";
@@ -1722,9 +3017,124 @@
       node.textContent = value;
     }
 
+    function normalizeVisualPresetName(input) {
+      const value = input && typeof input === "object" && !Array.isArray(input)
+        ? input.preset || input.visual || input.fx || input.name || input.mode
+        : input;
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function applyFillLightsForPreset(preset) {
+      const material = paletteMaterials[state.palette];
+      if (state.earthTone === "theme") {
+        fillLight.color.setHex(material.fill);
+        fillLight.intensity = preset.themeFillLight;
+        redLight.color.setHex(material.alert);
+        redLight.intensity = preset.themeRedLight;
+        return;
+      }
+
+      fillLight.color.setHex(0xffffff);
+      fillLight.intensity = preset.fillLight;
+      redLight.color.setHex(0xffffff);
+      redLight.intensity = preset.redLight;
+    }
+
+    function applyVisualPreset(input, options = {}) {
+      const name = normalizeVisualPresetName(input) || state.visualPreset || "haze";
+      const preset = VISUAL_PRESETS[name];
+      if (!preset) {
+        return {
+          ok: false,
+          action: "setVisualPreset",
+          reason: "unknown-preset",
+          preset: name,
+          available: [...VISUAL_PRESET_ORDER]
+        };
+      }
+
+      state.visualPreset = name;
+      document.body.dataset.visualPreset = name;
+      stage.dataset.visualPreset = name;
+      stage.dataset.visualPresetLabel = preset.label;
+      if (starfieldNode) {
+        starfieldNode.style.background = preset.sky;
+      }
+
+      sunDirection.set(preset.sun[0], preset.sun[1], preset.sun[2]).normalize();
+      keyLight.position.copy(sunDirection).multiplyScalar(7.5);
+      keyLight.intensity = preset.keyLight;
+      ambientLight.intensity = preset.ambientLight;
+
+      starMaterial.uniforms.uExposure.value = preset.starExposure;
+      starMaterial.uniforms.uTwinkleStrength.value = preset.twinkleStrength;
+
+      atmosphere.scale.setScalar(preset.atmosphereScale);
+      atmosphereMaterial.uniforms.atmosphereColor.value.setHex(preset.atmosphereColor);
+      atmosphereMaterial.uniforms.uIntensity.value = preset.atmosphereIntensity;
+      atmosphereMaterial.uniforms.uRimPower.value = preset.rimPower;
+      atmosphereMaterial.uniforms.uBaseGlow.value = preset.baseGlow;
+      atmosphereMaterial.uniforms.uSunGlow.value = preset.sunGlow;
+      earthMaterial.uniforms.atmosphereColor.value.setHex(preset.atmosphereColor);
+      const surface = preset.surface || VISUAL_PRESETS.haze.surface;
+      earthMaterial.uniforms.uDayExposure.value = surface.dayExposure;
+      earthMaterial.uniforms.uNightExposure.value = surface.nightExposure;
+      earthMaterial.uniforms.uCloudStrength.value = surface.cloudStrength;
+      earthMaterial.uniforms.uSpecularStrength.value = surface.specularStrength;
+      earthMaterial.uniforms.uAtmosphereScatter.value = surface.atmosphereScatter;
+      earthMaterial.uniforms.uTerminatorSoftness.value = surface.terminatorSoftness;
+      earthMaterial.uniforms.uSurfaceContrast.value = surface.contrast;
+
+      limbFog.visible = preset.limbFogIntensity > 0.001;
+      limbFog.scale.setScalar(preset.limbFogScale);
+      limbFogMaterial.uniforms.fogColor.value.setHex(preset.limbFogColor);
+      limbFogMaterial.uniforms.uIntensity.value = preset.limbFogIntensity;
+      limbFogMaterial.uniforms.uPower.value = preset.limbFogPower;
+      limbFogMaterial.uniforms.uNoise.value = preset.limbFogNoise;
+
+      twilightHaze.visible = preset.twilightIntensity > 0.001;
+      twilightHaze.scale.setScalar(preset.twilightScale);
+      twilightMaterial.uniforms.dayColor.value.setHex(preset.twilightDayColor);
+      twilightMaterial.uniforms.nightColor.value.setHex(preset.twilightNightColor);
+      twilightMaterial.uniforms.uIntensity.value = preset.twilightIntensity;
+      twilightMaterial.uniforms.uWidth.value = preset.twilightWidth;
+
+      nightOverlayMaterial.uniforms.uNightStrength.value = preset.nightStrength;
+      nightOverlayMaterial.uniforms.uNightEdge.value = preset.nightEdge;
+      nightOverlayMaterial.uniforms.uNightSoftness.value = preset.nightSoftness;
+      cloudMaterial.opacity = preset.cloudLayerOpacity;
+      cloudMesh.visible = preset.cloudLayerOpacity > 0.001;
+
+      applyFillLightsForPreset(preset);
+      if (!options.silent) appendConsoleLog(`[FX] ${preset.label}`);
+      syncControls();
+      return {
+        ok: true,
+        action: "setVisualPreset",
+        preset: name,
+        label: preset.label,
+        available: [...VISUAL_PRESET_ORDER]
+      };
+    }
+
+    function cycleVisualPresetByStep(step = 1, options = {}) {
+      const currentIndex = Math.max(0, VISUAL_PRESET_ORDER.indexOf(state.visualPreset));
+      const nextIndex = (currentIndex + step + VISUAL_PRESET_ORDER.length) % VISUAL_PRESET_ORDER.length;
+      return applyVisualPreset(VISUAL_PRESET_ORDER[nextIndex], options);
+    }
+
+    function getConsoleApiVisualPresets() {
+      return VISUAL_PRESET_ORDER.map(key => ({
+        key,
+        label: VISUAL_PRESETS[key].label
+      }));
+    }
+
     function syncControls() {
       document.body.dataset.earthTone = state.earthTone;
       document.body.dataset.dataMode = state.dataMode;
+      document.body.dataset.visualPreset = state.visualPreset;
+      stage.dataset.visualPreset = state.visualPreset;
       const displayedScale = state.targetGlobeScale || state.globeScale;
       stage.dataset.zoom = displayedScale.toFixed(2);
       setText(els.speedValue, state.speed.toFixed(2));
@@ -1743,7 +3153,6 @@
       setPressed(els.mobileMap, document.body.dataset.viewMode === "map");
       setPressed(els.wire, state.showWire);
       wireMesh.visible = state.showWire;
-      cloudMesh.visible = false;
 
     }
 
@@ -1752,27 +3161,19 @@
       state.palette = name;
       document.body.dataset.palette = name;
       const material = paletteMaterials[name];
-      renderer.setClearColor(material.clear, 1);
+      renderer.setClearColor(material.clear, 0);
       wireMaterial.color.setHex(material.wire);
-      atmosphereMaterial.color.setHex(material.atmosphere);
+      if (!VISUAL_PRESETS[state.visualPreset]) {
+        atmosphereMaterial.uniforms.atmosphereColor.value.setHex(material.atmosphere);
+      }
+      applyVisualPreset(state.visualPreset, { silent: true });
       applyEarthLighting();
       syncControls();
     }
 
     function applyEarthLighting() {
-      const material = paletteMaterials[state.palette];
-      if (state.earthTone === "theme") {
-        fillLight.color.setHex(material.fill);
-        fillLight.intensity = 0.42;
-        redLight.color.setHex(material.alert);
-        redLight.intensity = 0.18;
-        return;
-      }
-
-      fillLight.color.setHex(0xffffff);
-      fillLight.intensity = 0.16;
-      redLight.color.setHex(0xffffff);
-      redLight.intensity = 0;
+      const preset = VISUAL_PRESETS[state.visualPreset] || VISUAL_PRESETS.haze;
+      applyFillLightsForPreset(preset);
     }
 
     function applyEarthTone(name) {
@@ -1783,7 +3184,7 @@
     }
 
     function applyEarthMap(texture) {
-      earthMaterial.map = texture;
+      earthMaterial.uniforms.dayMap.value = texture;
       earthMaterial.needsUpdate = true;
     }
 
@@ -1883,6 +3284,7 @@
       state.zoomAnchorLngLat = null;
       state.zoomAnchorPoint = null;
       state.zoomLockUntil = 0;
+      state.globeWheelLockedUntil = 0;
       state.handoffTargetLngLat = null;
       delete stage.dataset.zoomAnchor;
       if (document.body.dataset.viewMode === "map") {
@@ -1912,6 +3314,15 @@
     });
     els.reset?.addEventListener("click", resetView);
     els.mobileReset?.addEventListener("click", resetView);
+
+    window.addEventListener("keydown", (event) => {
+      if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+      const target = event.target;
+      if (target && target.closest && target.closest("button, input, textarea, select, a")) return;
+      if (event.key && event.key.toLowerCase() === "v") {
+        cycleVisualPresetByStep(1);
+      }
+    });
 
     function pointerPoint(event) {
       const rect = stage.getBoundingClientRect();
@@ -1991,6 +3402,7 @@
       if (document.body.dataset.viewMode === "map") return;
       if (event.target.closest("button, input, a, .topbar, .right-stack, .bottom-ticker, .mobile-dock")) return;
       event.preventDefault();
+      if (performance.now() < state.globeWheelLockedUntil) return;
       if (state.mapHandoffTriggered) return;
       const deltaPixels = wheelDeltaPixels(event);
       const zoomingIn = deltaPixels < 0;
@@ -2025,7 +3437,7 @@
           setGlobeScaleTarget(MAX_GLOBE_SCALE);
           return;
         }
-        state.mapHandoffCharge += Math.abs(deltaPixels);
+        state.mapHandoffCharge += Math.min(Math.abs(deltaPixels), 92);
         stage.dataset.handoffCharge = String(Math.min(100, Math.round((state.mapHandoffCharge / MAP_HANDOFF_WHEEL_THRESHOLD) * 100)));
         setGlobeScaleTarget(MAX_GLOBE_SCALE);
         if (state.mapHandoffCharge >= MAP_HANDOFF_WHEEL_THRESHOLD) {
@@ -2049,7 +3461,7 @@
     }, { passive: false });
 
     function layoutWords(maxWidth, cursor) {
-      const maxChars = Math.max(4, Math.floor(maxWidth / 6.45));
+      const maxChars = Math.max(4, Math.min(20, Math.floor(maxWidth / 6.8)));
       let line = "";
       let used = 0;
       let guard = 0;
@@ -2066,13 +3478,17 @@
       return line;
     }
 
+    function seededUnit(x, y) {
+      const value = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+      return value - Math.floor(value);
+    }
+
     function drawSurfaceText(now) {
-      ctx.font = "bold 11px Courier New, monospace";
+      ctx.font = "800 10.5px Courier New, monospace";
       ctx.textAlign = "left";
       ctx.textBaseline = "top";
-      ctx.fillStyle = `rgba(255, 255, 255, ${state.textAlpha})`;
       ctx.shadowColor = "rgba(255, 255, 255, 0.36)";
-      ctx.shadowBlur = 2;
+      ctx.shadowBlur = 3.2;
 
       const cursor = { index: Math.floor(now * 0.002) % sourceWords.length };
       const scaleX = state.maskWidth / state.width;
@@ -2101,9 +3517,19 @@
           } else if ((!isLand || !inside) && inLand) {
             inLand = false;
             const segmentWidth = x - startX;
-            if (segmentWidth > 18) {
-              const text = layoutWords(segmentWidth, cursor);
-              if (text) ctx.fillText(text, startX, y);
+            if (segmentWidth > 24) {
+              const seed = seededUnit(startX, y);
+              const row = Math.floor(y / Math.max(1, state.lineHeight));
+              if (seed > 0.44 || (row + Math.floor(startX / 72)) % 5 === 0) {
+                const maxTextWidth = Math.min(segmentWidth, 88 + seed * 104);
+                const text = layoutWords(maxTextWidth, cursor);
+                const pulse = Math.sin(now * 0.002 + seed * 6.283 + row * 0.18);
+                const alpha = Math.min(0.82, state.textAlpha * (0.58 + Math.max(0, pulse) * 0.18));
+                const xOffset = Math.max(0, (segmentWidth - maxTextWidth) * seededUnit(y, startX + 17));
+                const yOffset = pulse > 0.92 ? -0.8 : 0;
+                ctx.fillStyle = `rgba(255, 255, 255, ${alpha.toFixed(3)})`;
+                if (text) ctx.fillText(text, startX + xOffset, y + yOffset);
+              }
             }
           }
         }
@@ -2120,16 +3546,15 @@
         state.fpsLast = now;
       }
 
-      const linkStates = ["接收命令中", "执行命令中", "汇报工作中"];
-      const sector = linkStates[Math.floor(now * 0.00045) % linkStates.length];
+      const phase = COMMAND_PHASES.find(item => item.key === state.console.phase) || COMMAND_PHASES[0];
 
       setText(els.fps, state.fpsValue ? String(state.fpsValue) : "--");
       setText(els.rot, earthGroup.rotation.y.toFixed(2));
       setText(els.mask, state.maskPixels[0] !== undefined ? "运行" : "就绪");
-      setText(els.status, state.paused ? "暂停" : "在线");
-      setText(els.sector, sector);
-      setText(els.coordA, `${serviceProfile.area} / ${serviceProfile.source}`);
-      setText(els.coordB, operatorSeat);
+      setText(els.status, state.paused ? "暂停" : phase.status);
+      setText(els.sector, phase.sector);
+      setText(els.coordA, phase.area);
+      setText(els.coordB, state.console.source);
     }
 
     function updateClock() {
@@ -2162,8 +3587,12 @@
           earthGroup.rotation.x += state.velocity.x * state.speed;
           earthGroup.rotation.y += state.velocity.y * state.speed;
         }
-        cloudMesh.rotation.y += 0.00018 * state.speed;
+        cloudMesh.rotation.y -= 0.000104719755 * state.speed;
+        starField.rotation.z += 0.000004 * state.speed;
       }
+
+      starMaterial.uniforms.uTime.value = now * 0.001;
+      limbFogMaterial.uniforms.uTime.value = now * 0.001;
 
       earthGroup.rotation.x = clamp(earthGroup.rotation.x, -0.92, 0.92);
       maskGroup.rotation.copy(earthGroup.rotation);
@@ -2180,14 +3609,19 @@
 
       drawSurfaceText(now);
       updatePanels(now);
+      advanceConsoleTicker(now);
     }
 
     window.addEventListener("resize", resize);
     resize();
     applyEarthLighting();
+    applyVisualPreset(state.visualPreset, { silent: true });
     syncControls();
     updateClock();
     setInterval(updateClock, 1000);
+    renderConsoleTicker();
+    setInterval(advanceConsolePhase, 5200);
+    window.setTimeout(applyInitialNavigationFromUrl, 700);
     requestAnimationFrame(render);
   </script>
 </body>

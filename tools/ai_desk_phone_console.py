@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 import uuid
 
 try:
@@ -82,12 +82,12 @@ HOOK_SCHEMES: dict[str, dict[str, str]] = {
 
 BUSINESS_MODES: dict[str, dict[str, str]] = {
     "codex": {
-        "label": "输入法 / 通讯员提醒",
-        "description": "摘机触发开始输入快捷键；挂机触发结束/提交快捷键；任务完成后进入回话队列并呼叫桌面电话。",
+        "label": "输入法模式",
+        "description": "手动切换快捷键方案；摘机和挂机按当前方案执行动作；任务完成后可进入回话队列并呼叫桌面电话。",
     },
     "doubao": {
-        "label": "Agent 通讯员模式",
-        "description": "抬起电话后进入语音报告或全双工对话；Agent 可操作本机工具，高风险付款类动作仍需确认。",
+        "label": "Agent 模式",
+        "description": "摘机后进入 AI 对话；对话模型可调用本机工具或外部回话入口，完成后通过全局回话入口回拨。",
     },
 }
 
@@ -99,7 +99,7 @@ ACTION_PRESETS: dict[str, dict[str, str]] = {
         "release_action_text": "控制键+Windows键+Shift键",
     },
     "voice_call": {
-        "label": "方案二：语音通话键",
+        "label": "方案二：语音输入快捷键",
         "press_action_text": "Ctrl+Alt+I",
         "release_action_text": "Ctrl+Alt+U",
     },
@@ -155,22 +155,28 @@ class ConsoleConfig:
     sample_interval_ms: int = 50
     press_action_text: str = "控制键+Windows键+Shift键"
     release_action_text: str = "控制键+Windows键+Shift键, 延迟1000毫秒, 回车"
+    input_action_profiles: list[dict[str, str]] = field(default_factory=list)
+    active_input_profile_id: str = "default"
     enable_actions: bool = True
     enable_callback: bool = True
     enable_tts_playback: bool = True
+    tts_speech_rate: int = 0
+    tts_loudness_rate: int = 0
     tts_rate: int = 0
     tts_volume: int = 100
+    tts_pitch: int = 0
     audio_output_device: str = ""
     enable_voice_asr: bool = True
     voice_record_sample_rate: int = 16000
     voice_record_device: str = ""
     voice_auto_transcribe: bool = True
-    voice_reply_policy: str = "silent"
+    voice_reply_policy: str = "direct"
     agent_permission_profile: str = "commander"
 
     def __post_init__(self) -> None:
         self.business_mode = normalize_business_mode(self.business_mode)
         self.hook_scheme = normalize_hook_scheme(self.hook_scheme)
+        self.normalize_input_profiles()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ConsoleConfig":
@@ -180,6 +186,55 @@ class ConsoleConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def legacy_input_profile(self) -> dict[str, str]:
+        return {
+            "id": "default",
+            "name": "默认方案",
+            "press_action_text": str(self.press_action_text or ""),
+            "release_action_text": str(self.release_action_text or ""),
+        }
+
+    def normalize_input_profiles(self) -> None:
+        profiles: list[dict[str, str]] = []
+        for index, raw_profile in enumerate(self.input_action_profiles or []):
+            if not isinstance(raw_profile, dict):
+                continue
+            profile_id = str(raw_profile.get("id") or "").strip() or f"profile-{index + 1}"
+            name = str(raw_profile.get("name") or "").strip() or f"方案 {index + 1}"
+            profiles.append(
+                {
+                    "id": profile_id,
+                    "name": name,
+                    "press_action_text": str(raw_profile.get("press_action_text") or ""),
+                    "release_action_text": str(raw_profile.get("release_action_text") or ""),
+                }
+            )
+
+        if not profiles:
+            profiles = [self.legacy_input_profile()]
+
+        active = next((profile for profile in profiles if profile["id"] == self.active_input_profile_id), None)
+        if active is None:
+            active = profiles[0]
+            self.active_input_profile_id = active["id"]
+
+        self.input_action_profiles = profiles
+        self.press_action_text = active["press_action_text"]
+        self.release_action_text = active["release_action_text"]
+
+    def active_input_profile(self) -> dict[str, str]:
+        self.normalize_input_profiles()
+        for profile in self.input_action_profiles:
+            if profile["id"] == self.active_input_profile_id:
+                return profile
+        return self.input_action_profiles[0]
+
+    def action_text_for_state(self, state: str) -> str:
+        profile = self.active_input_profile()
+        if state == "PRESSED":
+            return profile["press_action_text"]
+        return profile["release_action_text"]
 
 
 @dataclass
@@ -437,8 +492,8 @@ def build_device_config_command(config: ConsoleConfig) -> str:
             "peak_hold_ms": config.peak_hold_ms,
             "sample_interval_ms": config.sample_interval_ms,
             "enable_actions": config.enable_actions,
-            "press_action": canonical_action_text(config.press_action_text),
-            "release_action": canonical_action_text(config.release_action_text),
+            "press_action": canonical_action_text(config.action_text_for_state("PRESSED")),
+            "release_action": canonical_action_text(config.action_text_for_state("RELEASED")),
         },
     }
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
@@ -725,6 +780,20 @@ class AppState:
                 return None
             return f"{self.udp_device_address[0]}:{self.udp_device_address[1]}"
 
+    def udp_status(self) -> dict[str, Any]:
+        with self.udp_lock:
+            device = None
+            age_seconds = None
+            if self.udp_device_address is not None:
+                device = f"{self.udp_device_address[0]}:{self.udp_device_address[1]}"
+            if self.udp_last_seen is not None:
+                age_seconds = max(0.0, time.monotonic() - self.udp_last_seen)
+            return {
+                "udp_listening": self.udp_socket is not None,
+                "udp_device": device,
+                "udp_last_seen_seconds": age_seconds,
+            }
+
     def simulation_label(self) -> str | None:
         with self.lock:
             if not self.simulation_enabled:
@@ -757,6 +826,24 @@ class AppState:
 
     def publish_simulation_status(self) -> None:
         self.publish({"type": "simulation_status", **self.simulation_status()})
+
+    def hardware_status(self) -> dict[str, Any]:
+        with self.lock:
+            current_sample = dict(self.current_sample) if isinstance(self.current_sample, dict) else None
+            sample_count = len(self.samples)
+            simulation_enabled = self.simulation_enabled
+        udp = self.udp_status()
+        source = str((current_sample or {}).get("sample_source") or "")
+        return {
+            "ok": True,
+            **udp,
+            "serial_connected": self.is_serial_connected(),
+            "serial_port": self.current_serial_port(),
+            "real_device_connected": bool(udp["udp_device"]) or source == "device",
+            "simulation_enabled": simulation_enabled,
+            "sample_count": sample_count,
+            "current_sample": current_sample,
+        }
 
     def next_reply_text_locked(self) -> str | None:
         if self.active_reply is not None:
@@ -794,8 +881,14 @@ class AppState:
             "credential_mode": config.credential_mode(),
             "tts_endpoint": config.tts_endpoint,
             "tts_resource_id": config.tts_resource_id,
+            "tts_model": config.tts_model,
             "tts_speaker": config.tts_speaker,
             "tts_format": config.tts_format,
+            "tts_sample_rate": config.tts_sample_rate,
+            "tts_explicit_language": config.tts_explicit_language,
+            "tts_explicit_dialect": config.tts_explicit_dialect,
+            "tts_disable_markdown_filter": config.tts_disable_markdown_filter,
+            "tts_disable_emoji_filter": config.tts_disable_emoji_filter,
             "asr_endpoint": config.asr_endpoint,
             "asr_resource_id": config.asr_resource_id,
             "asr_model": config.asr_model,
@@ -808,6 +901,27 @@ class AppState:
         with self.lock:
             self.speech = VolcengineSpeech()
         return {"ok": True, **self.speech_status()}
+
+    def speech_speakers(self, resource_id: str = "") -> dict[str, Any]:
+        if self.speech is None:
+            return {"ok": False, "error": "volcengine_speech module is not available", "speakers": []}
+        config = self.speech.config
+        target_resource_id = resource_id.strip() or config.tts_resource_id
+        fallback = {
+            "id": config.tts_speaker,
+            "name": config.tts_speaker,
+            "model": target_resource_id,
+            "language": "",
+            "type": "current",
+        }
+        try:
+            result = self.speech.list_speakers([target_resource_id])
+        except Exception as exc:
+            return {"ok": False, "error": str(exc), "speakers": [fallback]}
+        speakers = result.get("speakers") or []
+        if not any(speaker.get("id") == config.tts_speaker for speaker in speakers):
+            speakers.insert(0, fallback)
+        return {**result, "speakers": speakers}
 
     def transcribe_audio_file(self, audio_path: Path) -> dict[str, Any]:
         if self.speech is None:
@@ -850,8 +964,10 @@ class AppState:
             if not self.config.enable_voice_asr:
                 result = {"ok": False, "recording": False, "error": "voice ASR is disabled"}
                 self.voice_last_error = result["error"]
+                self.add_action_log("Agent 语音录音未启动：语音识别开关已关闭。")
                 return result
             if self.voice_processing:
+                self.add_action_log("Agent 语音录音未启动：上一轮语音仍在处理。")
                 return {"ok": False, "recording": False, "processing": True, "error": "voice turn is processing"}
             sample_rate = int(self.config.voice_record_sample_rate or 16000)
             device = self.config.voice_record_device.strip() or None
@@ -860,12 +976,15 @@ class AppState:
             error = "audio_recorder module is not available"
             with self.lock:
                 self.voice_last_error = error
+            self.add_action_log(f"Agent 语音录音未启动：{error}")
             return {"ok": False, "recording": False, "error": error}
         if self.recorder.is_recording():
             with self.lock:
                 session_id = self.voice_session_id
+            self.add_action_log("Agent 语音录音已在进行，复用当前录音会话。")
             return {"ok": True, "recording": True, "already_active": True, "session_id": session_id}
 
+        self.add_action_log(f"Agent 语音录音请求：sample_rate={sample_rate} device={device or '默认'} reason={reason}")
         try:
             self.recorder.start(sample_rate=sample_rate, channels=1, device=device)
         except AudioRecorderError as exc:
@@ -928,6 +1047,7 @@ class AppState:
 
         transcript: dict[str, Any] | None = None
         if auto_transcribe:
+            self.add_action_log(f"豆包 ASR 请求已发送：{recording.path.name}")
             transcript = self.transcribe_audio_file(recording.path)
             with self.lock:
                 self.voice_last_result = transcript
@@ -935,8 +1055,9 @@ class AppState:
             if transcript.get("success"):
                 text = str(transcript.get("text", "") or "").strip()
                 self.add_action_log(f"豆包 ASR 识别结果：{text or '（空）'}")
-                if text and reply_policy == "callback":
-                    self.handle_voice_reply_text(text, reply_behavior, active_session_id)
+                if text and reply_policy in {"direct", "callback"}:
+                    completion_behavior = "direct" if reply_policy == "direct" else "legacy"
+                    self.handle_voice_reply_text(text, completion_behavior, active_session_id)
             else:
                 self.add_action_log(f"豆包 ASR 识别失败：{transcript.get('error')}")
 
@@ -975,12 +1096,16 @@ class AppState:
     def start_agent_voice_session(self, reason: str = "摘机通话") -> dict[str, Any]:
         with self.lock:
             if normalize_business_mode(self.config.business_mode) != "doubao":
+                self.add_action_log("Agent 语音会话未启动：当前不是 Agent 模式。")
                 return {"ok": False, "error": "not in doubao mode"}
             if self.last_state != "RELEASED":
+                self.add_action_log(f"Agent 语音会话未启动：电话状态为 {hook_state_label(self.last_state)}，需要先处于抬起状态。")
                 return {"ok": False, "error": "phone is on-hook"}
             if self.active_reply is not None or (self.playback_thread is not None and self.playback_thread.is_alive()):
+                self.add_action_log("Agent 语音会话未启动：当前正在播放回话。")
                 return {"ok": False, "error": "reply playback is active"}
 
+        self.add_action_log(f"Agent 语音会话启动请求：{reason}")
         result = self.start_voice_recording(reason)
         if not result.get("ok"):
             return result
@@ -1133,20 +1258,19 @@ class AppState:
         self.publish_reply_status()
         return had_playback
 
-    def start_doubao_tts_process(self, text: str, rate: int, volume: int) -> subprocess.Popen[bytes] | None:
+    def start_doubao_tts_process(self, text: str, speech_rate: int, loudness_rate: int, pitch: int) -> subprocess.Popen[bytes] | None:
         if self.speech is None or not self.speech.is_tts_ready() or sys.platform != "win32":
             return None
 
         output_path = ROOT / "data" / "tts" / f"reply-{int(time.time())}-{uuid.uuid4().hex}.wav"
-        speed_ratio = max(0.5, min(1.5, 1.0 + rate * 0.05))
-        volume_ratio = max(0.0, min(1.0, volume / 100))
+        self.add_action_log(f"豆包 TTS 2.0 请求已发送：speaker={self.speech.config.tts_speaker} chars={len(text)}")
         try:
             self.speech.synthesize_to_file(
                 text,
                 output_path,
-                speed_ratio=speed_ratio,
-                volume_ratio=volume_ratio,
-                pitch_ratio=1.0,
+                speech_rate=speech_rate,
+                loudness_rate=loudness_rate,
+                pitch=pitch,
             )
         except VolcengineSpeechError as exc:
             self.add_action_log(f"豆包 TTS 2.0 未完成，回退到本地 TTS：{exc}")
@@ -1236,13 +1360,19 @@ class AppState:
     def start_tts_process(self, text: str) -> subprocess.Popen[bytes] | None:
         with self.lock:
             enabled = self.config.enable_tts_playback
-            rate = max(-10, min(10, int(self.config.tts_rate)))
-            volume = max(0, min(100, int(self.config.tts_volume)))
+            speech_rate = max(-50, min(100, int(self.config.tts_speech_rate)))
+            loudness_rate = max(-50, min(100, int(self.config.tts_loudness_rate)))
+            pitch = max(-12, min(12, int(self.config.tts_pitch)))
 
         if not enabled:
+            self.add_action_log("TTS 播报未启动：TTS 播报开关已关闭。")
             return None
 
-        return self.start_doubao_tts_process(text, rate, volume) or self.start_windows_tts_process(text, rate, volume)
+        fallback_volume = max(0, min(100, 100 + loudness_rate))
+        fallback_rate = max(-10, min(10, int(round(speech_rate / 10))))
+        return self.start_doubao_tts_process(text, speech_rate, loudness_rate, pitch) or self.start_windows_tts_process(
+            text, fallback_rate, fallback_volume
+        )
 
     def wait_for_reply_audio(self, reply: ReplyTask, stop_event: threading.Event) -> tuple[bool, str | None]:
         process = self.start_tts_process(reply.text)
@@ -1345,7 +1475,7 @@ class AppState:
         with self.lock:
             if not self.config.enable_actions:
                 return False
-            action_text = self.config.press_action_text if state == "PRESSED" else self.config.release_action_text
+            action_text = self.config.action_text_for_state(state)
             action_label = "挂机动作" if state == "PRESSED" else "摘机动作"
             business_mode = normalize_business_mode(self.config.business_mode)
 
@@ -2256,6 +2386,36 @@ INDEX_HTML = r"""<!doctype html>
     .section-divider { margin-top: 16px; padding-top: 16px; border-top: 1px solid var(--border); }
     .control-block { border: 1px solid var(--border); border-radius: 2px; padding: 12px; background: var(--panel); }
     .control-block + .control-block { margin-top: 12px; }
+    .settings-panel { padding-bottom: 18px; }
+    .settings-shell {
+      display: grid; grid-template-columns: minmax(240px, 0.34fr) minmax(0, 1fr);
+      gap: 20px; align-items: start;
+    }
+    .mode-column { display: grid; gap: 8px; }
+    .mode-choice {
+      width: 100%; min-height: 94px; text-align: left; padding: 14px 15px;
+      display: grid; gap: 7px; background: #fff; border-color: var(--border);
+      border-radius: 4px; border-left: 3px solid transparent; box-shadow: none;
+    }
+    .mode-choice strong { font-size: 16px; line-height: 1.25; }
+    .mode-choice span { color: var(--muted); line-height: 1.45; font-weight: 400; }
+    .mode-choice.active { border-left-color: var(--red); background: #fff; color: var(--text); }
+    .mode-detail { min-width: 0; }
+    .settings-group { padding-top: 16px; margin-top: 16px; border-top: 1px solid var(--border); }
+    .settings-group:first-of-type { margin-top: 0; }
+    .settings-title {
+      display: flex; justify-content: space-between; align-items: center; gap: 12px;
+      margin-bottom: 12px;
+    }
+    .settings-title h3 { margin: 0; font-size: 16px; }
+    .shortcut-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .action-editor.visible { border-top: 0; padding-top: 0; }
+    .button-row.compact { margin-top: 0; }
+    .plain-note, .plain-status {
+      color: var(--muted); font-size: 12px; line-height: 1.5;
+    }
+    .plain-status { display: inline-flex; min-height: 33px; align-items: center; }
+    .global-settings label span { display: inline-flex; gap: 8px; align-items: center; min-height: 34px; }
     .mode-row { display: grid; gap: 10px; margin-bottom: 10px; }
     .segmented { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid var(--border); border-radius: 3px; overflow: hidden; background: var(--panel); }
     .segmented button { border: 0; border-radius: 0; border-right: 1px solid var(--border); min-height: 38px; }
@@ -2330,7 +2490,7 @@ INDEX_HTML = r"""<!doctype html>
       .masthead-inner { grid-template-columns: 1fr; }
       .service-status { grid-template-columns: 1fr 1fr; }
       main.portal-main { grid-template-columns: 1fr; }
-      .log-grid, .readout-grid, .state-line, .form-grid, .action-row, .pin-grid, .simulation-grid, .info-board { grid-template-columns: 1fr; }
+      .settings-shell, .shortcut-grid, .log-grid, .readout-grid, .state-line, .form-grid, .action-row, .pin-grid, .simulation-grid, .info-board { grid-template-columns: 1fr; }
       .form-wide { grid-column: auto; }
       .page-wrap, .masthead-inner { padding-left: 12px; padding-right: 12px; }
     }
@@ -2392,22 +2552,118 @@ INDEX_HTML = r"""<!doctype html>
         </div>
       </section>
 
-      <section id="config" class="panel">
+      <section id="config" class="panel full-width settings-panel">
         <div class="panel-header">
           <div>
-            <h2>功能配置</h2>
-            <p class="panel-note">配置电话在任务提醒、语音聊天和摘挂机判定中的工作方式。</p>
+            <h2>设置</h2>
+            <p class="panel-note">先选择电话用途，再配置当前模式和全局音频回拨。</p>
           </div>
         </div>
         <input id="business_mode" type="hidden" value="codex">
-        <div class="segmented" aria-label="业务模式">
-          <button id="modeCodexBtn" type="button" onclick="selectBusinessMode('codex')">机器人提醒</button>
-          <button id="modeDoubaoBtn" type="button" onclick="selectBusinessMode('doubao')">语音聊天</button>
-        </div>
-        <div id="businessModeHint" class="callout">任务结束时呼叫桌面电话；摘机后停止提醒。</div>
-        <div class="button-row">
-          <button class="primary" onclick="postAiHook()">触发接线员提醒</button>
-          <button onclick="clearAiAlert()">停止提醒</button>
+        <div class="settings-shell">
+          <div class="mode-column">
+            <button id="modeCodexBtn" class="mode-choice" type="button" onclick="selectBusinessMode('codex')">
+              <strong>输入法模式</strong>
+                  <span>手动切换快捷键方案，任务完成后可通过回话入口电话回拨。</span>
+            </button>
+            <button id="modeDoubaoBtn" class="mode-choice" type="button" onclick="selectBusinessMode('doubao')">
+              <strong>Agent 模式</strong>
+              <span>摘机后和 AI 对话，模型可调用本机工具或外部 hook。</span>
+            </button>
+          </div>
+
+          <div class="mode-detail">
+            <div id="businessModeHint" class="mode-hint">任务结束时呼叫桌面电话；摘机后停止提醒。</div>
+
+            <section id="inputModeSettings" class="settings-group">
+              <div class="settings-title">
+                <h3>输入法快捷键方案</h3>
+                <div class="button-row compact">
+                  <button type="button" onclick="addInputProfile()">新增方案</button>
+                  <button type="button" onclick="deleteInputProfile()">删除当前</button>
+                </div>
+              </div>
+              <div class="form-grid">
+                <label>当前方案
+                  <select id="activeInputProfile" onchange="selectInputProfile(this.value)"></select>
+                </label>
+                <label>方案名称
+                  <input id="inputProfileName" placeholder="例如：Codex 输入">
+                </label>
+              </div>
+              <div class="shortcut-grid">
+                <div class="action-editor visible">
+                  <div class="action-title">抬起动作</div>
+                  <div class="action-row">
+                    <label>快捷键 1<button id="release_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_primary_hotkey')">无</button></label>
+                    <label>等待<input id="release_delay_ms" type="number" min="0" max="10000" step="100" value="0"></label>
+                    <label>快捷键 2<button id="release_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_follow_hotkey')">无</button></label>
+                  </div>
+                </div>
+                <div class="action-editor visible">
+                  <div class="action-title">按下动作</div>
+                  <div class="action-row">
+                    <label>快捷键 1<button id="press_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_primary_hotkey')">无</button></label>
+                    <label>等待<input id="press_delay_ms" type="number" min="0" max="10000" step="100" value="0"></label>
+                    <label>快捷键 2<button id="press_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_follow_hotkey')">无</button></label>
+                  </div>
+                </div>
+              </div>
+              <div class="preset-actions">
+                <button type="button" onclick="applyPreset('current')">套用当前输入方案</button>
+                <button type="button" onclick="applyPreset('voice_call')">套用语音输入方案</button>
+                <button type="button" onclick="postSimulationState('RELEASED')">测试抬起</button>
+                <button type="button" onclick="postSimulationState('PRESSED')">测试按下</button>
+              </div>
+            </section>
+
+            <section id="agentModeSettings" class="settings-group">
+              <div class="settings-title">
+                <h3>Agent 对话</h3>
+              </div>
+              <div class="form-grid">
+                <label>工具权限
+                  <select id="agentPermissionProfile">
+                    <option value="commander">允许本机工具调用</option>
+                    <option value="confirm_sensitive">敏感动作需要确认</option>
+                  </select>
+                </label>
+                <label>完成回报
+                  <select id="voiceReplyPolicy">
+                    <option value="callback">入队并电话回拨</option>
+                    <option value="silent">只记录，不回拨</option>
+                  </select>
+                </label>
+              </div>
+              <div class="plain-note">Agent 可以由对话模型自行调用本机工具或配置外部回话入口；电话只负责对话入口和回拨承接。</div>
+            </section>
+
+            <section class="settings-group global-settings">
+              <div class="settings-title">
+                <h3>全局音频与回拨</h3>
+                <button type="button" onclick="refreshSpeechStatus()">刷新语音状态</button>
+              </div>
+              <div class="form-grid">
+                <label><span><input id="enableCallback" type="checkbox"> 任务完成后电话回拨</span></label>
+                <label><span><input id="enableTts" type="checkbox"> 启用语音播报</span></label>
+                <label><span><input id="enableVoiceAsr" type="checkbox"> 启用语音识别</span></label>
+                <label>识别采样率<input id="voiceSampleRate" type="number" min="8000" max="48000" step="1000"></label>
+                <label>麦克风<input id="voiceRecordDevice" placeholder="留空使用默认输入"></label>
+                <label>输出设备<input id="audioOutputDevice" placeholder="default / 电话蓝牙输出"></label>
+                <label>语速<input id="ttsRate" type="number" min="-10" max="10" step="1"></label>
+                <label>音量<input id="ttsVolume" type="number" min="0" max="100" step="1"></label>
+                <label>API Key<input id="speechApiKey" type="password" autocomplete="off" placeholder="保存后写入本机 .env"></label>
+                <label>TTS 音色<input id="speechSpeaker" placeholder="zh_female_tianmeitaozi_uranus_bigtts"></label>
+              </div>
+              <div class="button-row">
+                <button class="primary" type="button" onclick="saveConfig()">保存设置</button>
+                <button type="button" onclick="saveSpeechConfig()">保存语音密钥</button>
+                <button type="button" onclick="postAiHook()">测试回拨</button>
+                <button type="button" onclick="clearAiAlert()">停止提醒</button>
+                <span id="speechState" class="plain-status">语音状态：未知</span>
+              </div>
+            </section>
+          </div>
         </div>
       </section>
 
@@ -2439,21 +2695,15 @@ INDEX_HTML = r"""<!doctype html>
         <input id="hookPinInput" type="hidden" value="0">
         <input id="buzzerPinInput" type="hidden" value="21">
         <input id="ledPinInput" type="hidden" value="20">
-        <input id="enable_actions" type="hidden" value="false">
+        <input id="enable_actions" type="hidden" value="true">
         <input id="press_action_text" type="hidden">
         <input id="release_action_text" type="hidden">
         <input id="press_primary_hotkey" type="hidden">
-        <input id="press_delay_ms" type="hidden" value="0">
         <input id="press_follow_hotkey" type="hidden">
         <input id="release_primary_hotkey" type="hidden">
-        <input id="release_delay_ms" type="hidden" value="0">
         <input id="release_follow_hotkey" type="hidden">
         <button id="scheme1Btn" type="button"></button>
         <button id="scheme2Btn" type="button"></button>
-        <button id="press_primary_hotkey_button" type="button"></button>
-        <button id="press_follow_hotkey_button" type="button"></button>
-        <button id="release_primary_hotkey_button" type="button"></button>
-        <button id="release_follow_hotkey_button" type="button"></button>
         <span id="hookSchemeHint"></span>
       </div>
 
@@ -2505,8 +2755,8 @@ INDEX_HTML = r"""<!doctype html>
       scheme2: "方案 2：LOW = 按下，HIGH = 抬起"
     };
     const businessModeDescriptions = {
-      codex: "机器人提醒：任务完成后呼叫桌面电话，摘机即确认收到。",
-      doubao: "语音聊天：抬起听筒后进入语音报告或全双工对话。"
+      codex: "输入法模式：手动切换快捷键方案；任务完成后可电话回拨。",
+      doubao: "Agent 模式：摘机后和 AI 对话；模型可调用本机工具或外部回话入口。"
     };
     let actionPresets = {
       current: {
@@ -2688,20 +2938,137 @@ INDEX_HTML = r"""<!doctype html>
       return steps.join(", ");
     }
 
-    function setConfigForm(nextConfig) {
-      config = nextConfig;
-      for (const [key, value] of Object.entries(config)) {
-        const node = $(key);
-        if (!node) continue;
-        node.value = String(value);
+    function defaultInputProfile() {
+      return {
+        id: "default",
+        name: "默认方案",
+        press_action_text: config.press_action_text || "",
+        release_action_text: config.release_action_text || ""
+      };
+    }
+
+    function ensureInputProfiles() {
+      if (!Array.isArray(config.input_action_profiles) || config.input_action_profiles.length === 0) {
+        config.input_action_profiles = [defaultInputProfile()];
       }
+      config.input_action_profiles = config.input_action_profiles.map((profile, index) => ({
+        id: String(profile.id || `profile-${index + 1}`),
+        name: String(profile.name || `方案 ${index + 1}`),
+        press_action_text: String(profile.press_action_text || ""),
+        release_action_text: String(profile.release_action_text || "")
+      }));
+      if (!config.input_action_profiles.some(profile => profile.id === config.active_input_profile_id)) {
+        config.active_input_profile_id = config.input_action_profiles[0].id;
+      }
+    }
+
+    function activeInputProfile() {
+      ensureInputProfiles();
+      return config.input_action_profiles.find(profile => profile.id === config.active_input_profile_id)
+        || config.input_action_profiles[0];
+    }
+
+    function renderInputProfiles() {
+      ensureInputProfiles();
+      const select = $("activeInputProfile");
+      if (!select) return;
+      select.innerHTML = "";
+      for (const profile of config.input_action_profiles) {
+        const option = document.createElement("option");
+        option.value = profile.id;
+        option.textContent = profile.name;
+        select.appendChild(option);
+      }
+      select.value = config.active_input_profile_id;
+    }
+
+    function setEditorsFromActiveProfile() {
+      const profile = activeInputProfile();
+      $("inputProfileName").value = profile.name;
+      setActionEditor("press", profile.press_action_text || "");
+      setActionEditor("release", profile.release_action_text || "");
+      $("press_action_text").value = composeActionText("press");
+      $("release_action_text").value = composeActionText("release");
+    }
+
+    function syncActiveInputProfile() {
+      const profile = activeInputProfile();
+      profile.name = $("inputProfileName").value.trim() || profile.name || "未命名方案";
+      profile.press_action_text = composeActionText("press");
+      profile.release_action_text = composeActionText("release");
+      config.press_action_text = profile.press_action_text;
+      config.release_action_text = profile.release_action_text;
+      $("press_action_text").value = profile.press_action_text;
+      $("release_action_text").value = profile.release_action_text;
+      renderInputProfiles();
+    }
+
+    function selectInputProfile(profileId) {
+      syncActiveInputProfile();
+      config.active_input_profile_id = profileId;
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
+    }
+
+    function addInputProfile() {
+      syncActiveInputProfile();
+      const id = `profile-${Date.now().toString(36)}`;
+      config.input_action_profiles.push({
+        id,
+        name: `输入方案 ${config.input_action_profiles.length + 1}`,
+        press_action_text: "",
+        release_action_text: ""
+      });
+      config.active_input_profile_id = id;
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
+      setSaveStatus("已新增快捷键方案，保存后生效。");
+    }
+
+    function deleteInputProfile() {
+      ensureInputProfiles();
+      if (config.input_action_profiles.length <= 1) {
+        setSaveStatus("至少保留一套快捷键方案。", "warn");
+        return;
+      }
+      config.input_action_profiles = config.input_action_profiles.filter(profile => profile.id !== config.active_input_profile_id);
+      config.active_input_profile_id = config.input_action_profiles[0].id;
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
+      setSaveStatus("已删除当前快捷键方案，保存后生效。");
+    }
+
+    function setChecked(id, value) {
+      const node = $(id);
+      if (node) node.checked = Boolean(value);
+    }
+
+    function setValue(id, value) {
+      const node = $(id);
+      if (node) node.value = value ?? "";
+    }
+
+    function setConfigForm(nextConfig) {
+      config = {...nextConfig};
+      ensureInputProfiles();
       applyHookSchemeUi(config.hook_scheme || "scheme1");
       applyBusinessModeUi(config.business_mode || "codex");
-      setActionEditor("press", config.press_action_text || "");
-      setActionEditor("release", config.release_action_text || "");
+      setChecked("enableCallback", config.enable_callback !== false);
+      setChecked("enableTts", config.enable_tts_playback !== false);
+      setChecked("enableVoiceAsr", config.enable_voice_asr !== false);
+      setValue("ttsRate", config.tts_rate ?? 0);
+      setValue("ttsVolume", config.tts_volume ?? 100);
+      setValue("voiceSampleRate", config.voice_record_sample_rate ?? 16000);
+      setValue("voiceRecordDevice", config.voice_record_device || "");
+      setValue("audioOutputDevice", config.audio_output_device || "");
+      setValue("agentPermissionProfile", config.agent_permission_profile || "commander");
+      setValue("voiceReplyPolicy", config.voice_reply_policy || "callback");
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
     }
 
     function getConfigForm() {
+      syncActiveInputProfile();
       const numeric = [
         "press_threshold", "release_threshold", "strong_low_press_threshold",
         "strong_high_press_threshold", "debounce_ms", "press_lockout_ms"
@@ -2715,12 +3082,22 @@ INDEX_HTML = r"""<!doctype html>
       next.hook_scheme = $("hook_scheme").value || "scheme1";
       const adcPolarity = $("adc_low_means_pressed");
       if (adcPolarity) next.adc_low_means_pressed = adcPolarity.value === "true";
-      const enableActions = $("enable_actions");
-      if (enableActions) next.enable_actions = enableActions.value === "true";
-      next.press_action_text = composeActionText("press");
-      next.release_action_text = composeActionText("release");
-      $("press_action_text").value = next.press_action_text;
-      $("release_action_text").value = next.release_action_text;
+      next.enable_actions = true;
+      next.enable_callback = $("enableCallback").checked;
+      next.enable_tts_playback = $("enableTts").checked;
+      next.enable_voice_asr = $("enableVoiceAsr").checked;
+      next.tts_rate = Number($("ttsRate").value || 0);
+      next.tts_volume = Number($("ttsVolume").value || 100);
+      next.voice_record_sample_rate = Number($("voiceSampleRate").value || 16000);
+      next.voice_record_device = $("voiceRecordDevice").value;
+      next.audio_output_device = $("audioOutputDevice").value;
+      next.voice_auto_transcribe = true;
+      next.voice_reply_policy = $("voiceReplyPolicy").value;
+      next.agent_permission_profile = $("agentPermissionProfile").value;
+      next.input_action_profiles = config.input_action_profiles;
+      next.active_input_profile_id = config.active_input_profile_id;
+      next.press_action_text = config.press_action_text;
+      next.release_action_text = config.release_action_text;
       return next;
     }
 
@@ -2734,11 +3111,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!preset) return;
       setActionEditor("press", preset.press_action_text);
       setActionEditor("release", preset.release_action_text);
-      config = {
-        ...config,
-        press_action_text: composeActionText("press"),
-        release_action_text: composeActionText("release")
-      };
+      syncActiveInputProfile();
     }
 
     function addEventModifiers(event, keys) {
@@ -2854,6 +3227,52 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    function updateSpeechStatus(status = {}) {
+      const readyParts = [];
+      if (status.tts_ready) readyParts.push("TTS");
+      if (status.asr_ready) readyParts.push("ASR");
+      const mode = status.credential_mode || "missing";
+      $("speechState").textContent = readyParts.length
+        ? `语音状态：${readyParts.join(" / ")} 可用，${mode}`
+        : `语音状态：未就绪，${mode}`;
+      if (status.tts_speaker && !$("speechSpeaker").value) {
+        $("speechSpeaker").value = status.tts_speaker;
+      }
+    }
+
+    async function refreshSpeechStatus() {
+      try {
+        updateSpeechStatus(await fetchJson("/api/speech/status", {}, 10000));
+      } catch (error) {
+        $("speechState").textContent = `语音状态：刷新失败，${error.message}`;
+      }
+    }
+
+    async function saveSpeechConfig() {
+      const apiKey = $("speechApiKey").value.trim();
+      const speaker = $("speechSpeaker").value.trim();
+      if (!apiKey && !speaker) {
+        setSaveStatus("没有可保存的语音配置。", "warn");
+        return;
+      }
+      try {
+        const result = await fetchJson("/api/speech/config", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({api_key: apiKey, tts_speaker: speaker})
+        }, 10000);
+        updateSpeechStatus(result);
+        if (result.ok) {
+          $("speechApiKey").value = "";
+          setSaveStatus("语音配置已保存。", "ok");
+        } else {
+          setSaveStatus(`语音配置保存失败：${result.error || "unknown"}`, "warn");
+        }
+      } catch (error) {
+        setSaveStatus(`语音配置保存失败：${error.message}`, "warn");
+      }
+    }
+
     async function postAction(url) {
       await fetch(url, {method: "POST"});
     }
@@ -2881,6 +3300,8 @@ INDEX_HTML = r"""<!doctype html>
       $("businessModeHint").textContent = businessModeDescriptions[normalized];
       $("modeCodexBtn").classList.toggle("active", normalized === "codex");
       $("modeDoubaoBtn").classList.toggle("active", normalized === "doubao");
+      $("inputModeSettings").style.display = normalized === "codex" ? "" : "none";
+      $("agentModeSettings").style.display = normalized === "doubao" ? "" : "none";
     }
 
     async function selectBusinessMode(mode) {
@@ -3158,6 +3579,7 @@ INDEX_HTML = r"""<!doctype html>
     async function init() {
       await loadActionPresets();
       await loadConfig();
+      await refreshSpeechStatus();
       connectEvents();
     }
 
@@ -3389,7 +3811,7 @@ SIMULATOR_HTML = r"""<!doctype html>
         <label>内容<textarea id="replyText">首长，测试任务已经完成。当前队列和电话回话链路正常。</textarea></label>
         <div class="buttons">
           <button class="primary" onclick="enqueueReply()">入队并呼叫</button>
-          <button class="blue" onclick="postHook()">模拟 Codex hook</button>
+          <button class="blue" onclick="postHook()">模拟回话入口</button>
           <button onclick="stopPlayback()">停止播放</button>
           <button onclick="clearReplies()">清空队列</button>
         </div>
@@ -3561,7 +3983,7 @@ SIMULATOR_HTML = r"""<!doctype html>
           text: $("replyText").value
         })
       });
-      pushLog(result.ok ? "Codex hook 已发送。" : "Codex hook 发送失败。");
+      pushLog(result.ok ? "回话入口已发送。" : "回话入口发送失败。");
     }
 
     async function stopPlayback() {
@@ -3681,6 +4103,2306 @@ SIMULATOR_HTML = r"""<!doctype html>
 """
 
 
+INDEX_HTML = r"""<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>设置</title>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+      --bg: #fbfbfb;
+      --panel: #ffffff;
+      --line: #dddddd;
+      --line-soft: #e9e9e9;
+      --text: #111111;
+      --muted: #6c6c6c;
+      --muted-2: #8a8a8a;
+      --red: #c9251d;
+      --red-dark: #a91c17;
+      --purple: #5c3dff;
+      --field: #fdfdfd;
+      --field-hover: #f6f6f6;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    }
+
+    * { box-sizing: border-box; }
+    html { min-height: 100%; background: var(--bg); }
+    body {
+      min-height: 100%;
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      letter-spacing: 0;
+    }
+    button, input, select {
+      font: inherit;
+      color: inherit;
+      letter-spacing: 0;
+    }
+    button { cursor: pointer; }
+    .settings-app { min-height: 100vh; }
+    .settings-topbar {
+      height: 72px;
+      padding: 0 34px;
+      border-bottom: 1px solid var(--line);
+      background: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .settings-topbar h1 {
+      margin: 0;
+      font-size: 28px;
+      line-height: 1;
+      font-weight: 700;
+    }
+    .settings-actions {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+    }
+    .text-action {
+      border: 0;
+      background: transparent;
+      padding: 8px 0;
+      font-size: 17px;
+      color: #555;
+      min-width: 42px;
+    }
+    .text-action.primary { color: var(--red); }
+    .text-action:hover { color: var(--red-dark); }
+    .settings-main {
+      max-width: 1480px;
+      margin: 0 auto;
+      padding: 30px 46px 38px;
+    }
+    .settings-shell {
+      display: grid;
+      grid-template-columns: 188px minmax(0, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+    .settings-sidebar {
+      position: sticky;
+      top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      padding: 8px;
+      box-shadow: var(--shadow);
+    }
+    .settings-nav-button {
+      width: 100%;
+      min-height: 42px;
+      border: 0;
+      border-radius: 5px;
+      background: transparent;
+      color: #444;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      gap: 10px;
+      align-items: center;
+      padding: 0 10px;
+      text-align: left;
+      font-weight: 600;
+    }
+    .settings-nav-button:hover {
+      background: var(--field-hover);
+      color: var(--red);
+    }
+    .settings-nav-button svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 1.8;
+    }
+    .settings-content { min-width: 0; }
+    .settings-page {
+      display: grid;
+      gap: 18px;
+      min-width: 0;
+    }
+    .settings-page[hidden] { display: none; }
+    .settings-nav-button.active {
+      background: #f7f7f7;
+      color: var(--red);
+    }
+    .section-title {
+      margin: 0 0 6px;
+      font-size: 24px;
+      line-height: 1.2;
+      font-weight: 700;
+    }
+    .section-copy {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .mode-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+      margin-bottom: 22px;
+    }
+    .mode-card {
+      width: 100%;
+      min-height: 298px;
+      padding: 24px 36px 22px 26px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      text-align: left;
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      column-gap: 16px;
+      box-shadow: var(--shadow);
+    }
+    .mode-card.active {
+      border-color: var(--red);
+      box-shadow: none;
+    }
+    .mode-radio {
+      width: 22px;
+      height: 22px;
+      border: 2px solid #b8b8b8;
+      border-radius: 50%;
+      margin-top: 1px;
+      position: relative;
+    }
+    .mode-card.active .mode-radio {
+      border-color: var(--red);
+    }
+    .mode-card.active .mode-radio::after {
+      content: "";
+      position: absolute;
+      inset: 5px;
+      border-radius: 50%;
+      background: var(--red);
+    }
+    .mode-card h3 {
+      margin: 0 0 8px;
+      font-size: 20px;
+      line-height: 1.25;
+      font-weight: 700;
+    }
+    .mode-card p {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .mode-rows {
+      margin-top: 26px;
+      display: grid;
+    }
+    .mode-feature {
+      min-height: 62px;
+      display: grid;
+      grid-template-columns: 36px minmax(0, 1fr);
+      gap: 20px;
+      align-items: center;
+      border-top: 1px solid var(--line-soft);
+    }
+    .mode-feature:first-child { border-top: 0; }
+    .icon-cell {
+      width: 28px;
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #4f4f4f;
+    }
+    .icon-cell svg {
+      width: 23px;
+      height: 23px;
+      stroke-width: 1.7;
+    }
+    .feature-title {
+      font-weight: 650;
+      line-height: 1.35;
+    }
+    .feature-copy {
+      margin-top: 3px;
+      color: var(--muted);
+      line-height: 1.35;
+      font-size: 13px;
+    }
+    .settings-card {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--panel);
+      padding: 22px 28px 16px;
+      box-shadow: var(--shadow);
+    }
+    .settings-body-grid { display: grid; gap: 18px; }
+    .settings-card h2 {
+      margin: 0 0 14px;
+      font-size: 20px;
+      line-height: 1.35;
+      font-weight: 700;
+    }
+    .mode-fields[hidden] { display: none; }
+    .settings-row {
+      min-height: 62px;
+      display: grid;
+      grid-template-columns: 34px minmax(130px, 170px) minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: center;
+      border-top: 1px solid var(--line-soft);
+    }
+    .settings-row:first-child { border-top: 0; }
+    .settings-row > .row-control {
+      grid-column: 3 / -1;
+      min-width: 0;
+    }
+    .row-label strong {
+      display: block;
+      font-weight: 600;
+      line-height: 1.35;
+    }
+    .row-label span {
+      display: block;
+      margin-top: 3px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    select, input[type="text"], input[type="password"], input[type="number"] {
+      width: 100%;
+      min-height: 43px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--field);
+      padding: 0 14px;
+      outline: none;
+    }
+    select:focus, input:focus {
+      border-color: var(--red);
+      box-shadow: 0 0 0 2px rgba(201, 37, 29, 0.1);
+    }
+    .level-meter {
+      width: 112px;
+      display: grid;
+      grid-template-columns: repeat(12, 4px);
+      gap: 4px;
+      justify-content: center;
+    }
+    .level-meter span {
+      width: 4px;
+      height: 17px;
+      border-radius: 3px;
+      background: #e5e5e5;
+    }
+    .level-meter span:nth-child(-n + 8) { background: var(--red); }
+    .level-meter.dim span:nth-child(-n + 7) { background: var(--red); }
+    .level-meter.dim span:nth-child(n + 8) { background: #e5e5e5; }
+    .outline-action, .small-action, .icon-action {
+      min-height: 40px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fff;
+      color: var(--red);
+      padding: 0 18px;
+      font-weight: 600;
+    }
+    .outline-action:hover, .small-action:hover, .icon-action:hover { background: var(--field-hover); }
+    .switch {
+      width: 48px;
+      height: 28px;
+      justify-self: end;
+      position: relative;
+      display: inline-flex;
+    }
+    .settings-row > .switch { grid-column: 4; }
+    #shortcutManagerButton {
+      grid-column: 4;
+      width: auto;
+      min-width: 150px;
+      white-space: nowrap;
+    }
+    #inputModeSettings > .settings-row:first-child > .row-control,
+    .manager-panel .settings-row > .row-control {
+      grid-column: 3;
+    }
+    .settings-row > .input-profile-actions {
+      grid-column: 4;
+    }
+    .global-settings-card { position: static; }
+    .global-settings-card .settings-row {
+      grid-template-columns: 30px minmax(106px, 132px) minmax(0, 1fr);
+      gap: 12px;
+      min-height: 58px;
+    }
+    .global-settings-card .settings-row > .switch {
+      grid-column: 3;
+      justify-self: end;
+    }
+    .global-settings-card .row-control {
+      grid-column: 3;
+      min-width: 0;
+    }
+    .compact-control-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .service-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .full-row { grid-column: 1 / -1; }
+    .read-only-control {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 8px;
+    }
+    .read-only-control input {
+      color: var(--muted);
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .secret-field.configured::placeholder {
+      color: var(--text);
+      letter-spacing: 1px;
+      opacity: 1;
+    }
+    .text-value {
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 13px;
+    }
+    .voice-config-block {
+      margin-top: 10px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line-soft);
+      display: grid;
+      gap: 12px;
+    }
+    .voice-persona-card strong {
+      display: block;
+      font-size: 15px;
+      line-height: 1.35;
+    }
+    .voice-persona-card span {
+      display: block;
+      margin-top: 2px;
+      color: var(--muted);
+      line-height: 1.35;
+      font-size: 12px;
+    }
+    .voice-persona-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 12px;
+      display: grid;
+      grid-template-columns: 46px minmax(0, 1fr);
+      gap: 12px;
+      align-items: center;
+    }
+    .voice-avatar {
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      background: linear-gradient(135deg, #d4473f, #5c3dff);
+      font-weight: 700;
+    }
+    .voice-select {
+      margin-top: 0;
+    }
+    .voice-slider {
+      display: grid;
+      gap: 7px;
+    }
+    .voice-slider-head,
+    .voice-slider-scale {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      line-height: 1.3;
+    }
+    .voice-slider-head strong {
+      font-weight: 600;
+    }
+    .voice-slider-head output {
+      color: var(--text);
+      font-weight: 600;
+    }
+    .voice-slider-scale {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    input[type="range"] {
+      width: 100%;
+      accent-color: var(--red);
+    }
+    .switch input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .switch span {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: #d6d6d6;
+      transition: background 150ms ease;
+    }
+    .switch span::after {
+      content: "";
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      left: 3px;
+      top: 3px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22);
+      transition: transform 150ms ease;
+    }
+    .switch input:checked + span { background: var(--red); }
+    .switch input:checked + span::after { transform: translateX(20px); }
+    .input-profile-actions {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .icon-action {
+      width: 40px;
+      padding: 0;
+      color: #4f4f4f;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .icon-action svg {
+      width: 18px;
+      height: 18px;
+      stroke-width: 1.8;
+    }
+    .shortcut-editor {
+      margin-top: 10px;
+      border-top: 1px solid var(--line-soft);
+    }
+    .shortcut-row {
+      min-height: 74px;
+      display: grid;
+      grid-template-columns: 34px minmax(130px, 170px) minmax(0, 1fr);
+      column-gap: 16px;
+      row-gap: 8px;
+      align-items: start;
+      border-top: 1px solid var(--line-soft);
+      padding: 12px 0;
+    }
+    .shortcut-row:first-child { border-top: 0; }
+    .shortcut-control {
+      display: grid;
+      gap: 4px;
+    }
+    .shortcut-row > .shortcut-control,
+    .shortcut-row > .delay-field {
+      grid-column: 3;
+    }
+    .capture {
+      min-height: 43px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: var(--field);
+      padding: 0 14px;
+      color: #333;
+      text-align: left;
+      font-weight: 500;
+      width: 100%;
+    }
+    .capture.active {
+      border-color: var(--red);
+      box-shadow: 0 0 0 2px rgba(201, 37, 29, 0.1);
+      color: var(--red);
+    }
+    .delay-field {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 4px;
+    }
+    .field-caption {
+      color: var(--muted-2);
+      font-size: 12px;
+      line-height: 1;
+    }
+    .checkbox-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .plain-check {
+      min-height: 43px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fff;
+      padding: 0 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #333;
+    }
+    .inline-buttons {
+      margin-top: 14px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .manager-panel {
+      margin-top: 14px;
+      border-top: 1px solid var(--line-soft);
+      padding-top: 10px;
+    }
+    .manager-panel[hidden] { display: none; }
+    .small-action {
+      color: #333;
+      padding: 0 14px;
+      min-height: 36px;
+      font-weight: 500;
+    }
+    .accordion-row {
+      width: 100%;
+      min-height: 61px;
+      margin-top: 18px;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      background: #fff;
+      display: grid;
+      grid-template-columns: 34px auto minmax(0, 1fr) 24px;
+      gap: 16px;
+      align-items: center;
+      padding: 0 22px 0 28px;
+      text-align: left;
+      box-shadow: var(--shadow);
+    }
+    .accordion-row strong {
+      font-size: 16px;
+      line-height: 1.35;
+    }
+    .accordion-row span {
+      color: var(--muted);
+      line-height: 1.35;
+      font-size: 13px;
+    }
+    .accordion-row svg {
+      width: 21px;
+      height: 21px;
+      stroke-width: 1.8;
+    }
+    .calibration-panel {
+      border-top: 1px solid var(--line-soft);
+      background: #fff;
+      padding-top: 16px;
+      display: grid;
+      gap: 16px;
+    }
+    .hardware-pulse-panel {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      padding: 14px 16px 12px;
+    }
+    .hardware-pulse-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+      line-height: 1.35;
+    }
+    .hardware-pulse-head strong { font-size: 15px; }
+    .hardware-pulse-head span {
+      color: var(--muted);
+      font-size: 12px;
+      text-align: right;
+    }
+    .hardware-pulse-canvas {
+      width: 100%;
+      height: 150px;
+      display: block;
+      border: 1px solid var(--line-soft);
+      border-radius: 5px;
+      background: #fff;
+    }
+    .hardware-status-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--line-soft);
+    }
+    .hardware-status-item {
+      min-height: 64px;
+      background: #fff;
+      padding: 10px 12px;
+      display: grid;
+      align-content: center;
+      gap: 5px;
+    }
+    .hardware-status-item span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.2;
+    }
+    .hardware-status-item strong {
+      font-size: 15px;
+      line-height: 1.25;
+      font-weight: 600;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .hardware-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .debug-status-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      overflow: hidden;
+      background: var(--line-soft);
+    }
+    .debug-log-panel {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .debug-log-head {
+      min-height: 48px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .debug-log-head strong {
+      font-size: 15px;
+      line-height: 1.35;
+    }
+    .debug-log-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .debug-log {
+      min-height: 220px;
+      max-height: 340px;
+      overflow: auto;
+      margin: 0;
+      padding: 12px 14px;
+      background: #fff;
+      color: #222;
+      font: 12px/1.55 Consolas, "Microsoft YaHei", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .calibration-panel[hidden] { display: none; }
+    .save-status {
+      min-height: 22px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .save-status.ok { color: #167451; }
+    .save-status.warn { color: var(--red); }
+    .save-status:empty { display: none; }
+    .hidden-fields { display: none; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    @media (max-width: 980px) {
+      .settings-main { padding: 24px 20px 34px; }
+      .settings-shell { grid-template-columns: 1fr; }
+      .settings-sidebar {
+        position: static;
+        display: flex;
+        gap: 6px;
+        overflow-x: auto;
+      }
+      .settings-nav-button {
+        width: auto;
+        min-width: 116px;
+        white-space: nowrap;
+      }
+      .mode-grid { grid-template-columns: 1fr; }
+      .mode-card { min-height: 0; }
+      .global-settings-card { position: static; }
+      .settings-row {
+        grid-template-columns: 34px minmax(100px, 150px) minmax(0, 1fr);
+      }
+      .settings-row > .level-meter,
+      .settings-row > .outline-action,
+      .settings-row > .switch {
+        grid-column: 3;
+        justify-self: start;
+      }
+      .settings-row > .row-control,
+      #inputModeSettings > .settings-row:first-child > .row-control,
+      .manager-panel .settings-row > .row-control {
+        grid-column: 3;
+      }
+      .settings-row > .input-profile-actions {
+        grid-column: 3;
+        justify-content: flex-start;
+      }
+      .shortcut-row {
+        grid-template-columns: 34px minmax(100px, 150px) minmax(0, 1fr);
+        padding: 12px 0;
+      }
+      .shortcut-row > .shortcut-control,
+      .shortcut-row > .delay-field,
+      .shortcut-row > button:nth-of-type(2) {
+        grid-column: 3;
+      }
+      .accordion-row {
+        grid-template-columns: 34px minmax(110px, auto) minmax(0, 1fr) 24px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .settings-topbar { padding: 0 20px; }
+      .settings-topbar h1 { font-size: 24px; }
+      .settings-actions { gap: 18px; }
+      .settings-sidebar {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        overflow-x: visible;
+      }
+      .settings-nav-button {
+        width: 100%;
+        min-width: 0;
+        white-space: normal;
+      }
+      .settings-card { padding: 20px 18px 14px; }
+      .settings-row,
+      .shortcut-row {
+        grid-template-columns: 28px minmax(0, 1fr);
+        gap: 12px;
+      }
+      .row-label,
+      .settings-row > .row-control,
+      .settings-row > .level-meter,
+      .settings-row > .outline-action,
+      .settings-row > .switch,
+      .settings-row > .input-profile-actions,
+      .global-settings-card .settings-row > .switch,
+      .shortcut-row > .shortcut-control,
+      .shortcut-row > .capture,
+      .shortcut-row > .delay-field {
+        grid-column: 2;
+      }
+      .compact-control-grid,
+      .service-grid,
+      .checkbox-grid,
+      .read-only-control,
+      .voice-config-block,
+      .hardware-status-grid,
+      .debug-status-grid {
+        grid-template-columns: 1fr;
+      }
+      .accordion-row {
+        padding-left: 18px;
+        grid-template-columns: 28px minmax(0, 1fr) 24px;
+      }
+      .accordion-row span { grid-column: 2; }
+      .calibration-panel { padding-top: 14px; }
+      .hardware-pulse-head {
+        display: grid;
+        justify-content: stretch;
+      }
+      .hardware-pulse-head span { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <div class="settings-app">
+    <header class="settings-topbar">
+      <h1>设置</h1>
+      <div class="settings-actions">
+        <button class="text-action primary" type="button" onclick="saveConfig()">保存</button>
+        <button class="text-action" type="button" onclick="restoreSettings()">还原</button>
+      </div>
+    </header>
+
+    <main class="settings-main">
+      <div class="settings-shell">
+        <aside class="settings-sidebar" aria-label="设置分栏">
+          <button class="settings-nav-button active" type="button" data-page="modePage" onclick="showSettingsPage('modePage')"><i data-lucide="layout-grid"></i><span>模式</span></button>
+          <button class="settings-nav-button" type="button" data-page="modeConfigPage" onclick="showSettingsPage('modeConfigPage')"><i data-lucide="sliders-horizontal"></i><span>当前模式</span></button>
+          <button class="settings-nav-button" type="button" data-page="globalConfigPage" onclick="showSettingsPage('globalConfigPage')"><i data-lucide="radio"></i><span>全局音频</span></button>
+          <button class="settings-nav-button" type="button" data-page="hardwareConfigPage" onclick="showSettingsPage('hardwareConfigPage')"><i data-lucide="settings"></i><span>调试与校准</span></button>
+        </aside>
+
+        <div class="settings-content">
+      <section id="modePage" class="settings-page" aria-labelledby="modeSectionTitle">
+        <h2 id="modeSectionTitle" class="section-title">选择模式</h2>
+        <p class="section-copy">HG113 提供两种使用模式，按需切换以获得最合适的体验。</p>
+
+        <div class="mode-grid">
+          <button id="modeCodexBtn" class="mode-card" type="button" aria-pressed="false" onclick="selectBusinessMode('codex')">
+            <span class="mode-radio" aria-hidden="true"></span>
+            <span>
+              <h3>输入法模式</h3>
+              <p>适用于手动切换快捷键方案、任务完成提醒与排队语音广播等场景。</p>
+              <span class="mode-rows">
+                <span class="mode-feature">
+                  <span class="icon-cell"><i data-lucide="list"></i></span>
+                  <span><span class="feature-title">回话入口触发与响应</span><span class="feature-copy">配置任务完成后的回拨入口</span></span>
+                </span>
+                <span class="mode-feature">
+                  <span class="icon-cell"><i data-lucide="bell"></i></span>
+                  <span><span class="feature-title">任务完成提醒</span><span class="feature-copy">设置提醒内容与播报方式</span></span>
+                </span>
+                <span class="mode-feature">
+                  <span class="icon-cell"><i data-lucide="volume-2"></i></span>
+                  <span><span class="feature-title">排队语音广播</span><span class="feature-copy">管理广播内容与播放规则</span></span>
+                </span>
+              </span>
+            </span>
+          </button>
+
+          <button id="modeDoubaoBtn" class="mode-card" type="button" aria-pressed="true" onclick="selectBusinessMode('doubao')">
+            <span class="mode-radio" aria-hidden="true"></span>
+            <span>
+              <h3>Agent 模式</h3>
+              <p>适用于与豆包或其他模型的日常语音对话。</p>
+              <span class="mode-rows">
+                <span class="mode-feature">
+                  <span class="icon-cell"><i data-lucide="mic"></i></span>
+                  <span><span class="feature-title">AI 对话</span><span class="feature-copy">摘机后进入日常语音对话</span></span>
+                </span>
+                <span class="mode-feature">
+                  <span class="icon-cell"><i data-lucide="volume-2"></i></span>
+                  <span><span class="feature-title">工具调用</span><span class="feature-copy">对话模型可调用本机工具</span></span>
+                </span>
+                <span class="mode-feature">
+                  <span class="icon-cell"><i data-lucide="user"></i></span>
+                  <span><span class="feature-title">回拨承接</span><span class="feature-copy">工具完成后通过全局入口回拨</span></span>
+                </span>
+              </span>
+            </span>
+          </button>
+        </div>
+      </section>
+
+      <section id="modeConfigPage" class="settings-page" hidden>
+      <div class="settings-body-grid">
+        <section id="modeConfigSection" class="settings-card" aria-labelledby="modeSettingsTitle">
+          <h2 id="modeSettingsTitle">本模式设置（Agent 模式）</h2>
+          <input id="business_mode" type="hidden" value="doubao">
+
+          <div id="agentModeSettings" class="mode-fields">
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="wrench"></i></span>
+              <div class="row-label"><strong>工具调用</strong><span>对话模型可调用本机工具</span></div>
+              <div class="row-control">
+                <select id="agentPermissionProfile">
+                  <option value="commander">允许</option>
+                  <option value="confirm_sensitive">敏感动作确认</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="route"></i></span>
+              <div class="row-label"><strong>回拨入口</strong><span>工具完成后使用全局入口</span></div>
+              <div class="row-control">
+                <input type="text" value="使用全局回话入口" readonly>
+              </div>
+            </div>
+
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="message-square-reply"></i></span>
+              <div class="row-label"><strong>完成回报</strong><span>AI 对话轮次完成后的处理方式</span></div>
+              <div class="row-control">
+                <select id="voiceReplyPolicy">
+                  <option value="direct">直接播报</option>
+                  <option value="callback">入队回拨</option>
+                  <option value="silent">只记录</option>
+                </select>
+              </div>
+            </div>
+          </div>
+
+          <div id="inputModeSettings" class="mode-fields" hidden>
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="list"></i></span>
+              <div class="row-label"><strong>当前方案</strong><span>手动切换当前软件要用的快捷键方案</span></div>
+              <div class="row-control">
+                <select id="activeInputProfile" onchange="selectInputProfile(this.value)"></select>
+              </div>
+              <button id="shortcutManagerButton" class="outline-action" type="button" onclick="toggleShortcutManager()">管理快捷键方案</button>
+            </div>
+
+            <div class="shortcut-editor">
+              <div class="shortcut-row">
+                <span class="icon-cell"><i data-lucide="phone-off"></i></span>
+                <div class="row-label"><strong>抬起动作</strong><span>快捷键 1，可选等待，再触发快捷键 2</span></div>
+                <div class="shortcut-control"><span class="field-caption">快捷键 1</span><button id="release_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_primary_hotkey')">无</button></div>
+                <label class="delay-field"><span class="field-caption">等待毫秒</span><input id="release_delay_ms" type="number" min="0" max="10000" step="100" value="0"></label>
+                <div class="shortcut-control"><span class="field-caption">快捷键 2</span><button id="release_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('release_follow_hotkey')">无</button></div>
+              </div>
+
+              <div class="shortcut-row">
+                <span class="icon-cell"><i data-lucide="phone-call"></i></span>
+                <div class="row-label"><strong>按下动作</strong><span>快捷键 1，可选等待，再触发快捷键 2</span></div>
+                <div class="shortcut-control"><span class="field-caption">快捷键 1</span><button id="press_primary_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_primary_hotkey')">无</button></div>
+                <label class="delay-field"><span class="field-caption">等待毫秒</span><input id="press_delay_ms" type="number" min="0" max="10000" step="100" value="0"></label>
+                <div class="shortcut-control"><span class="field-caption">快捷键 2</span><button id="press_follow_hotkey_button" class="capture" type="button" onclick="startHotkeyCapture('press_follow_hotkey')">无</button></div>
+              </div>
+            </div>
+
+            <div class="inline-buttons">
+              <button class="small-action" type="button" onclick="postSimulationState('RELEASED')">测试抬起</button>
+              <button class="small-action" type="button" onclick="postSimulationState('PRESSED')">测试按下</button>
+            </div>
+
+            <div id="shortcutManagerPanel" class="manager-panel" hidden>
+              <div class="settings-row">
+                <span class="icon-cell"><i data-lucide="pencil"></i></span>
+                <div class="row-label"><strong>方案名称</strong><span>例如 Codex 输入、豆包客户端、浏览器语音</span></div>
+                <div class="row-control">
+                  <input id="inputProfileName" type="text" placeholder="例如：Codex 输入">
+                </div>
+                <div class="input-profile-actions">
+                  <button class="icon-action" type="button" title="新增方案" aria-label="新增方案" onclick="addInputProfile()"><i data-lucide="plus"></i></button>
+                  <button class="icon-action" type="button" title="删除当前方案" aria-label="删除当前方案" onclick="deleteInputProfile()"><i data-lucide="trash-2"></i></button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+      </section>
+
+      <section id="globalConfigPage" class="settings-page" hidden>
+        <section id="globalConfigSection" class="settings-card global-settings-card" aria-labelledby="globalSettingsTitle">
+          <h2 id="globalSettingsTitle">全局音频与回拨</h2>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="mic"></i></span>
+            <div class="row-label"><strong>麦克风</strong></div>
+            <div class="row-control">
+              <select id="voiceRecordDevice">
+                <option value="">默认麦克风 (HG113 Mic)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="volume-2"></i></span>
+            <div class="row-label"><strong>输出设备</strong></div>
+            <div class="row-control">
+              <select id="audioOutputDevice">
+                <option value="">默认扬声器 (HG113 Speaker)</option>
+                <option value="default">默认扬声器 (HG113 Speaker)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="key-round"></i></span>
+            <div class="row-label"><strong>火山 API Key</strong><span>用于 ASR / TTS，请从火山语音控制台获取</span></div>
+            <div class="row-control read-only-control">
+              <input id="speechApiKey" class="secret-field" type="password" autocomplete="off" placeholder="保存后写入本机 .env">
+              <button class="small-action" type="button" onclick="saveConfig()">保存</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="audio-lines"></i></span>
+            <div class="row-label"><strong>语音识别</strong><span>摘机对话使用 ASR</span></div>
+            <label class="switch" aria-label="语音识别">
+              <input id="enableVoiceAsr" type="checkbox">
+              <span></span>
+            </label>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="radio"></i></span>
+            <div class="row-label"><strong>TTS 播报</strong></div>
+            <label class="switch" aria-label="TTS 播报">
+              <input id="enableTts" type="checkbox">
+              <span></span>
+            </label>
+          </div>
+
+          <div class="voice-config-block" aria-label="音色与播报参数">
+            <div class="settings-row">
+              <span class="icon-cell"><i data-lucide="user-round"></i></span>
+              <div class="row-label"><strong>默认音色</strong><span id="voicePersonaMeta">使用当前默认音色</span></div>
+              <div class="row-control read-only-control">
+                <select id="speechSpeaker" aria-label="默认音色">
+                  <option value="">正在读取音色列表...</option>
+                </select>
+                <button class="small-action" type="button" onclick="refreshSpeechSpeakers()">刷新</button>
+              </div>
+            </div>
+
+            <label class="voice-slider">
+              <span class="voice-slider-head"><strong>音调</strong><output id="ttsPitchValue" for="ttsPitch">0</output></span>
+              <input id="ttsPitch" type="range" min="-12" max="12" step="1">
+              <span class="voice-slider-scale"><span>低</span><span>高</span></span>
+            </label>
+
+            <label class="voice-slider">
+              <span class="voice-slider-head"><strong>语速</strong><output id="ttsSpeechRateValue" for="ttsSpeechRate">0</output></span>
+              <input id="ttsSpeechRate" type="range" min="-50" max="100" step="1">
+              <span class="voice-slider-scale"><span>慢</span><span>快</span></span>
+            </label>
+
+            <label class="voice-slider">
+              <span class="voice-slider-head"><strong>音量</strong><output id="ttsLoudnessRateValue" for="ttsLoudnessRate">0</output></span>
+              <input id="ttsLoudnessRate" type="range" min="-50" max="100" step="1">
+              <span class="voice-slider-scale"><span>低</span><span>高</span></span>
+            </label>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="key-round"></i></span>
+            <div class="row-label"><strong>密钥状态</strong><span>ASR / TTS</span></div>
+            <div class="row-control text-value" id="speechState">未就绪</div>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="inbox"></i></span>
+            <div class="row-label"><strong>回话队列</strong></div>
+            <div class="row-control read-only-control">
+              <span id="replyQueueState" class="text-value">0 条等待</span>
+              <button class="small-action" type="button" onclick="clearReplyQueue()">清空</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="link"></i></span>
+            <div class="row-label"><strong>回话入口</strong><span>任务完成回拨入口</span></div>
+            <div class="row-control read-only-control">
+              <input id="callbackEndpoint" type="text" readonly>
+              <button class="small-action" type="button" onclick="copyCallbackEndpoint()">复制</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="phone-forwarded"></i></span>
+            <div class="row-label"><strong>完成后电话回拨</strong></div>
+            <label class="switch" aria-label="完成后电话回拨">
+              <input id="enableCallback" type="checkbox">
+              <span></span>
+            </label>
+          </div>
+        </section>
+      </section>
+
+      <section id="hardwareConfigPage" class="settings-page" hidden>
+        <section id="hardwareConfigSection" class="settings-card" aria-labelledby="hardwareSettingsTitle">
+          <h2 id="hardwareSettingsTitle">调试与校准</h2>
+          <div id="calibrationPanel" class="calibration-panel">
+            <div class="hardware-pulse-panel">
+              <div class="hardware-pulse-head">
+                <strong>开关脉冲</strong>
+                <span id="hardwarePulseHint">等待设备上报</span>
+              </div>
+              <canvas id="hardwarePulseChart" class="hardware-pulse-canvas" aria-label="开关脉冲图"></canvas>
+            </div>
+
+            <div class="hardware-status-grid" aria-label="硬件状态">
+              <div class="hardware-status-item"><span>摘挂机</span><strong id="hardwareHookState">--</strong></div>
+              <div class="hardware-status-item"><span>数字电平</span><strong id="hardwareDigitalState">--</strong></div>
+              <div class="hardware-status-item"><span>ADC</span><strong id="hardwareAdcState">--</strong></div>
+              <div class="hardware-status-item"><span>LED</span><strong id="hardwareLedState">--</strong></div>
+              <div class="hardware-status-item"><span>蜂鸣器</span><strong id="hardwareBuzzerState">--</strong></div>
+            </div>
+
+            <div class="hardware-actions">
+              <button class="small-action" type="button" onclick="postHardwareCommand('led_on')">测试 LED</button>
+              <button class="small-action" type="button" onclick="postHardwareCommand('led_off')">关闭 LED</button>
+              <button class="small-action" type="button" onclick="postHardwareCommand('beep')">测试蜂鸣器</button>
+              <button class="small-action" type="button" onclick="postHardwareCommand('ring_off')">停止蜂鸣器</button>
+              <button class="small-action" type="button" onclick="postAgentVoiceTest()">测试 Agent</button>
+              <button class="small-action" type="button" onclick="postVoiceStop()">停止录音</button>
+              <button class="small-action" type="button" onclick="postSimulationState('RELEASED')">模拟抬起</button>
+              <button class="small-action" type="button" onclick="postSimulationState('PRESSED')">模拟按下</button>
+              <button class="small-action" type="button" onclick="openSimulator()">打开模拟台</button>
+            </div>
+
+            <div class="debug-status-grid" aria-label="Agent 调试状态">
+              <div class="hardware-status-item"><span>设备链路</span><strong id="debugDeviceState">--</strong></div>
+              <div class="hardware-status-item"><span>Agent 录音</span><strong id="debugVoiceState">--</strong></div>
+              <div class="hardware-status-item"><span>ASR / TTS</span><strong id="debugSpeechState">--</strong></div>
+              <div class="hardware-status-item"><span>回话播放</span><strong id="debugPlaybackState">--</strong></div>
+              <div class="hardware-status-item"><span>模型返回</span><strong id="debugModelState">--</strong></div>
+            </div>
+
+            <div class="debug-log-panel">
+              <div class="debug-log-head">
+                <strong>调试日志</strong>
+                <div class="debug-log-actions">
+                  <button class="small-action" type="button" onclick="refreshDebugStatus()">刷新状态</button>
+                  <button class="small-action" type="button" onclick="clearDebugLog()">清空显示</button>
+                </div>
+              </div>
+              <pre id="debugLog" class="debug-log">等待调试事件...</pre>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <div id="saveStatus" class="save-status" aria-live="polite"></div>
+
+      <div class="hidden-fields" aria-hidden="true">
+        <input id="voiceSampleRate" type="number" value="16000">
+        <input id="press_action_text" type="hidden">
+        <input id="release_action_text" type="hidden">
+        <input id="press_primary_hotkey" type="hidden">
+        <input id="press_follow_hotkey" type="hidden">
+        <input id="release_primary_hotkey" type="hidden">
+        <input id="release_follow_hotkey" type="hidden">
+        <input id="ttsResourceId" type="hidden" value="seed-tts-2.0">
+        <input id="ttsModel" type="hidden" value="seed-tts-2.0-standard">
+        <select id="ttsFormat">
+          <option value="wav">wav</option>
+          <option value="mp3">mp3</option>
+          <option value="pcm">pcm</option>
+          <option value="ogg_opus">ogg_opus</option>
+        </select>
+        <select id="ttsSampleRate">
+          <option value="8000">8000</option>
+          <option value="16000">16000</option>
+          <option value="22050">22050</option>
+          <option value="24000">24000</option>
+          <option value="32000">32000</option>
+          <option value="44100">44100</option>
+          <option value="48000">48000</option>
+        </select>
+        <select id="ttsExplicitLanguage">
+          <option value="">不显式指定</option>
+          <option value="zh-cn">zh-cn</option>
+          <option value="en">en</option>
+          <option value="ja">ja</option>
+          <option value="ko">ko</option>
+          <option value="fr">fr</option>
+          <option value="de">de</option>
+          <option value="es-mx">es-mx</option>
+        </select>
+        <input id="ttsExplicitDialect" type="hidden" value="">
+        <input id="ttsDisableMarkdownFilter" type="checkbox" checked>
+        <input id="ttsDisableEmojiFilter" type="checkbox" checked>
+      </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <script>
+    let config = {};
+    let actionPresets = {};
+    let activeCapture = null;
+    let lastSpeechSpeaker = "";
+    let hardwareEvents = null;
+    let hardwareSamples = [];
+    let hardwareResizeTimer = null;
+    let debugLogs = [];
+    let latestVoiceStatus = {};
+    let latestReplyStatus = {};
+    let latestSpeechStatus = {};
+    let latestHardwareStatus = {};
+
+    const businessModeDescriptions = {
+      codex: "输入法模式：手动切换快捷键方案；任务完成后可电话回拨。",
+      doubao: "Agent 模式：摘机后和 AI 对话；模型可调用本机工具或回话入口。"
+    };
+    const businessModeTitles = {
+      codex: "本模式设置（输入法模式）",
+      doubao: "本模式设置（Agent 模式）"
+    };
+    const keyAliases = new Map([
+      ["ctrl", "ctrl"], ["control", "ctrl"], ["控制键", "ctrl"], ["左控制键", "ctrl"],
+      ["win", "win"], ["windows", "win"], ["windows键", "win"], ["窗口键", "win"], ["meta", "win"], ["gui", "win"],
+      ["shift", "shift"], ["shift键", "shift"], ["上档键", "shift"],
+      ["alt", "alt"], ["alt键", "alt"],
+      ["enter", "enter"], ["return", "enter"], ["回车", "enter"], ["回车键", "enter"],
+      ["space", "space"], ["空格", "space"],
+      ["tab", "tab"], ["制表键", "tab"],
+      ["esc", "esc"], ["escape", "esc"], ["退出键", "esc"]
+    ]);
+    const keyLabels = {
+      ctrl: "Ctrl", win: "Windows", alt: "Alt", shift: "Shift",
+      enter: "Enter", space: "Space", tab: "Tab", esc: "Esc"
+    };
+    const modifierOrder = ["ctrl", "win", "alt", "shift"];
+    const modifierKeys = new Set(modifierOrder);
+    const hardwareCommandLabels = {
+      led_on: "LED 已点亮。",
+      led_off: "LED 已关闭。",
+      beep: "蜂鸣器已测试。",
+      ring_off: "蜂鸣器已停止。"
+    };
+
+    function $(id) {
+      return document.getElementById(id);
+    }
+
+    function enhanceIcons() {
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    function setSaveStatus(text, tone = "") {
+      const node = $("saveStatus");
+      if (!node) return;
+      node.textContent = text;
+      node.className = `save-status ${tone}`.trim();
+    }
+
+    function setChecked(id, value) {
+      const node = $(id);
+      if (node) node.checked = Boolean(value);
+    }
+
+    function setValue(id, value) {
+      const node = $(id);
+      if (node) node.value = value ?? "";
+    }
+
+    function ensureSelectOption(select, value, label) {
+      const normalized = value ?? "";
+      if ([...select.options].some(option => option.value === normalized)) return;
+      const option = document.createElement("option");
+      option.value = normalized;
+      option.textContent = label || normalized;
+      select.appendChild(option);
+    }
+
+    function setSelectValue(id, value, fallbackLabel) {
+      const select = $(id);
+      if (!select) return;
+      const normalized = value || "";
+      if (normalized) ensureSelectOption(select, normalized, fallbackLabel || normalized);
+      select.value = normalized;
+    }
+
+    function showSettingsPage(pageId) {
+      for (const page of document.querySelectorAll(".settings-page")) {
+        page.hidden = page.id !== pageId;
+      }
+      for (const button of document.querySelectorAll(".settings-nav-button")) {
+        button.classList.toggle("active", button.dataset.page === pageId);
+      }
+    }
+
+    function currentSpeakerInfo() {
+      const select = $("speechSpeaker");
+      const value = select?.value || "";
+      const selected = select?.selectedOptions?.[0];
+      const selectedLabel = selected?.textContent || value || "未选择音色";
+      return {name: selectedLabel, meta: "使用当前默认音色"};
+    }
+
+    function syncVoiceControls() {
+      for (const id of ["ttsPitch", "ttsSpeechRate", "ttsLoudnessRate"]) {
+        const node = $(id);
+        const output = $(`${id}Value`);
+        if (node && output) output.textContent = node.value || "0";
+      }
+      const speaker = currentSpeakerInfo();
+      const personaName = $("voicePersonaName");
+      const personaMeta = $("voicePersonaMeta");
+      if (personaName) personaName.textContent = speaker.name;
+      if (personaMeta) personaMeta.textContent = speaker.meta;
+    }
+
+    function updateSpeechSecretState(status = {}) {
+      const input = $("speechApiKey");
+      if (!input) return;
+      const configured = status.credential_mode && status.credential_mode !== "missing";
+      input.classList.toggle("configured", Boolean(configured));
+      input.placeholder = configured ? "••••••••••••（已保存）" : "保存后写入本机 .env";
+    }
+
+    async function fetchJson(url, options = {}, timeoutMs = 30000) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(url, {...options, signal: controller.signal});
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+      } catch (error) {
+        if (error.name === "AbortError") throw new Error("请求超时，请稍后重试");
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
+      }
+    }
+
+    async function loadActionPresets() {
+      try {
+        actionPresets = await fetchJson("/api/action-presets", {}, 10000);
+      } catch {
+        actionPresets = {};
+      }
+    }
+
+    function normalizeBusinessMode(mode) {
+      return businessModeDescriptions[mode] ? mode : "doubao";
+    }
+
+    function applyBusinessModeUi(mode) {
+      const normalized = normalizeBusinessMode(mode);
+      $("business_mode").value = normalized;
+      $("modeSettingsTitle").textContent = businessModeTitles[normalized];
+      $("modeCodexBtn").classList.toggle("active", normalized === "codex");
+      $("modeDoubaoBtn").classList.toggle("active", normalized === "doubao");
+      $("modeCodexBtn").setAttribute("aria-pressed", String(normalized === "codex"));
+      $("modeDoubaoBtn").setAttribute("aria-pressed", String(normalized === "doubao"));
+      $("inputModeSettings").hidden = normalized !== "codex";
+      $("agentModeSettings").hidden = normalized !== "doubao";
+    }
+
+    async function selectBusinessMode(mode) {
+      const normalized = normalizeBusinessMode(mode);
+      applyBusinessModeUi(normalized);
+      config.business_mode = normalized;
+      try {
+        const savedConfig = await fetchJson("/api/business-mode", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({business_mode: normalized})
+        }, 10000);
+        setConfigForm(savedConfig);
+        setSaveStatus("");
+      } catch (error) {
+        setSaveStatus(`模式切换失败：${error.message}`, "warn");
+      }
+    }
+
+    function normalizeKeyToken(value) {
+      const compact = value.trim().replace(/\s+/g, "").toLowerCase();
+      if (keyAliases.has(compact)) return keyAliases.get(compact);
+      if (/^[a-z0-9]$/.test(compact)) return compact;
+      return "";
+    }
+
+    function orderedHotkey(keys) {
+      const unique = [...new Set(keys.filter(Boolean))];
+      const modifiers = modifierOrder.filter(key => unique.includes(key));
+      const normalKeys = unique.filter(key => !modifierKeys.has(key));
+      return [...modifiers, ...normalKeys].join("+");
+    }
+
+    function normalizeHotkeyText(text) {
+      const keys = String(text || "").split(/[+＋]/).map(normalizeKeyToken).filter(Boolean);
+      return orderedHotkey(keys);
+    }
+
+    function displayHotkey(value) {
+      if (!value) return "无";
+      return value.split("+").map(key => keyLabels[key] || key.toUpperCase()).join(" + ");
+    }
+
+    function setHotkeyField(id, value) {
+      const canonical = normalizeHotkeyText(value || "");
+      $(id).value = canonical;
+      $(`${id}_button`).textContent = canonical ? displayHotkey(canonical) : "无";
+    }
+
+    function parseActionTextForEditor(text) {
+      const result = {primary: "", delay: 0, follow: ""};
+      const parts = String(text || "").split(/[,，;]/).map(part => part.trim()).filter(Boolean);
+      for (const part of parts) {
+        const delayMatch = part.match(/(?:延迟|等待|delay)\s*(\d+)\s*(?:毫秒|ms)?/i);
+        if (delayMatch) {
+          result.delay = Number(delayMatch[1]);
+          continue;
+        }
+        const hotkey = normalizeHotkeyText(part);
+        if (!hotkey) continue;
+        if (!result.primary) result.primary = hotkey;
+        else if (!result.follow) result.follow = hotkey;
+      }
+      return result;
+    }
+
+    function composeActionText(prefix) {
+      const steps = [];
+      const primary = $(`${prefix}_primary_hotkey`).value;
+      const delay = Number($(`${prefix}_delay_ms`).value || 0);
+      const follow = $(`${prefix}_follow_hotkey`).value;
+      if (primary) steps.push(primary);
+      if (delay > 0) steps.push(`延迟${delay}毫秒`);
+      if (follow) steps.push(follow);
+      return steps.join(", ");
+    }
+
+    function setActionEditor(prefix, text) {
+      const action = parseActionTextForEditor(text);
+      setHotkeyField(`${prefix}_primary_hotkey`, action.primary);
+      $(`${prefix}_delay_ms`).value = String(action.delay || 0);
+      setHotkeyField(`${prefix}_follow_hotkey`, action.follow);
+      $(`${prefix}_action_text`).value = composeActionText(prefix);
+    }
+
+    function defaultInputProfile() {
+      return {
+        id: "default",
+        name: "默认输入方案",
+        press_action_text: config.press_action_text || "",
+        release_action_text: config.release_action_text || ""
+      };
+    }
+
+    function ensureInputProfiles() {
+      if (!Array.isArray(config.input_action_profiles) || config.input_action_profiles.length === 0) {
+        config.input_action_profiles = [defaultInputProfile()];
+      }
+      config.input_action_profiles = config.input_action_profiles.map((profile, index) => ({
+        id: String(profile.id || `profile-${index + 1}`),
+        name: String(profile.name || `输入方案 ${index + 1}`),
+        press_action_text: String(profile.press_action_text || ""),
+        release_action_text: String(profile.release_action_text || "")
+      }));
+      if (!config.input_action_profiles.some(profile => profile.id === config.active_input_profile_id)) {
+        config.active_input_profile_id = config.input_action_profiles[0].id;
+      }
+    }
+
+    function activeInputProfile() {
+      ensureInputProfiles();
+      return config.input_action_profiles.find(profile => profile.id === config.active_input_profile_id)
+        || config.input_action_profiles[0];
+    }
+
+    function renderInputProfiles() {
+      ensureInputProfiles();
+      const select = $("activeInputProfile");
+      select.innerHTML = "";
+      for (const profile of config.input_action_profiles) {
+        const option = document.createElement("option");
+        option.value = profile.id;
+        option.textContent = profile.name;
+        select.appendChild(option);
+      }
+      select.value = config.active_input_profile_id;
+    }
+
+    function setEditorsFromActiveProfile() {
+      const profile = activeInputProfile();
+      $("inputProfileName").value = profile.name;
+      setActionEditor("press", profile.press_action_text || "");
+      setActionEditor("release", profile.release_action_text || "");
+    }
+
+    function syncActiveInputProfile() {
+      const profile = activeInputProfile();
+      profile.name = $("inputProfileName").value.trim() || profile.name || "未命名方案";
+      profile.press_action_text = composeActionText("press");
+      profile.release_action_text = composeActionText("release");
+      config.press_action_text = profile.press_action_text;
+      config.release_action_text = profile.release_action_text;
+      $("press_action_text").value = profile.press_action_text;
+      $("release_action_text").value = profile.release_action_text;
+      renderInputProfiles();
+    }
+
+    function selectInputProfile(profileId) {
+      syncActiveInputProfile();
+      config.active_input_profile_id = profileId;
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
+    }
+
+    function addInputProfile() {
+      syncActiveInputProfile();
+      const id = `profile-${Date.now().toString(36)}`;
+      config.input_action_profiles.push({
+        id,
+        name: `输入方案 ${config.input_action_profiles.length + 1}`,
+        press_action_text: "",
+        release_action_text: ""
+      });
+      config.active_input_profile_id = id;
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
+      setSaveStatus("已新增快捷键方案，保存后生效。");
+      enhanceIcons();
+    }
+
+    function deleteInputProfile() {
+      ensureInputProfiles();
+      if (config.input_action_profiles.length <= 1) {
+        setSaveStatus("至少保留一套快捷键方案。", "warn");
+        return;
+      }
+      config.input_action_profiles = config.input_action_profiles.filter(profile => profile.id !== config.active_input_profile_id);
+      config.active_input_profile_id = config.input_action_profiles[0].id;
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
+      setSaveStatus("已删除当前快捷键方案，保存后生效。");
+    }
+
+    function addEventModifiers(event, keys) {
+      if (event.ctrlKey) keys.add("ctrl");
+      if (event.metaKey) keys.add("win");
+      if (event.altKey) keys.add("alt");
+      if (event.shiftKey) keys.add("shift");
+    }
+
+    function keyFromEvent(event) {
+      if (event.key === "Control") return "ctrl";
+      if (event.key === "Meta") return "win";
+      if (event.key === "Alt") return "alt";
+      if (event.key === "Shift") return "shift";
+      if (event.key === "Enter") return "enter";
+      if (event.key === " ") return "space";
+      if (event.key === "Tab") return "tab";
+      if (event.key === "Escape") return "esc";
+      if (/^[a-z0-9]$/i.test(event.key)) return event.key.toLowerCase();
+      return "";
+    }
+
+    function renderActiveCapture() {
+      if (!activeCapture) return;
+      const hotkey = orderedHotkey([...activeCapture.keys]);
+      $(`${activeCapture.id}_button`).textContent = hotkey ? displayHotkey(hotkey) : "按下快捷键";
+    }
+
+    function finishHotkeyCapture() {
+      if (!activeCapture) return;
+      const id = activeCapture.id;
+      const hotkey = orderedHotkey([...activeCapture.keys]);
+      setHotkeyField(id, hotkey);
+      $(`${id}_button`).classList.remove("active");
+      activeCapture = null;
+    }
+
+    function startHotkeyCapture(id) {
+      if (activeCapture) finishHotkeyCapture();
+      activeCapture = {id, keys: new Set()};
+      const button = $(`${id}_button`);
+      button.classList.add("active");
+      button.textContent = "按下快捷键";
+      button.focus();
+    }
+
+    document.addEventListener("keydown", event => {
+      if (!activeCapture) return;
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Backspace" || event.key === "Delete") {
+        activeCapture.keys.clear();
+        finishHotkeyCapture();
+        return;
+      }
+      addEventModifiers(event, activeCapture.keys);
+      const key = keyFromEvent(event);
+      if (key) activeCapture.keys.add(key);
+      renderActiveCapture();
+      if (key && !modifierKeys.has(key)) finishHotkeyCapture();
+    }, true);
+
+    document.addEventListener("keyup", event => {
+      if (!activeCapture) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const key = keyFromEvent(event);
+      if (key) activeCapture.keys.add(key);
+      renderActiveCapture();
+      const onlyModifiers = [...activeCapture.keys].every(keyName => modifierKeys.has(keyName));
+      if (onlyModifiers && !event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) {
+        finishHotkeyCapture();
+      }
+    }, true);
+
+    function setConfigForm(nextConfig) {
+      config = {...nextConfig};
+      ensureInputProfiles();
+      applyBusinessModeUi(config.business_mode || "doubao");
+      setChecked("enableCallback", config.enable_callback !== false);
+      setChecked("enableTts", config.enable_tts_playback !== false);
+      setChecked("enableVoiceAsr", config.enable_voice_asr !== false && config.voice_auto_transcribe !== false);
+      setValue("ttsSpeechRate", config.tts_speech_rate ?? 0);
+      setValue("ttsLoudnessRate", config.tts_loudness_rate ?? 0);
+      setValue("ttsPitch", config.tts_pitch ?? 0);
+      setValue("voiceSampleRate", config.voice_record_sample_rate ?? 16000);
+      setSelectValue("voiceRecordDevice", config.voice_record_device || "");
+      setSelectValue("audioOutputDevice", config.audio_output_device || "");
+      setValue("agentPermissionProfile", config.agent_permission_profile || "commander");
+      setValue("voiceReplyPolicy", config.voice_reply_policy || "direct");
+      renderInputProfiles();
+      setEditorsFromActiveProfile();
+      updateCallbackEndpoint();
+      syncVoiceControls();
+    }
+
+    function getConfigForm() {
+      syncActiveInputProfile();
+      const next = {...config};
+      next.business_mode = $("business_mode").value || "doubao";
+      next.enable_actions = true;
+      next.enable_callback = $("enableCallback").checked;
+      next.enable_tts_playback = $("enableTts").checked;
+      next.enable_voice_asr = $("enableVoiceAsr").checked;
+      next.voice_auto_transcribe = $("enableVoiceAsr").checked;
+      next.voice_reply_policy = $("voiceReplyPolicy").value || "direct";
+      next.agent_permission_profile = $("agentPermissionProfile").value || "commander";
+      next.tts_speech_rate = Number($("ttsSpeechRate").value || 0);
+      next.tts_loudness_rate = Number($("ttsLoudnessRate").value || 0);
+      next.tts_pitch = Number($("ttsPitch").value || 0);
+      next.voice_record_sample_rate = Number($("voiceSampleRate").value || 16000);
+      next.voice_record_device = $("voiceRecordDevice").value;
+      next.audio_output_device = $("audioOutputDevice").value;
+      next.input_action_profiles = config.input_action_profiles;
+      next.active_input_profile_id = config.active_input_profile_id;
+      next.press_action_text = config.press_action_text;
+      next.release_action_text = config.release_action_text;
+      return next;
+    }
+
+    async function loadConfig() {
+      setConfigForm(await fetchJson("/api/config"));
+    }
+
+    async function refreshSpeechStatus() {
+      try {
+        const status = await fetchJson("/api/speech/status", {}, 10000);
+        if (status.tts_speaker) {
+          lastSpeechSpeaker = status.tts_speaker;
+          setSelectValue("speechSpeaker", status.tts_speaker, status.tts_speaker);
+        }
+        setValue("ttsResourceId", status.tts_resource_id || "seed-tts-2.0");
+        setValue("ttsModel", status.tts_model || "seed-tts-2.0-standard");
+        setSelectValue("ttsFormat", status.tts_format || "wav");
+        setSelectValue("ttsSampleRate", String(status.tts_sample_rate || 24000));
+        setSelectValue("ttsExplicitLanguage", status.tts_explicit_language || "");
+        setValue("ttsExplicitDialect", status.tts_explicit_dialect || "");
+        setChecked("ttsDisableMarkdownFilter", status.tts_disable_markdown_filter !== false);
+        setChecked("ttsDisableEmojiFilter", status.tts_disable_emoji_filter !== false);
+        const readyParts = [];
+        if (status.tts_ready) readyParts.push("TTS");
+        if (status.asr_ready) readyParts.push("ASR");
+        $("speechState").textContent = readyParts.length ? `${readyParts.join(" / ")} 可用` : "未就绪";
+        updateSpeechDebugStatus(status);
+        updateSpeechSecretState(status);
+        await refreshSpeechSpeakers(false);
+        syncVoiceControls();
+      } catch (error) {
+        $("speechState").textContent = `语音状态刷新失败：${error.message}`;
+        updateDebugTile("debugSpeechState", "读取失败");
+      }
+    }
+
+    async function refreshSpeechSpeakers(showResult = true) {
+      const resourceId = $("ttsResourceId")?.value?.trim() || "";
+      const currentSpeaker = $("speechSpeaker")?.value || lastSpeechSpeaker;
+      try {
+        const result = await fetchJson(`/api/speech/speakers?resource_id=${encodeURIComponent(resourceId)}`, {}, 20000);
+        const select = $("speechSpeaker");
+        if (!select) return;
+        select.innerHTML = "";
+        const speakers = Array.isArray(result.speakers) ? result.speakers : [];
+        for (const speaker of speakers) {
+          const option = document.createElement("option");
+          option.value = speaker.id || "";
+          option.textContent = speaker.name && speaker.name !== speaker.id ? `${speaker.name} (${speaker.id})` : speaker.id;
+          option.dataset.model = speaker.model || resourceId;
+          select.appendChild(option);
+        }
+        if (currentSpeaker) setSelectValue("speechSpeaker", currentSpeaker, currentSpeaker);
+        if (!select.value && speakers[0]?.id) select.value = speakers[0].id;
+        syncVoiceControls();
+        if (showResult) {
+          setSaveStatus(result.ok ? "音色列表已刷新。" : `音色列表刷新失败，已保留当前默认音色：${result.error || "未知错误"}`, result.ok ? "ok" : "warn");
+        }
+      } catch (error) {
+        if (currentSpeaker) setSelectValue("speechSpeaker", currentSpeaker, currentSpeaker);
+        syncVoiceControls();
+        if (showResult) setSaveStatus(`音色列表刷新失败：${error.message}`, "warn");
+      }
+    }
+
+    function updateCallbackEndpoint() {
+      const endpoint = `${window.location.origin}/hook`;
+      const node = $("callbackEndpoint");
+      if (node) node.value = endpoint;
+    }
+
+    function updateDebugTile(id, text) {
+      const node = $(id);
+      if (node) node.textContent = text || "--";
+    }
+
+    function debugTime() {
+      return new Date().toLocaleTimeString("zh-CN", {hour12: false});
+    }
+
+    function renderDebugLog() {
+      const node = $("debugLog");
+      if (!node) return;
+      node.textContent = debugLogs.map(entry => {
+        const text = entry.text.match(/^\d{2}:\d{2}:\d{2}/) ? entry.text : `${entry.time} ${entry.text}`;
+        return `[${entry.source}] ${text}`;
+      }).join("\n") || "等待调试事件...";
+      node.scrollTop = node.scrollHeight;
+    }
+
+    function appendDebugLog(source, text, options = {}) {
+      const clean = String(text || "").trim();
+      if (!clean) return;
+      if (options.reset) debugLogs = [];
+      const last = debugLogs[debugLogs.length - 1];
+      if (last && last.source === source && last.text === clean) return;
+      debugLogs.push({source, text: clean, time: debugTime()});
+      while (debugLogs.length > 220) debugLogs.shift();
+      renderDebugLog();
+    }
+
+    function setDebugLogsFromSnapshot(payload = {}) {
+      const rows = [];
+      const pushRows = (source, list) => {
+        for (const line of list || []) {
+          const clean = String(line || "").trim();
+          if (clean) rows.push({source, text: clean, time: debugTime()});
+        }
+      };
+      pushRows("状态", payload.state_logs);
+      pushRows("操作", payload.action_logs);
+      if (!rows.length) return;
+      debugLogs = rows.slice(-180);
+      renderDebugLog();
+    }
+
+    function summarizeModelResult(result) {
+      if (!result) return "--";
+      if (result.success) {
+        const text = String(result.text || result.transcript || "").trim();
+        return text ? `已识别：${text.slice(0, 36)}` : "已识别空文本";
+      }
+      return `失败：${String(result.error || "未知错误").slice(0, 36)}`;
+    }
+
+    function updateVoiceDebugStatus(payload = {}) {
+      latestVoiceStatus = {...latestVoiceStatus, ...payload};
+      let state = "空闲";
+      if (latestVoiceStatus.voice_enabled === false) {
+        state = "ASR 关闭";
+      } else if (latestVoiceStatus.recorder_ready === false) {
+        state = "录音模块缺失";
+      } else if (latestVoiceStatus.recorder_dependency_ready === false) {
+        state = "缺少 sounddevice";
+      } else if (latestVoiceStatus.recording) {
+        const seconds = Math.round(Number(latestVoiceStatus.recording_duration_seconds || 0));
+        state = `录音中 ${seconds}s`;
+      } else if (latestVoiceStatus.processing) {
+        state = "识别中";
+      }
+      updateDebugTile("debugVoiceState", state);
+      if (latestVoiceStatus.last_error) {
+        updateDebugTile("debugModelState", `错误：${String(latestVoiceStatus.last_error).slice(0, 36)}`);
+      } else {
+        updateDebugTile("debugModelState", summarizeModelResult(latestVoiceStatus.last_result));
+      }
+    }
+
+    function updateSpeechDebugStatus(payload = {}) {
+      latestSpeechStatus = {...latestSpeechStatus, ...payload};
+      const parts = [];
+      if (latestSpeechStatus.asr_ready) parts.push("ASR");
+      if (latestSpeechStatus.tts_ready) parts.push("TTS");
+      updateDebugTile("debugSpeechState", parts.length ? `${parts.join(" / ")} 可用` : "未就绪");
+    }
+
+    function updateReplyDebugStatus(payload = {}) {
+      latestReplyStatus = {...latestReplyStatus, ...payload};
+      const queueSize = Number(latestReplyStatus.queue_size || 0);
+      if (latestReplyStatus.playback_active) {
+        updateDebugTile("debugPlaybackState", "播报中");
+      } else if (queueSize > 0) {
+        updateDebugTile("debugPlaybackState", `${queueSize} 条等待`);
+      } else {
+        updateDebugTile("debugPlaybackState", "空闲");
+      }
+    }
+
+    function updateHardwareDebugStatus(payload = {}) {
+      latestHardwareStatus = {...latestHardwareStatus, ...payload};
+      const sample = payload.current_sample || payload.sample || latestHardwareStatus.current_sample || {};
+      let state = "未监听";
+      if (payload.real_device_connected || sample.sample_source === "device" || latestHardwareStatus.udp_device) {
+        state = "设备在线";
+      } else if (latestHardwareStatus.simulation_enabled) {
+        state = "模拟模式";
+      } else if (latestHardwareStatus.udp_listening) {
+        state = "等待设备";
+      }
+      const hook = hardwareHookLabel(sample);
+      if (hook !== "--") state = `${state} · ${hook}`;
+      updateDebugTile("debugDeviceState", state);
+    }
+
+    function clearDebugLog() {
+      debugLogs = [];
+      renderDebugLog();
+    }
+
+    async function refreshDebugStatus() {
+      appendDebugLog("请求", "刷新调试状态");
+      try {
+        const [hardware, voice, replies, speech] = await Promise.all([
+          fetchJson("/api/hardware/status", {}, 10000),
+          fetchJson("/api/voice/status", {}, 10000),
+          fetchJson("/api/replies", {}, 10000),
+          fetchJson("/api/speech/status", {}, 10000)
+        ]);
+        updateHardwareDebugStatus(hardware);
+        if (hardware.current_sample) updateHardwareSample(hardware.current_sample);
+        updateVoiceDebugStatus(voice);
+        updateReplyStatus(replies);
+        updateSpeechDebugStatus(speech);
+        appendDebugLog("状态", "调试状态刷新完成");
+      } catch (error) {
+        appendDebugLog("错误", `调试状态刷新失败：${error.message}`);
+      }
+    }
+
+    function updateReplyStatus(status = {}) {
+      const queueSize = Number(status.queue_size || 0);
+      const active = status.playback_active ? "，正在播报" : "";
+      $("replyQueueState").textContent = `${queueSize} 条等待${active}`;
+      updateReplyDebugStatus(status);
+    }
+
+    async function refreshReplyStatus() {
+      try {
+        updateReplyStatus(await fetchJson("/api/replies", {}, 10000));
+      } catch {
+        $("replyQueueState").textContent = "无法读取";
+      }
+    }
+
+    async function clearReplyQueue() {
+      try {
+        const result = await fetchJson("/api/replies/clear", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "settings"})
+        }, 10000);
+        updateReplyStatus(result);
+        setSaveStatus("回话队列已清空。", "ok");
+      } catch (error) {
+        setSaveStatus(`清空队列失败：${error.message}`, "warn");
+      }
+    }
+
+    async function copyCallbackEndpoint() {
+      updateCallbackEndpoint();
+      const endpoint = $("callbackEndpoint").value;
+      try {
+        await navigator.clipboard.writeText(endpoint);
+        setSaveStatus("回话入口地址已复制。", "ok");
+      } catch {
+        setSaveStatus("无法自动复制，请手动选择回话入口地址。", "warn");
+      }
+    }
+
+    async function saveSpeechConfigIfNeeded() {
+      const apiKey = $("speechApiKey")?.value?.trim() || "";
+      const speaker = $("speechSpeaker").value.trim();
+      if (!speaker && !apiKey) return;
+      const payload = {
+        tts_resource_id: $("ttsResourceId").value.trim(),
+        tts_model: $("ttsModel").value.trim(),
+        tts_format: $("ttsFormat").value,
+        tts_sample_rate: $("ttsSampleRate").value,
+        tts_explicit_language: $("ttsExplicitLanguage").value,
+        tts_explicit_dialect: $("ttsExplicitDialect").value.trim(),
+        tts_disable_markdown_filter: $("ttsDisableMarkdownFilter").checked,
+        tts_disable_emoji_filter: $("ttsDisableEmojiFilter").checked
+      };
+      if (speaker) payload.tts_speaker = speaker;
+      if (apiKey) payload.api_key = apiKey;
+      const result = await fetchJson("/api/speech/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      }, 10000);
+      if (!result.ok) throw new Error(result.error || "语音配置保存失败");
+      lastSpeechSpeaker = result.tts_speaker || speaker;
+      if (apiKey) $("speechApiKey").value = "";
+    }
+
+    async function saveConfig() {
+      setSaveStatus("正在保存配置...");
+      try {
+        const savedConfig = await fetchJson("/api/config", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(getConfigForm())
+        }, 30000);
+        await saveSpeechConfigIfNeeded();
+        setConfigForm(savedConfig);
+        await refreshSpeechStatus();
+        await refreshReplyStatus();
+        setSaveStatus("设置已保存。", "ok");
+      } catch (error) {
+        setSaveStatus(`保存失败：${error.message}`, "warn");
+      }
+    }
+
+    async function restoreSettings() {
+      try {
+        await loadConfig();
+        await refreshSpeechStatus();
+        setSaveStatus("已还原未保存的更改。");
+      } catch (error) {
+        setSaveStatus(`还原失败：${error.message}`, "warn");
+      }
+    }
+
+    async function postAiHook() {
+      setSaveStatus("正在发起测试通话...");
+      appendDebugLog("请求", "POST /api/ai/hook");
+      try {
+        const result = await fetchJson("/api/ai/hook", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({source: "settings", text: "测试通话"})
+        }, 10000);
+        await refreshReplyStatus();
+        setSaveStatus(result.ok ? "测试通话已发送。" : "测试通话发送失败。", result.ok ? "ok" : "warn");
+        appendDebugLog(result.ok ? "状态" : "错误", result.ok ? "测试通话已发送。" : "测试通话发送失败。");
+      } catch (error) {
+        setSaveStatus(`测试通话失败：${error.message}`, "warn");
+        appendDebugLog("错误", `测试通话失败：${error.message}`);
+      }
+    }
+
+    async function postAgentVoiceTest() {
+      setSaveStatus("正在启动 Agent 语音测试...");
+      appendDebugLog("请求", "POST /api/agent/start");
+      try {
+        const result = await fetchJson("/api/agent/start", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "调试页测试"})
+        }, 10000);
+        const errorText = result.error === "phone is on-hook" ? "电话状态不是抬起" : (result.error || "未知原因");
+        updateVoiceDebugStatus(result.ok ? result : {recording: false, processing: false, last_error: errorText});
+        appendDebugLog(result.ok ? "状态" : "错误", result.ok ? "Agent 语音测试已启动。" : `Agent 语音测试未启动：${errorText}`);
+        setSaveStatus(result.ok ? "Agent 语音测试已启动。" : `Agent 语音测试未启动：${errorText}`, result.ok ? "ok" : "warn");
+      } catch (error) {
+        setSaveStatus(`Agent 语音测试失败：${error.message}`, "warn");
+        appendDebugLog("错误", `Agent 语音测试失败：${error.message}`);
+      }
+    }
+
+    async function postVoiceStop() {
+      setSaveStatus("正在停止录音...");
+      appendDebugLog("请求", "POST /api/voice/stop");
+      try {
+        const result = await fetchJson("/api/voice/stop", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "调试页手动停止", reply_behavior: "direct"})
+        }, 30000);
+        updateVoiceDebugStatus(result.ok
+          ? (result.transcript ? {recording: false, processing: false, last_result: result.transcript, last_error: null} : {recording: false, processing: false, last_error: null})
+          : {recording: false, processing: false, last_error: result.error || "停止录音失败"});
+        appendDebugLog(result.ok ? "状态" : "错误", result.ok ? "录音已停止并提交。" : `停止录音失败：${result.error || "未知原因"}`);
+        setSaveStatus(result.ok ? "录音已停止并提交。" : `停止录音失败：${result.error || "未知原因"}`, result.ok ? "ok" : "warn");
+        await refreshReplyStatus();
+      } catch (error) {
+        setSaveStatus(`停止录音失败：${error.message}`, "warn");
+        appendDebugLog("错误", `停止录音失败：${error.message}`);
+      }
+    }
+
+    async function clearAiAlert() {
+      try {
+        const result = await fetchJson("/api/alert/clear", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "settings"})
+        }, 10000);
+        setSaveStatus(result.ok ? "提醒已停止。" : "停止提醒失败。", result.ok ? "ok" : "warn");
+      } catch (error) {
+        setSaveStatus(`停止提醒失败：${error.message}`, "warn");
+      }
+    }
+
+    function hardwareHookLabel(sample = {}) {
+      if (sample.hook_label) return sample.hook_label;
+      if (sample.python_state === "PRESSED") return "按下";
+      if (sample.python_state === "RELEASED") return "抬起";
+      return "--";
+    }
+
+    function updateHardwareSample(sample = {}) {
+      const source = sample.sample_source === "simulation" ? "模拟" : "设备";
+      const digital = sample.digital ?? "--";
+      const adc = sample.adc_synthetic ? `${digital === "LOW" ? 0 : 1} / 数字` : (sample.adc ?? "--");
+      const hint = sample.ms !== undefined ? `${source}上报，GPIO${sample.pin ?? "--"}` : "等待设备上报";
+      if ($("hardwareHookState")) $("hardwareHookState").textContent = hardwareHookLabel(sample);
+      if ($("hardwareDigitalState")) $("hardwareDigitalState").textContent = digital;
+      if ($("hardwareAdcState")) $("hardwareAdcState").textContent = adc;
+      if ($("hardwareLedState")) $("hardwareLedState").textContent = sample.led || "--";
+      if ($("hardwareBuzzerState")) $("hardwareBuzzerState").textContent = sample.buzzer || "--";
+      if ($("hardwarePulseHint")) $("hardwarePulseHint").textContent = hint;
+      updateHardwareDebugStatus({current_sample: sample, real_device_connected: sample.sample_source === "device"});
+      if (sample.digital || sample.digital_value !== undefined) {
+        hardwareSamples.push(sample);
+        while (hardwareSamples.length > 180) hardwareSamples.shift();
+      }
+      drawHardwarePulseChart();
+    }
+
+    function updateHardwareSnapshot(payload = {}) {
+      if (Array.isArray(payload.samples)) {
+        hardwareSamples = payload.samples.slice(-180);
+      }
+      if (payload.current_sample) updateHardwareSample(payload.current_sample);
+      else drawHardwarePulseChart();
+      updateHardwareDebugStatus(payload);
+      updateVoiceDebugStatus(payload);
+      updateReplyStatus(payload);
+      setDebugLogsFromSnapshot(payload);
+    }
+
+    function drawHardwarePulseChart() {
+      const canvas = $("hardwarePulseChart");
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      const dpr = Math.max(window.devicePixelRatio || 1, 1);
+      const rect = canvas.getBoundingClientRect();
+      const width = Math.max(260, Math.floor(rect.width || 800));
+      const height = 150;
+      const pixelWidth = Math.floor(width * dpr);
+      const pixelHeight = Math.floor(height * dpr);
+      if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+        canvas.width = pixelWidth;
+        canvas.height = pixelHeight;
+      }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, width, height);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(0, 0, width, height);
+
+      ctx.strokeStyle = "#eeeeee";
+      ctx.lineWidth = 1;
+      for (const y of [32, height - 32]) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = "#6c6c6c";
+      ctx.font = "11px Microsoft YaHei, Segoe UI, sans-serif";
+      ctx.fillText("HIGH", 10, 23);
+      ctx.fillText("LOW", 10, height - 12);
+
+      if (hardwareSamples.length < 2) {
+        ctx.fillStyle = "#8a8a8a";
+        ctx.fillText("等待脉冲数据", Math.max(10, width / 2 - 42), height / 2 + 4);
+        return;
+      }
+
+      const yFor = sample => (sample.digital === "LOW" || sample.digital_value === 0) ? height - 32 : 32;
+      ctx.strokeStyle = "#c9251d";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      hardwareSamples.forEach((sample, index) => {
+        const x = hardwareSamples.length === 1 ? 0 : (width * index) / (hardwareSamples.length - 1);
+        const y = yFor(sample);
+        if (index === 0) {
+          ctx.moveTo(x, y);
+          return;
+        }
+        const previousX = (width * (index - 1)) / (hardwareSamples.length - 1);
+        const previousY = yFor(hardwareSamples[index - 1]);
+        ctx.lineTo(x, previousY);
+        ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+    }
+
+    function connectHardwareEvents() {
+      if (!window.EventSource) {
+        if ($("hardwarePulseHint")) $("hardwarePulseHint").textContent = "当前浏览器不支持实时上报";
+        return;
+      }
+      if (hardwareEvents) hardwareEvents.close();
+      hardwareEvents = new EventSource("/events");
+      hardwareEvents.onerror = () => {
+        if ($("hardwarePulseHint")) $("hardwarePulseHint").textContent = "正在等待设备上报";
+      };
+      hardwareEvents.onmessage = event => {
+        const payload = JSON.parse(event.data);
+        if (payload.type === "snapshot") {
+          updateHardwareSnapshot(payload);
+        } else if (payload.type === "sample") {
+          updateHardwareSample(payload.sample || {});
+        } else if (payload.type === "action_log") {
+          appendDebugLog("操作", payload.text);
+        } else if (payload.type === "state_log") {
+          appendDebugLog("状态", payload.text);
+        } else if (payload.type === "reply_status") {
+          updateReplyStatus(payload);
+        } else if (payload.type === "voice_status") {
+          updateVoiceDebugStatus(payload);
+        } else if (payload.type === "udp_status" || payload.type === "serial_status" || payload.type === "simulation_status") {
+          updateHardwareDebugStatus(payload);
+        } else if (payload.type === "config") {
+          setConfigForm(payload.config);
+        }
+      };
+    }
+
+    async function postHardwareCommand(command) {
+      appendDebugLog("请求", `POST /api/hardware/${command}`);
+      try {
+        const result = await fetchJson(`/api/hardware/${command}`, {method: "POST"}, 10000);
+        const label = hardwareCommandLabels[command] || `硬件命令已发送：${command}`;
+        setSaveStatus(result.ok ? label : `硬件命令发送失败：${command}`, result.ok ? "ok" : "warn");
+        appendDebugLog(result.ok ? "状态" : "错误", result.ok ? label : `硬件命令发送失败：${command}`);
+      } catch (error) {
+        setSaveStatus(`硬件命令失败：${error.message}`, "warn");
+        appendDebugLog("错误", `硬件命令失败：${error.message}`);
+      }
+    }
+
+    async function postSimulationState(state) {
+      const route = state === "PRESSED" ? "/api/simulate/press" : "/api/simulate/release";
+      appendDebugLog("请求", `POST ${route}`);
+      try {
+        const result = await fetchJson(route, {method: "POST"}, 10000);
+        setSaveStatus(result.ok ? `已测试${state === "PRESSED" ? "按下" : "抬起"}动作。` : "测试动作未发送。", result.ok ? "ok" : "warn");
+        appendDebugLog(result.ok ? "状态" : "错误", result.ok ? `已测试${state === "PRESSED" ? "按下" : "抬起"}动作。` : "测试动作未发送。");
+      } catch (error) {
+        setSaveStatus(`测试动作失败：${error.message}`, "warn");
+        appendDebugLog("错误", `测试动作失败：${error.message}`);
+      }
+    }
+
+    function toggleCalibration() {
+      const panel = $("calibrationPanel");
+      panel.hidden = !panel.hidden;
+    }
+
+    function toggleShortcutManager() {
+      const panel = $("shortcutManagerPanel");
+      panel.hidden = !panel.hidden;
+      enhanceIcons();
+    }
+
+    function openSimulator() {
+      window.location.href = "/simulator";
+    }
+
+    function applyPreset(name) {
+      const preset = actionPresets[name];
+      if (!preset) return;
+      setActionEditor("press", preset.press_action_text);
+      setActionEditor("release", preset.release_action_text);
+      syncActiveInputProfile();
+    }
+
+    function bindFormEvents() {
+      for (const id of ["press_delay_ms", "release_delay_ms", "inputProfileName"]) {
+        const node = $(id);
+        if (node) node.addEventListener("input", () => syncActiveInputProfile());
+      }
+      for (const id of ["ttsPitch", "ttsSpeechRate", "ttsLoudnessRate"]) {
+        const node = $(id);
+        if (node) node.addEventListener("input", syncVoiceControls);
+      }
+      $("speechSpeaker")?.addEventListener("change", syncVoiceControls);
+      $("ttsResourceId")?.addEventListener("change", () => refreshSpeechSpeakers(false));
+      for (const id of ["press_primary_hotkey_button", "press_follow_hotkey_button", "release_primary_hotkey_button", "release_follow_hotkey_button"]) {
+        const node = $(id);
+        if (node) node.addEventListener("blur", () => window.setTimeout(finishHotkeyCapture, 80));
+      }
+      window.addEventListener("resize", () => {
+        window.clearTimeout(hardwareResizeTimer);
+        hardwareResizeTimer = window.setTimeout(drawHardwarePulseChart, 80);
+      });
+      window.addEventListener("beforeunload", () => {
+        if (hardwareEvents) hardwareEvents.close();
+      });
+    }
+
+    async function init() {
+      enhanceIcons();
+      bindFormEvents();
+      await loadActionPresets();
+      await loadConfig();
+      await refreshSpeechStatus();
+      await refreshReplyStatus();
+      await refreshDebugStatus();
+      connectHardwareEvents();
+      drawHardwarePulseChart();
+      enhanceIcons();
+    }
+
+    Object.assign(window, {
+      saveConfig,
+      restoreSettings,
+      selectBusinessMode,
+      selectInputProfile,
+      addInputProfile,
+      deleteInputProfile,
+      startHotkeyCapture,
+      postAiHook,
+      postAgentVoiceTest,
+      postVoiceStop,
+      clearAiAlert,
+      postHardwareCommand,
+      postSimulationState,
+      toggleCalibration,
+      toggleShortcutManager,
+      openSimulator,
+      applyPreset,
+      clearReplyQueue,
+      copyCallbackEndpoint,
+      showSettingsPage,
+      refreshDebugStatus,
+      clearDebugLog,
+      refreshSpeechSpeakers
+    });
+
+    init().catch(error => setSaveStatus(`初始化失败：${error.message}`, "warn"));
+  </script>
+</body>
+</html>
+"""
+
+
 class ConsoleHandler(BaseHTTPRequestHandler):
     app: AppState
 
@@ -3699,10 +6421,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self.send_json(action_presets())
         elif route == "/api/simulation":
             self.send_json(self.app.simulation_status())
+        elif route == "/api/hardware/status":
+            self.send_json(self.app.hardware_status())
         elif route == "/api/replies":
             self.send_json(self.app.reply_status())
         elif route == "/api/speech/status":
             self.send_json(self.app.speech_status())
+        elif route == "/api/speech/speakers":
+            query = parse_qs(urlparse(self.path).query)
+            resource_id = str((query.get("resource_id") or [""])[0])
+            self.send_json(self.app.speech_speakers(resource_id))
         elif route == "/api/voice/status":
             self.send_json(self.app.voice_status())
         elif route == "/events":
@@ -3768,11 +6496,29 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             data = self.read_json()
             values: dict[str, str] = {}
             api_key = str(data.get("api_key") or data.get("VOLCENGINE_API_KEY") or "").strip()
-            speaker = str(data.get("tts_speaker") or data.get("DOUBAO_TTS_SPEAKER") or "").strip()
             if api_key:
                 values["VOLCENGINE_API_KEY"] = api_key
-            if speaker:
-                values["DOUBAO_TTS_SPEAKER"] = speaker
+            env_mapping = {
+                "tts_speaker": "DOUBAO_TTS_SPEAKER",
+                "tts_resource_id": "DOUBAO_TTS_RESOURCE_ID",
+                "tts_model": "DOUBAO_TTS_MODEL",
+                "tts_format": "DOUBAO_TTS_FORMAT",
+                "tts_sample_rate": "DOUBAO_TTS_SAMPLE_RATE",
+                "tts_explicit_language": "DOUBAO_TTS_EXPLICIT_LANGUAGE",
+                "tts_explicit_dialect": "DOUBAO_TTS_EXPLICIT_DIALECT",
+                "tts_disable_markdown_filter": "DOUBAO_TTS_DISABLE_MARKDOWN_FILTER",
+                "tts_disable_emoji_filter": "DOUBAO_TTS_DISABLE_EMOJI_FILTER",
+            }
+            for source_key, env_key in env_mapping.items():
+                if source_key not in data:
+                    continue
+                value = data.get(source_key)
+                if isinstance(value, bool):
+                    values[env_key] = "true" if value else "false"
+                else:
+                    text = str(value or "").strip()
+                    if text:
+                        values[env_key] = text
             if not values:
                 self.send_json({"ok": False, "error": "no speech configuration values were provided"})
                 return
@@ -3781,10 +6527,15 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             data = self.read_json()
             reason = str(data.get("reason", "web"))
             self.send_json(self.app.start_voice_recording(reason))
+        elif route == "/api/agent/start":
+            data = self.read_json()
+            reason = str(data.get("reason", "web"))
+            self.send_json(self.app.start_agent_voice_session(reason))
         elif route == "/api/voice/stop":
             data = self.read_json()
             reason = str(data.get("reason", "web"))
-            self.send_json(self.app.stop_voice_recording(reason))
+            reply_behavior = str(data.get("reply_behavior", "legacy"))
+            self.send_json(self.app.stop_voice_recording(reason, reply_behavior=reply_behavior))
         elif route == "/api/alert/clear":
             data = self.read_json()
             reason = str(data.get("reason", "manual"))

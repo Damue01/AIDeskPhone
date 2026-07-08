@@ -4,6 +4,8 @@ import asyncio
 import base64
 from dataclasses import dataclass
 import gzip
+import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -29,6 +31,14 @@ SPEECH_ENV_KEYS = {
     "VOLCENGINE_ACCESS_TOKEN",
     "VOLCENGINE_SECRET_KEY",
     "DOUBAO_TTS_SPEAKER",
+    "DOUBAO_TTS_RESOURCE_ID",
+    "DOUBAO_TTS_MODEL",
+    "DOUBAO_TTS_FORMAT",
+    "DOUBAO_TTS_SAMPLE_RATE",
+    "DOUBAO_TTS_EXPLICIT_LANGUAGE",
+    "DOUBAO_TTS_EXPLICIT_DIALECT",
+    "DOUBAO_TTS_DISABLE_MARKDOWN_FILTER",
+    "DOUBAO_TTS_DISABLE_EMOJI_FILTER",
 }
 
 
@@ -104,9 +114,14 @@ class SpeechConfig:
     tts_enabled: bool
     tts_endpoint: str
     tts_resource_id: str
+    tts_model: str
     tts_speaker: str
     tts_format: str
     tts_sample_rate: int
+    tts_explicit_language: str
+    tts_explicit_dialect: str
+    tts_disable_markdown_filter: bool
+    tts_disable_emoji_filter: bool
     asr_enabled: bool
     asr_endpoint: str
     asr_resource_id: str
@@ -127,9 +142,14 @@ class SpeechConfig:
             tts_enabled=env_bool("DOUBAO_TTS_ENABLED", True),
             tts_endpoint=os.getenv("DOUBAO_TTS_ENDPOINT", DEFAULT_TTS_ENDPOINT),
             tts_resource_id=os.getenv("DOUBAO_TTS_RESOURCE_ID", DEFAULT_TTS_RESOURCE_ID),
+            tts_model=os.getenv("DOUBAO_TTS_MODEL", "seed-tts-2.0-standard"),
             tts_speaker=os.getenv("DOUBAO_TTS_SPEAKER", DEFAULT_TTS_SPEAKER),
             tts_format=os.getenv("DOUBAO_TTS_FORMAT", "wav"),
             tts_sample_rate=env_int("DOUBAO_TTS_SAMPLE_RATE", 24000),
+            tts_explicit_language=os.getenv("DOUBAO_TTS_EXPLICIT_LANGUAGE", ""),
+            tts_explicit_dialect=os.getenv("DOUBAO_TTS_EXPLICIT_DIALECT", ""),
+            tts_disable_markdown_filter=env_bool("DOUBAO_TTS_DISABLE_MARKDOWN_FILTER", True),
+            tts_disable_emoji_filter=env_bool("DOUBAO_TTS_DISABLE_EMOJI_FILTER", True),
             asr_enabled=env_bool("DOUBAO_ASR_ENABLED", True),
             asr_endpoint=os.getenv("DOUBAO_ASR_ENDPOINT", DEFAULT_ASR_ENDPOINT),
             asr_resource_id=os.getenv("DOUBAO_ASR_RESOURCE_ID", DEFAULT_ASR_RESOURCE_ID),
@@ -177,12 +197,12 @@ class VolcengineSpeech:
         text: str,
         output_path: Path,
         *,
-        speed_ratio: float = 1.0,
-        volume_ratio: float = 1.0,
-        pitch_ratio: float = 1.0,
+        speech_rate: int = 0,
+        loudness_rate: int = 0,
+        pitch: int = 0,
     ) -> Path:
         if not self.is_tts_ready():
-            raise VolcengineSpeechError("Doubao TTS is not configured. Fill VOLCENGINE_APP_KEY and VOLCENGINE_ACCESS_KEY in .env.")
+            raise VolcengineSpeechError("Doubao TTS is not configured. Fill VOLCENGINE_API_KEY in .env.")
 
         try:
             import requests
@@ -197,29 +217,33 @@ class VolcengineSpeech:
             "X-Api-Request-Id": request_id,
         }
         headers.update(auth_headers(self.config))
-        speech_rate = ratio_to_rate(speed_ratio)
-        loudness_rate = ratio_to_rate(volume_ratio)
-        pitch_rate = ratio_to_rate(pitch_ratio)
+        additions: dict[str, Any] = {
+            "disable_markdown_filter": self.config.tts_disable_markdown_filter,
+            "disable_emoji_filter": self.config.tts_disable_emoji_filter,
+        }
+        if self.config.tts_explicit_language:
+            additions["explicit_language"] = self.config.tts_explicit_language
+        if self.config.tts_explicit_dialect:
+            additions["explicit_dialect"] = self.config.tts_explicit_dialect
+
+        req_params: dict[str, Any] = {
+            "text": text,
+            "speaker": self.config.tts_speaker,
+            "audio_params": {
+                "format": self.config.tts_format,
+                "sample_rate": self.config.tts_sample_rate,
+                "speech_rate": max(-50, min(100, int(speech_rate))),
+                "loudness_rate": max(-50, min(100, int(loudness_rate))),
+            },
+            "additions": json.dumps(additions, ensure_ascii=False),
+            "post_process": {"pitch": max(-12, min(12, int(pitch)))},
+        }
+        if self.config.tts_model:
+            req_params["model"] = self.config.tts_model
+
         payload = {
             "user": {"uid": "ai-desk-phone"},
-            "req_params": {
-                "text": text,
-                "speaker": self.config.tts_speaker,
-                "audio_params": {
-                    "format": self.config.tts_format,
-                    "sample_rate": self.config.tts_sample_rate,
-                    "speech_rate": speech_rate,
-                    "loudness_rate": loudness_rate,
-                    "pitch_rate": pitch_rate,
-                },
-                "additions": json.dumps(
-                    {
-                        "disable_markdown_filter": True,
-                        "disable_emoji_filter": True,
-                    },
-                    ensure_ascii=False,
-                ),
-            },
+            "req_params": req_params,
         }
 
         response = requests.post(
@@ -264,13 +288,42 @@ class VolcengineSpeech:
                 chunks.append(chunk)
         return b"".join(chunks)
 
+    def list_speakers(self, resource_ids: list[str] | None = None, voice_types: list[str] | None = None) -> dict[str, Any]:
+        if not self.config.app_key or not self.config.access_key:
+            return {
+                "ok": False,
+                "error": "音色列表刷新需要火山 OpenAPI 访问密钥，已保留当前默认音色。",
+                "speakers": [],
+            }
+
+        try:
+            import requests
+        except ImportError as exc:
+            raise VolcengineSpeechError("requests is not installed. Run pip install -r requirements.txt.") from exc
+
+        body: dict[str, Any] = {
+            "ResourceIDs": [resource_id for resource_id in (resource_ids or [self.config.tts_resource_id]) if resource_id],
+        }
+        if voice_types:
+            body["VoiceTypes"] = voice_types
+        response = signed_openapi_request(
+            self.config,
+            action="ListSpeakers",
+            version="2025-05-20",
+            body=body,
+            region=os.getenv("VOLCENGINE_REGION", "cn-beijing"),
+            service="speech_saas_prod",
+        )
+        speakers = normalize_speaker_list(response)
+        return {"ok": True, "speakers": speakers, "raw_count": len(speakers)}
+
     def transcribe_wav(self, wav_path: Path) -> dict[str, Any]:
         pcm, sample_rate = read_wav_mono_pcm(wav_path)
         return self.transcribe_pcm(pcm, sample_rate)
 
     def transcribe_pcm(self, pcm_bytes: bytes, sample_rate: int = 16000) -> dict[str, Any]:
         if not self.is_asr_ready():
-            return {"success": False, "error": "Doubao ASR is not configured. Fill VOLCENGINE_APP_KEY and VOLCENGINE_ACCESS_KEY in .env."}
+            return {"success": False, "error": "Doubao ASR is not configured. Fill VOLCENGINE_API_KEY in .env."}
         return asyncio.run(self._transcribe_pcm_async(pcm_bytes, sample_rate))
 
     async def _transcribe_pcm_async(self, pcm_bytes: bytes, sample_rate: int) -> dict[str, Any]:
@@ -328,6 +381,136 @@ class VolcengineSpeech:
             "raw_text": latest_text,
             "inference_latency": time.time() - started,
         }
+
+
+def signed_openapi_request(
+    config: SpeechConfig,
+    *,
+    action: str,
+    version: str,
+    body: dict[str, Any],
+    region: str,
+    service: str,
+) -> dict[str, Any]:
+    try:
+        import requests
+    except ImportError as exc:
+        raise VolcengineSpeechError("requests is not installed. Run pip install -r requirements.txt.") from exc
+
+    host = "open.volcengineapi.com"
+    method = "POST"
+    canonical_uri = "/"
+    canonical_querystring = f"Action={action}&Version={version}"
+    body_bytes = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    payload_hash = hashlib.sha256(body_bytes).hexdigest()
+    now = time.gmtime()
+    x_date = time.strftime("%Y%m%dT%H%M%SZ", now)
+    short_date = time.strftime("%Y%m%d", now)
+    signed_headers = "host;x-content-sha256;x-date"
+    canonical_headers = f"host:{host}\nx-content-sha256:{payload_hash}\nx-date:{x_date}\n"
+    canonical_request = "\n".join(
+        [method, canonical_uri, canonical_querystring, canonical_headers, signed_headers, payload_hash]
+    )
+    credential_scope = f"{short_date}/{region}/{service}/request"
+    string_to_sign = "\n".join(
+        ["HMAC-SHA256", x_date, credential_scope, hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()]
+    )
+    signing_key = volcengine_signing_key(config.access_key, short_date, region, service)
+    signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+    authorization = (
+        f"HMAC-SHA256 Credential={config.app_key}/{credential_scope}, "
+        f"SignedHeaders={signed_headers}, Signature={signature}"
+    )
+    url = f"https://{host}/?{canonical_querystring}"
+    response = requests.post(
+        url,
+        headers={
+            "Authorization": authorization,
+            "Content-Type": "application/json",
+            "Host": host,
+            "X-Content-Sha256": payload_hash,
+            "X-Date": x_date,
+        },
+        data=body_bytes,
+        timeout=20,
+    )
+    try:
+        payload = response.json()
+    except ValueError as exc:
+        raise VolcengineSpeechError(f"Volcengine OpenAPI returned non-JSON HTTP {response.status_code}.") from exc
+    if response.status_code >= 400:
+        raise VolcengineSpeechError(f"Volcengine OpenAPI HTTP {response.status_code}: {payload}")
+    metadata = payload.get("ResponseMetadata") if isinstance(payload, dict) else None
+    error = metadata.get("Error") if isinstance(metadata, dict) else None
+    if error:
+        message = error.get("Message") or error.get("Code") or str(error)
+        raise VolcengineSpeechError(f"Volcengine OpenAPI error: {message}")
+    return payload
+
+
+def volcengine_signing_key(secret_key: str, date: str, region: str, service: str) -> bytes:
+    key = secret_key.encode("utf-8")
+    for value in [date, region, service, "request"]:
+        key = hmac.new(key, value.encode("utf-8"), hashlib.sha256).digest()
+    return key
+
+
+def normalize_speaker_list(payload: dict[str, Any]) -> list[dict[str, str]]:
+    seen: set[str] = set()
+    speakers: list[dict[str, str]] = []
+    for raw in walk_dicts(payload):
+        speaker_id = first_text(
+            raw,
+            "SpeakerID",
+            "SpeakerId",
+            "speaker_id",
+            "speaker",
+            "VoiceType",
+            "voice_type",
+            "VoiceID",
+            "VoiceId",
+            "voice_id",
+        )
+        if not speaker_id or speaker_id in seen:
+            continue
+        name = first_text(raw, "Name", "SpeakerName", "VoiceName", "DisplayName", "Alias", "Title") or speaker_id
+        model = first_text(raw, "ResourceID", "ResourceId", "resource_id", "Model", "ModelName", "model")
+        language = first_text(raw, "Language", "language", "Lang", "lang")
+        voice_type = first_text(raw, "VoiceType", "voice_type", "Type", "type")
+        speakers.append(
+            {
+                "id": speaker_id,
+                "name": name,
+                "model": model,
+                "language": language,
+                "type": voice_type,
+            }
+        )
+        seen.add(speaker_id)
+    return speakers
+
+
+def walk_dicts(value: Any) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    if isinstance(value, dict):
+        results.append(value)
+        for child in value.values():
+            results.extend(walk_dicts(child))
+    elif isinstance(value, list):
+        for item in value:
+            results.extend(walk_dicts(item))
+    return results
+
+
+def first_text(raw: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
 
 
 def ratio_to_rate(ratio: float) -> int:
