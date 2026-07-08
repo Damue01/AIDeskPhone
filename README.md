@@ -13,6 +13,7 @@ ESP32-C3 负责读取摘挂机开关、通过 Wi-Fi 发送轻量状态数据，�
 - [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md)
 - [硬件参考资料](docs/electronics/README.md)
 - [Codex 接线员 hook 配置](docs/CODEX_OPERATOR_HOOK.md)
+- [2026-07-08 工作区更新汇总](docs/WORKSPACE_UPDATE_2026-07-08.md)
 
 旧电话信号和早期 BLE HID 方案保留在 `legacy/phone-signal` 分支。
 
@@ -47,6 +48,9 @@ ESP32-C3 不负责承载网页。它只发送状态数据，并执行蜂鸣器�
   - `POST http://127.0.0.1:8765/hook`
 - 接线员模式提醒逻辑：任务完成后蜂鸣器和 LED 同步 `1 秒响/亮 -> 4 秒停/灭` 循环；摘机后停止。
 - 约 90 秒无人接听后，普通响铃停止并切换为忙音节奏。
+- 回话队列：hook 文本或手动回话会进入队列，摘机后播放；播放中挂机会立即停止。
+- 豆包 / 火山引擎语音链路：支持 TTS 2.0 回话播放、BigASR 文件识别、摘机录音和本地模拟页调试。
+- 服务通信中枢地球页：`web/variant-earth-command-center/index.html` 已融合 Three.js 地球和 MapLibre 卫星地图，支持城市级缩放探索。
 
 ## 当前硬件默认引脚
 
@@ -133,7 +137,7 @@ $env:PYTHONIOENCODING='utf-8'
 ## 验证
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile tools\ai_desk_phone_console.py
+.\.venv\Scripts\python.exe -m py_compile tools\ai_desk_phone_console.py tools\audio_recorder.py tools\volcengine_speech.py
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test
 ```
 
@@ -143,12 +147,16 @@ $env:PYTHONIOENCODING='utf-8'
 README.md
 docs/HG113_PRODUCT_PLAN.md
 docs/HG113_CONNECTION_MANUAL.md
+docs/WORKSPACE_UPDATE_2026-07-08.md
 docs/electronics/
 firmware/esp32c3_gpio0_21_test/
 firmware/esp32c3_wifi_minimal_test/
 firmware/esp32c3_wifi_pioarduino_test/
 tools/ai_desk_phone_console.py
+tools/audio_recorder.py
+tools/volcengine_speech.py
 config/ai_desk_phone_console.json
+web/variant-earth-command-center/
 ```
 
 ## 许可证

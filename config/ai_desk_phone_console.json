@@ -1,5 +1,5 @@
 {
-  "business_mode": "codex",
+  "business_mode": "doubao",
   "hook_scheme": "scheme1",
   "adc_low_means_pressed": true,
   "press_threshold": 80,
@@ -17,5 +17,16 @@
   "sample_interval_ms": 50,
   "press_action_text": "ctrl+win+shift, 延迟1000毫秒, enter",
   "release_action_text": "ctrl+win+shift",
-  "enable_actions": true
+  "enable_actions": true,
+  "enable_callback": true,
+  "enable_tts_playback": true,
+  "tts_rate": 0,
+  "tts_volume": 100,
+  "audio_output_device": "default",
+  "enable_voice_asr": true,
+  "voice_record_sample_rate": 16000,
+  "voice_record_device": "",
+  "voice_auto_transcribe": true,
+  "voice_reply_policy": "callback",
+  "agent_permission_profile": "commander"
 }

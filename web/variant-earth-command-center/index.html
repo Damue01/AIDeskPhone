@@ -5,10 +5,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
   <title>服务通信中枢</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.css">
   <style>
     :root {
       color-scheme: dark;
-      --bg: #06110f;
+      --bg: #020403;
       --ink: #f7f3e8;
       --muted: rgba(247, 243, 232, 0.66);
       --dim: rgba(247, 243, 232, 0.22);
@@ -22,8 +23,13 @@
       --surface: rgba(8, 24, 22, 0.78);
       --black-72: rgba(6, 17, 15, 0.72);
       --black-86: rgba(6, 17, 15, 0.86);
+      --glass: linear-gradient(145deg, rgba(255, 255, 255, 0.15), rgba(255, 255, 255, 0.055));
+      --glass-strong: linear-gradient(145deg, rgba(255, 255, 255, 0.22), rgba(255, 255, 255, 0.08));
+      --glass-stroke: rgba(255, 255, 255, 0.2);
+      --glass-shadow: 0 26px 72px rgba(0, 0, 0, 0.34);
+      --ui: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
       --mono: "JetBrains Mono", "Courier New", monospace;
-      --display: Inter, Arial Black, Impact, system-ui, sans-serif;
+      --display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
     }
 
     body[data-palette="blue"] {
@@ -77,7 +83,7 @@
       overflow: hidden;
       background: var(--bg);
       color: var(--ink);
-      font-family: var(--mono);
+      font-family: var(--ui);
       letter-spacing: 0;
     }
 
@@ -94,12 +100,34 @@
       position: fixed;
       inset: 0;
       overflow: hidden;
-      background:
-        linear-gradient(rgba(125, 246, 227, 0.07) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(125, 246, 227, 0.055) 1px, transparent 1px),
-        linear-gradient(180deg, #081815 0%, #020706 100%);
-      background-size: 40px 40px, 40px 40px, auto;
+      background: #020403;
       isolation: isolate;
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .stage::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      z-index: 6;
+      opacity: 0;
+      pointer-events: none;
+      background:
+        radial-gradient(circle at 42% 48%, rgba(247, 243, 232, 0.02), transparent 18%),
+        radial-gradient(circle at 42% 48%, transparent 0 28%, rgba(2, 4, 3, 0.58) 68%, rgba(2, 4, 3, 0.96) 100%);
+      backdrop-filter: blur(0) saturate(1);
+      -webkit-backdrop-filter: blur(0) saturate(1);
+      transition: opacity 420ms ease, backdrop-filter 420ms ease, -webkit-backdrop-filter 420ms ease;
+    }
+
+    .stage[data-dragging="true"] {
+      cursor: grabbing;
+    }
+
+    .stage[data-mode="map"] {
+      cursor: default;
+      touch-action: auto;
     }
 
     .stage::after {
@@ -117,6 +145,8 @@
     }
 
     #globe-canvas,
+    #map,
+    #map-label-layer,
     #text-canvas {
       position: absolute;
       inset: 0;
@@ -125,10 +155,224 @@
       display: block;
     }
 
+    #map {
+      z-index: 0;
+      opacity: 1;
+      visibility: visible;
+      background: #020403;
+      transform: scale(1.018);
+      transform-origin: center;
+      transition: opacity 820ms ease, visibility 820ms ease, filter 820ms ease, transform 820ms ease;
+    }
+
+    body[data-view-mode="globe"] #map {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .stage[data-mode="map"] #map {
+      opacity: 1;
+      visibility: visible;
+      filter: saturate(0.78) contrast(0.92) brightness(0.86);
+      transform: scale(1);
+    }
+
+    #map.is-visible {
+      opacity: 1;
+      visibility: visible;
+      filter: saturate(0.78) contrast(0.92) brightness(0.86);
+      transform: scale(1);
+    }
+
+    body[data-handoff="map"] .stage[data-mode="map"] #map {
+      opacity: 0.82;
+      filter: saturate(0.72) contrast(0.88) brightness(0.78);
+    }
+
+    body[data-handoff="map"] #map.is-visible {
+      opacity: 0.82;
+      filter: saturate(0.72) contrast(0.88) brightness(0.78);
+    }
+
+    .maplibregl-canvas {
+      outline: 0;
+    }
+
+    .maplibregl-ctrl-bottom-left,
+    .maplibregl-ctrl-bottom-right {
+      display: none;
+    }
+
+    .maplibregl-ctrl-top-right {
+      top: 94px;
+      right: 16px;
+    }
+
+    .maplibregl-ctrl-group {
+      overflow: hidden;
+      border: 1px solid var(--glass-stroke);
+      border-radius: 20px;
+      background: var(--glass);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.16);
+      backdrop-filter: blur(24px) saturate(1.32);
+      -webkit-backdrop-filter: blur(24px) saturate(1.32);
+    }
+
+    .maplibregl-ctrl button {
+      width: 36px;
+      height: 36px;
+      border: 0;
+      filter: invert(1) opacity(0.86);
+    }
+
+    .maplibregl-ctrl-group button + button {
+      border-top: 0;
+    }
+
+    .maplibregl-ctrl button:not(:disabled):hover {
+      background: rgba(255, 255, 255, 0.16);
+    }
+
+    #map-label-layer {
+      z-index: 3;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity 520ms ease, visibility 520ms ease;
+    }
+
+    body[data-view-mode="map"] #map-label-layer {
+      opacity: 1;
+      visibility: visible;
+    }
+
+    .map-city-label {
+      position: absolute;
+      display: grid;
+      gap: 3px;
+      min-width: 78px;
+      padding: 7px 9px 7px 10px;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      border-radius: 12px;
+      background: linear-gradient(145deg, rgba(8, 12, 11, 0.62), rgba(8, 12, 11, 0.28));
+      color: rgba(247, 243, 232, 0.92);
+      box-shadow: 0 14px 38px rgba(0, 0, 0, 0.32), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+      backdrop-filter: blur(18px) saturate(1.25);
+      -webkit-backdrop-filter: blur(18px) saturate(1.25);
+      transform: translate(-50%, -100%);
+      text-shadow: 0 2px 12px rgba(0, 0, 0, 0.72);
+    }
+
+    .map-city-label::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      bottom: -5px;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: rgba(247, 243, 232, 0.9);
+      box-shadow: 0 0 0 5px rgba(247, 243, 232, 0.08), 0 0 18px rgba(125, 246, 227, 0.34);
+      transform: translateX(-50%);
+    }
+
+    .map-city-label strong {
+      font-size: 13px;
+      line-height: 1;
+      font-weight: 760;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+
+    .map-city-label span {
+      color: rgba(247, 243, 232, 0.58);
+      font-size: 10px;
+      line-height: 1;
+      font-weight: 560;
+      white-space: nowrap;
+    }
+
+    .map-city-label.is-focus {
+      border-color: rgba(125, 246, 227, 0.38);
+      background: linear-gradient(145deg, rgba(26, 52, 46, 0.72), rgba(8, 12, 11, 0.34));
+    }
+
+    .map-city-label.is-floating {
+      left: 18px;
+      top: 112px;
+      min-width: 112px;
+      transform: none;
+    }
+
+    .map-city-label.is-floating::after {
+      display: none;
+    }
+
     #text-canvas {
       pointer-events: none;
       z-index: 2;
       mix-blend-mode: screen;
+    }
+
+    #globe-canvas,
+    #text-canvas,
+    .topbar,
+    .right-stack,
+    .bottom-ticker,
+    .mobile-dock {
+      transition: opacity 420ms ease, filter 420ms ease, transform 420ms ease;
+    }
+
+    body[data-handoff="map"] .stage::before {
+      opacity: 1;
+      backdrop-filter: blur(10px) saturate(1.05);
+      -webkit-backdrop-filter: blur(10px) saturate(1.05);
+    }
+
+    body[data-handoff="map"] #globe-canvas,
+    body[data-handoff="map"] #text-canvas {
+      opacity: 0.82;
+      filter: blur(0) saturate(0.92);
+      transform: scale(1.065);
+    }
+
+    body[data-view-mode="map"] #globe-canvas,
+    body[data-view-mode="map"] #text-canvas {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    body[data-view-mode="map"][data-handoff="map"] #globe-canvas {
+      opacity: 0.36;
+      visibility: visible;
+      filter: blur(2px) saturate(0.82) brightness(0.72);
+      transform: scale(1.095);
+    }
+
+    body[data-view-mode="map"][data-handoff="map"] #text-canvas {
+      opacity: 0.18;
+      visibility: visible;
+      filter: blur(1px);
+      transform: scale(1.08);
+    }
+
+    body[data-view-mode="map"] .right-stack {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+
+    body[data-handoff="map"] .topbar,
+    body[data-handoff="map"] .right-stack,
+    body[data-handoff="map"] .bottom-ticker,
+    body[data-handoff="map"] .mobile-dock {
+      opacity: 0;
+      filter: blur(6px);
+      transform: translateY(8px);
+    }
+
+    .stage[data-handoff="map"] {
+      cursor: progress;
     }
 
     .scanline {
@@ -218,196 +462,6 @@
       font-weight: 900;
     }
 
-    .left-panel {
-      position: absolute;
-      z-index: 7;
-      left: 16px;
-      top: 140px;
-      width: 260px;
-      border: 0;
-      background: transparent;
-      pointer-events: auto;
-      backdrop-filter: none;
-    }
-
-    .view-toggle {
-      height: 32px;
-      padding: 0 10px;
-      border: 0;
-      border-left: 2px solid var(--cyan-line);
-      border-radius: 0;
-      background: rgba(6, 17, 15, 0.42);
-      color: var(--muted);
-      cursor: pointer;
-      font-size: 11px;
-      font-weight: 900;
-      text-transform: none;
-      box-shadow: none;
-      backdrop-filter: blur(10px);
-    }
-
-    .view-toggle:hover,
-    .left-panel.open .view-toggle {
-      background: rgba(6, 17, 15, 0.68);
-      color: var(--ink);
-    }
-
-    .panel-head {
-      display: none;
-      grid-template-columns: 1fr auto;
-      align-items: center;
-      gap: 8px;
-      margin-top: 8px;
-      min-height: 42px;
-      padding: 0 12px;
-      border: 1px solid var(--cyan-line);
-      border-bottom: 0;
-      background: var(--black-86);
-      color: var(--ink);
-      font-size: 12px;
-      font-weight: 900;
-      text-transform: none;
-    }
-
-    .panel-body {
-      display: none;
-      gap: 13px;
-      padding: 13px 12px 14px;
-      border: 1px solid var(--cyan-line);
-      background: var(--surface);
-      box-shadow: 0 18px 52px rgba(0, 0, 0, 0.34);
-      backdrop-filter: blur(14px);
-    }
-
-    .left-panel.open .panel-head,
-    .left-panel.open .panel-body {
-      display: grid;
-    }
-
-    .control {
-      display: grid;
-      gap: 6px;
-    }
-
-    .control-row {
-      display: flex;
-      align-items: baseline;
-      justify-content: space-between;
-      gap: 10px;
-      font-size: 11px;
-      font-weight: 900;
-      text-transform: none;
-      color: var(--muted);
-    }
-
-    .control-row output {
-      color: var(--ink);
-      font-variant-numeric: tabular-nums;
-    }
-
-    input[type="range"] {
-      width: 100%;
-      height: 16px;
-      margin: 0;
-      accent-color: var(--cyan);
-      cursor: pointer;
-    }
-
-    .palette-row {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .earth-tone-row {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-
-    .palette-button,
-    .tone-button {
-      height: 32px;
-      border: 1px solid var(--dim);
-      border-radius: 0;
-      background: rgba(255, 255, 255, 0.045);
-      color: var(--ink);
-      cursor: pointer;
-      font-size: 10px;
-      font-weight: 900;
-    }
-
-    .palette-button[aria-pressed="true"],
-    .tone-button[aria-pressed="true"] {
-      border-color: var(--cyan);
-      color: #06110f;
-      background: var(--cyan);
-    }
-
-    .button-grid {
-      display: grid;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      gap: 8px;
-    }
-
-    .cmd-button {
-      height: 38px;
-      border: 2px solid var(--dim);
-      border-radius: 0;
-      background: rgba(255, 255, 255, 0.055);
-      color: var(--ink);
-      cursor: pointer;
-      font-size: 11px;
-      font-weight: 900;
-      text-transform: none;
-    }
-
-    .cmd-button:hover,
-    .cmd-button[aria-pressed="true"] {
-      border-color: var(--cyan);
-      background: var(--cyan);
-      color: #06110f;
-    }
-
-    .telemetry-strip {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      border-top: 1px solid var(--dim);
-      border-bottom: 1px solid var(--dim);
-    }
-
-    .telemetry-cell {
-      min-width: 0;
-      padding: 9px 6px;
-      border-right: 1px solid var(--dim);
-    }
-
-    .telemetry-cell:last-child {
-      border-right: 0;
-    }
-
-    .telemetry-label {
-      color: var(--muted);
-      font-size: 9px;
-      font-weight: 900;
-      text-transform: none;
-    }
-
-    .telemetry-value {
-      margin-top: 3px;
-      color: var(--ink);
-      font-size: 15px;
-      font-weight: 900;
-      font-variant-numeric: tabular-nums;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .panel-body .control.advanced-control,
-    .button-grid,
-    .telemetry-strip {
-      display: none;
-    }
-
     .right-stack {
       position: absolute;
       z-index: 7;
@@ -416,8 +470,8 @@
       bottom: 80px;
       width: clamp(250px, 22vw, 352px);
       display: grid;
-      grid-template-rows: 1fr 1fr 0.95fr;
-      gap: 8px;
+      grid-template-rows: repeat(3, minmax(104px, 1fr));
+      gap: 10px;
       border: 0;
       pointer-events: auto;
     }
@@ -429,34 +483,30 @@
       flex-direction: column;
       justify-content: flex-end;
       min-height: 0;
-      padding: 16px;
-      border: 2px solid rgba(125, 246, 227, 0.36);
-      background: rgba(241, 237, 223, 0.94);
-      color: #06110f;
-      backdrop-filter: blur(14px);
+      padding: 18px;
+      border: 1px solid var(--glass-stroke);
+      border-radius: 28px;
+      background: var(--glass);
+      color: rgba(247, 243, 232, 0.94);
+      box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.18), inset 0 -1px 0 rgba(255, 255, 255, 0.055);
+      backdrop-filter: blur(28px) saturate(1.35);
+      -webkit-backdrop-filter: blur(28px) saturate(1.35);
     }
 
     .status-block:nth-child(2) {
-      background: rgba(18, 48, 44, 0.86);
-      color: var(--ink);
+      background: linear-gradient(145deg, rgba(125, 246, 227, 0.16), rgba(255, 255, 255, 0.055));
     }
 
     .status-block:last-child {
-      border-bottom: 0;
-      background: rgba(241, 237, 223, 0.94);
-      border-bottom: 2px solid rgba(125, 246, 227, 0.36);
-      color: #06110f;
+      background: linear-gradient(145deg, rgba(247, 243, 232, 0.18), rgba(255, 255, 255, 0.055));
     }
 
     .status-block::before {
       content: "";
       position: absolute;
       inset: 0;
-      background:
-        linear-gradient(rgba(0, 0, 0, 0.1) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(0, 0, 0, 0.1) 1px, transparent 1px);
-      background-size: 24px 24px;
-      opacity: 0.22;
+      background: radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.18), transparent 34%);
+      opacity: 0.8;
       pointer-events: none;
     }
 
@@ -465,8 +515,9 @@
       z-index: 1;
       margin-bottom: 7px;
       font-size: 12px;
-      font-weight: 900;
+      font-weight: 700;
       text-transform: none;
+      color: rgba(247, 243, 232, 0.72);
     }
 
     .status-huge {
@@ -475,15 +526,16 @@
       font-family: var(--display);
       font-size: clamp(48px, 7vw, 92px);
       line-height: 0.82;
-      font-weight: 900;
+      font-weight: 850;
       text-transform: none;
       letter-spacing: 0;
       overflow-wrap: anywhere;
+      text-shadow: 0 14px 38px rgba(0, 0, 0, 0.38);
     }
 
     #sector-word {
-      font-size: clamp(34px, 4vw, 54px);
-      line-height: 1.02;
+      font-size: clamp(30px, 3.15vw, 46px);
+      line-height: 0.96;
     }
 
     .status-value {
@@ -491,8 +543,9 @@
       z-index: 1;
       font-size: 19px;
       line-height: 1.25;
-      font-weight: 900;
+      font-weight: 720;
       text-transform: none;
+      color: rgba(247, 243, 232, 0.88);
     }
 
     .bottom-ticker {
@@ -505,14 +558,14 @@
       display: flex;
       align-items: center;
       overflow: hidden;
-      border-top: 2px solid rgba(247, 243, 232, 0.82);
-      border-bottom: 3px solid #b9201f;
-      border-left: 0;
-      border-right: 0;
-      background: linear-gradient(180deg, #10181a 0%, #050708 100%);
+      border: 1px solid var(--glass-stroke);
+      border-radius: 26px;
+      background: var(--glass);
       color: #f7f3e8;
       pointer-events: auto;
-      box-shadow: 0 -18px 42px rgba(0, 0, 0, 0.42);
+      box-shadow: 0 -18px 50px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+      backdrop-filter: blur(28px) saturate(1.35);
+      -webkit-backdrop-filter: blur(28px) saturate(1.35);
     }
 
     .bottom-ticker::before {
@@ -520,9 +573,8 @@
       position: absolute;
       inset: 0;
       z-index: 0;
-      background:
-        linear-gradient(180deg, rgba(255, 255, 255, 0.08), transparent 42%),
-        linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.055) 52%, transparent 100%);
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.12), transparent 42%);
+      opacity: 0.65;
       pointer-events: none;
     }
 
@@ -530,28 +582,32 @@
       position: relative;
       z-index: 1;
       align-self: stretch;
-      display: grid;
-      place-items: center;
-      width: 176px;
-      flex: 0 0 176px;
-      background: linear-gradient(180deg, #e04a42 0%, #b9201f 100%);
-      color: #fff7e6;
-      border-right: 2px solid rgba(247, 243, 232, 0.8);
-      font-size: 13px;
-      font-weight: 900;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: 138px;
+      flex: 0 0 138px;
+      margin-left: 7px;
+      padding: 0 15px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.1);
+      color: rgba(247, 243, 232, 0.92);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0;
       text-transform: none;
-      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.35);
+      text-shadow: 0 8px 22px rgba(0, 0, 0, 0.56);
     }
 
-    .ticker-label::after {
+    .ticker-label::before {
       content: "";
-      position: absolute;
-      right: -14px;
-      top: 0;
-      bottom: 0;
-      width: 14px;
-      background: linear-gradient(135deg, #b9201f 0%, #b9201f 50%, transparent 51%);
-      pointer-events: none;
+      width: 7px;
+      height: 7px;
+      flex: 0 0 7px;
+      border-radius: 50%;
+      background: rgba(247, 243, 232, 0.88);
+      box-shadow: 0 0 0 5px rgba(247, 243, 232, 0.08), 0 0 18px rgba(125, 246, 227, 0.45);
+      animation: tickerPulse 1.9s ease-in-out infinite;
     }
 
     .ticker-window {
@@ -564,8 +620,8 @@
       display: flex;
       align-items: center;
       white-space: nowrap;
-      background: linear-gradient(180deg, #111719 0%, #07090a 100%);
-      border-left: 12px solid transparent;
+      background: transparent;
+      border-left: 8px solid transparent;
     }
 
     .ticker-window::before,
@@ -581,28 +637,42 @@
 
     .ticker-window::before {
       left: 0;
-      background: linear-gradient(90deg, #111719 0%, transparent 100%);
+      background: linear-gradient(90deg, rgba(8, 16, 15, 0.92) 0%, transparent 100%);
     }
 
     .ticker-window::after {
       right: 0;
-      background: linear-gradient(270deg, #07090a 0%, transparent 100%);
+      background: linear-gradient(270deg, rgba(8, 16, 15, 0.92) 0%, transparent 100%);
     }
 
     .ticker-track {
       display: inline-block;
-      padding-left: 24px;
-      font-size: 14px;
-      font-weight: 900;
+      padding-left: 18px;
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: 0;
       text-transform: none;
-      animation: ticker 26s linear infinite;
-      color: #f7f3e8;
-      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.75);
+      animation: ticker 42s linear infinite;
+      color: rgba(247, 243, 232, 0.76);
+      text-shadow: 0 8px 24px rgba(0, 0, 0, 0.68);
     }
 
     @keyframes ticker {
       from { transform: translateX(0); }
       to { transform: translateX(-50%); }
+    }
+
+    @keyframes tickerPulse {
+      0%,
+      100% {
+        transform: scale(0.86);
+        opacity: 0.72;
+      }
+
+      50% {
+        transform: scale(1);
+        opacity: 1;
+      }
     }
 
     .mobile-dock {
@@ -614,9 +684,6 @@
         width: 270px;
       }
 
-      .left-panel {
-        width: 256px;
-      }
     }
 
     @media (max-width: 860px) {
@@ -626,18 +693,6 @@
 
       .clock-block {
         display: none;
-      }
-
-      .left-panel {
-        top: auto;
-        left: 12px;
-        right: 12px;
-        bottom: 70px;
-        width: auto;
-      }
-
-      .panel-body {
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
       }
 
       .right-stack {
@@ -669,39 +724,59 @@
         bottom: 70px;
         width: min(366px, calc(100vw - 24px));
         max-width: min(366px, calc(100vw - 24px));
-        display: none;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        border: 2px solid var(--cyan-line);
-        background: var(--surface);
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+        padding: 8px;
+        border: 1px solid var(--glass-stroke);
+        border-radius: 24px;
+        background: var(--glass);
+        box-shadow: var(--glass-shadow), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+        backdrop-filter: blur(28px) saturate(1.35);
+        -webkit-backdrop-filter: blur(28px) saturate(1.35);
         pointer-events: auto;
-        overflow: hidden;
       }
 
       .mobile-dock button {
         min-width: 0;
         width: 100%;
-        height: 40px;
+        height: 38px;
         padding: 0 4px;
-        border: 0;
-        border-right: 1px solid var(--cyan-line);
-        border-radius: 0;
-        background: transparent;
-        color: var(--ink);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(247, 243, 232, 0.86);
         font-size: 11px;
-        font-weight: 900;
+        font-weight: 700;
         text-transform: none;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
       }
 
-      .mobile-dock button:last-child {
-        border-right: 0;
+      .mobile-dock a {
+        min-width: 0;
+        width: 100%;
+        height: 38px;
+        display: grid;
+        place-items: center;
+        padding: 0 4px;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        color: rgba(247, 243, 232, 0.86);
+        font-size: 11px;
+        font-weight: 700;
+        text-decoration: none;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
 
       .mobile-dock button[aria-pressed="true"] {
-        background: var(--cyan);
-        color: #06110f;
+        border-color: rgba(125, 246, 227, 0.34);
+        background: rgba(125, 246, 227, 0.2);
+        color: rgba(247, 243, 232, 0.98);
       }
     }
 
@@ -715,6 +790,8 @@
 </head>
 <body data-palette="teal">
   <main class="stage" id="stage" aria-label="服务通信中枢">
+    <div id="map" aria-label="真实地图"></div>
+    <div id="map-label-layer" aria-hidden="true"></div>
     <canvas id="globe-canvas"></canvas>
     <canvas id="text-canvas"></canvas>
 
@@ -730,93 +807,6 @@
         <div class="clock-time" id="clock">00:00:00</div>
       </section>
     </header>
-
-    <aside class="left-panel" id="view-panel" aria-label="地球视图控制">
-      <button class="view-toggle" id="view-toggle" type="button" aria-expanded="false">调整</button>
-      <div class="panel-head">
-        <span>界面调整</span>
-        <span>颜色</span>
-      </div>
-      <div class="panel-body">
-        <div class="control">
-          <div class="control-row">
-            <span>界面颜色</span>
-            <output id="palette-value">青绿</output>
-          </div>
-          <div class="palette-row" aria-label="界面颜色">
-            <button class="palette-button" type="button" data-palette="teal" aria-pressed="true">青绿</button>
-            <button class="palette-button" type="button" data-palette="blue" aria-pressed="false">冷蓝</button>
-            <button class="palette-button" type="button" data-palette="amber" aria-pressed="false">琥珀</button>
-            <button class="palette-button" type="button" data-palette="red" aria-pressed="false">暗红</button>
-          </div>
-        </div>
-
-        <div class="control">
-          <div class="control-row">
-            <span>地球色彩</span>
-            <output id="earth-tone-value">原色</output>
-          </div>
-          <div class="palette-row earth-tone-row" aria-label="地球色彩">
-            <button class="tone-button" type="button" data-earth-tone="natural" aria-pressed="true">原色</button>
-            <button class="tone-button" type="button" data-earth-tone="theme" aria-pressed="false">跟随主题</button>
-          </div>
-        </div>
-
-        <div class="control">
-          <div class="control-row">
-            <label for="globe-scale">地球尺寸</label>
-            <output id="globe-scale-value">1.00</output>
-          </div>
-          <input id="globe-scale" type="range" min="0.92" max="1.14" step="0.01" value="1">
-        </div>
-
-        <div class="control advanced-control">
-          <div class="control-row">
-            <label for="speed">地球转速</label>
-            <output id="speed-value">1.00</output>
-          </div>
-          <input id="speed" type="range" min="0" max="2.5" step="0.01" value="1">
-        </div>
-
-        <div class="control advanced-control">
-          <div class="control-row">
-            <label for="density">字符行距</label>
-            <output id="density-value">14</output>
-          </div>
-          <input id="density" type="range" min="8" max="18" step="1" value="14">
-        </div>
-
-        <div class="control advanced-control">
-          <div class="control-row">
-            <label for="alpha">字符亮度</label>
-            <output id="alpha-value">0.74</output>
-          </div>
-          <input id="alpha" type="range" min="0.25" max="1" step="0.01" value="0.74">
-        </div>
-
-        <div class="button-grid">
-          <button class="cmd-button" id="pause" type="button" aria-pressed="false">暂停</button>
-          <button class="cmd-button" id="ring" type="button" aria-pressed="false">轨道环</button>
-          <button class="cmd-button" id="wire" type="button" aria-pressed="false">经纬网</button>
-          <button class="cmd-button" id="reset" type="button">复位</button>
-        </div>
-
-        <div class="telemetry-strip" aria-label="运行遥测">
-          <div class="telemetry-cell">
-            <div class="telemetry-label">帧率</div>
-            <div class="telemetry-value" id="fps">--</div>
-          </div>
-          <div class="telemetry-cell">
-            <div class="telemetry-label">旋转</div>
-            <div class="telemetry-value" id="rot">0.00</div>
-          </div>
-          <div class="telemetry-cell">
-            <div class="telemetry-label">遮罩</div>
-            <div class="telemetry-value" id="mask-state">就绪</div>
-          </div>
-        </div>
-      </div>
-    </aside>
 
     <section class="right-stack" aria-label="服务状态面板">
       <article class="status-block">
@@ -836,7 +826,8 @@
 
     <nav class="mobile-dock" aria-label="移动端控制">
       <button id="m-pause" type="button" aria-pressed="false">暂停</button>
-      <button id="m-ring" type="button" aria-pressed="false">轨道环</button>
+      <button id="m-data" type="button" aria-pressed="false">云图</button>
+      <button id="m-map" type="button" aria-pressed="false">地图</button>
       <button id="m-reset" type="button">复位</button>
     </nav>
 
@@ -844,17 +835,20 @@
       <div class="ticker-label">实时播报</div>
       <div class="ticker-window">
         <div class="ticker-track">
-          AI 接线员服务在线 / 命令链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
-          AI 接线员服务在线 / 命令链路稳定 / GPIO21 蜂鸣器待命 / GPIO20 指示灯待命 / 任务队列 3 条 / 最近一次握手 12 秒前 / 通信中心进入日间值守模式 /
+          AI 接线员在线  /  命令链路稳定  /  地图下钻待命  /  GPIO21 蜂鸣器待命  /  GPIO20 指示灯待命  /  任务队列 3 条  /  最近握手 12 秒前  /
+          AI 接线员在线  /  命令链路稳定  /  地图下钻待命  /  GPIO21 蜂鸣器待命  /  GPIO20 指示灯待命  /  任务队列 3 条  /  最近握手 12 秒前  /
         </div>
       </div>
     </footer>
   </main>
 
+  <script src="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.js"></script>
   <script type="module">
     import * as THREE from "./vendor/three.module.js";
 
     const stage = document.getElementById("stage");
+    const mapNode = document.getElementById("map");
+    const mapLabelLayer = document.getElementById("map-label-layer");
     const globeCanvas = document.getElementById("globe-canvas");
     const textCanvas = document.getElementById("text-canvas");
     const ctx = textCanvas.getContext("2d", { alpha: true });
@@ -867,11 +861,11 @@
       densityValue: document.getElementById("density-value"),
       alphaValue: document.getElementById("alpha-value"),
       pause: document.getElementById("pause"),
-      ring: document.getElementById("ring"),
       wire: document.getElementById("wire"),
       reset: document.getElementById("reset"),
       mobilePause: document.getElementById("m-pause"),
-      mobileRing: document.getElementById("m-ring"),
+      mobileData: document.getElementById("m-data"),
+      mobileMap: document.getElementById("m-map"),
       mobileReset: document.getElementById("m-reset"),
       viewPanel: document.getElementById("view-panel"),
       viewToggle: document.getElementById("view-toggle"),
@@ -879,6 +873,8 @@
       paletteButtons: [...document.querySelectorAll(".palette-button[data-palette]")],
       earthToneValue: document.getElementById("earth-tone-value"),
       earthToneButtons: [...document.querySelectorAll(".tone-button[data-earth-tone]")],
+      dataModeValue: document.getElementById("data-mode-value"),
+      dataModeButtons: [...document.querySelectorAll(".data-button[data-data-mode]")],
       globeScale: document.getElementById("globe-scale"),
       globeScaleValue: document.getElementById("globe-scale-value"),
       fps: document.getElementById("fps"),
@@ -889,7 +885,8 @@
       status: document.getElementById("status-word"),
       sector: document.getElementById("sector-word"),
       coordA: document.getElementById("coord-a"),
-      coordB: document.getElementById("coord-b")
+      coordB: document.getElementById("coord-b"),
+      mapLabelLayer
     };
 
     const sourceWords = (
@@ -901,16 +898,61 @@
       "CORE TEMPERATURE: 5700K. LIVE SURFACE MAPPING: ACTIVE. OPERATOR CHANNEL: ARMED. "
     ).repeat(80).trim().split(/\s+/);
 
-    const orbitText = "SATELLITE UPLINK * TELEMETRY * BANDWIDTH * LATENCY * ORBITAL PERIOD * ";
+    const mapCities = [
+      { name: "北京", sub: "Beijing", lng: 116.4074, lat: 39.9042 },
+      { name: "上海", sub: "Shanghai", lng: 121.4737, lat: 31.2304 },
+      { name: "深圳", sub: "Shenzhen", lng: 114.0579, lat: 22.5431 },
+      { name: "广州", sub: "Guangzhou", lng: 113.2644, lat: 23.1291 },
+      { name: "成都", sub: "Chengdu", lng: 104.0665, lat: 30.5728 },
+      { name: "重庆", sub: "Chongqing", lng: 106.5516, lat: 29.563 },
+      { name: "杭州", sub: "Hangzhou", lng: 120.1551, lat: 30.2741 },
+      { name: "武汉", sub: "Wuhan", lng: 114.3054, lat: 30.5928 },
+      { name: "西安", sub: "Xi'an", lng: 108.9398, lat: 34.3416 },
+      { name: "南京", sub: "Nanjing", lng: 118.7969, lat: 32.0603 },
+      { name: "天津", sub: "Tianjin", lng: 117.2009, lat: 39.0842 },
+      { name: "香港", sub: "Hong Kong", lng: 114.1694, lat: 22.3193 },
+      { name: "台北", sub: "Taipei", lng: 121.5654, lat: 25.033 },
+      { name: "东京", sub: "Tokyo", lng: 139.6917, lat: 35.6895 },
+      { name: "首尔", sub: "Seoul", lng: 126.978, lat: 37.5665 },
+      { name: "新加坡", sub: "Singapore", lng: 103.8198, lat: 1.3521 },
+      { name: "曼谷", sub: "Bangkok", lng: 100.5018, lat: 13.7563 },
+      { name: "雅加达", sub: "Jakarta", lng: 106.8456, lat: -6.2088 },
+      { name: "德里", sub: "Delhi", lng: 77.1025, lat: 28.7041 },
+      { name: "孟买", sub: "Mumbai", lng: 72.8777, lat: 19.076 },
+      { name: "迪拜", sub: "Dubai", lng: 55.2708, lat: 25.2048 },
+      { name: "莫斯科", sub: "Moscow", lng: 37.6173, lat: 55.7558 },
+      { name: "伦敦", sub: "London", lng: -0.1276, lat: 51.5072 },
+      { name: "巴黎", sub: "Paris", lng: 2.3522, lat: 48.8566 },
+      { name: "柏林", sub: "Berlin", lng: 13.405, lat: 52.52 },
+      { name: "纽约", sub: "New York", lng: -74.006, lat: 40.7128 },
+      { name: "洛杉矶", sub: "Los Angeles", lng: -118.2437, lat: 34.0522 },
+      { name: "旧金山", sub: "San Francisco", lng: -122.4194, lat: 37.7749 },
+      { name: "芝加哥", sub: "Chicago", lng: -87.6298, lat: 41.8781 },
+      { name: "多伦多", sub: "Toronto", lng: -79.3832, lat: 43.6532 },
+      { name: "墨西哥城", sub: "Mexico City", lng: -99.1332, lat: 19.4326 },
+      { name: "圣保罗", sub: "Sao Paulo", lng: -46.6333, lat: -23.5505 },
+      { name: "里约", sub: "Rio de Janeiro", lng: -43.1729, lat: -22.9068 },
+      { name: "开罗", sub: "Cairo", lng: 31.2357, lat: 30.0444 },
+      { name: "约翰内斯堡", sub: "Johannesburg", lng: 28.0473, lat: -26.2041 },
+      { name: "悉尼", sub: "Sydney", lng: 151.2093, lat: -33.8688 },
+      { name: "墨尔本", sub: "Melbourne", lng: 144.9631, lat: -37.8136 }
+    ];
+
     const state = {
       speed: 1,
       lineHeight: 14,
       textAlpha: 0.74,
       globeScale: 1,
+      targetGlobeScale: 1,
       palette: "teal",
       earthTone: "natural",
+      dataMode: "atlas",
+      liveTexture: null,
+      satelliteTexture: null,
+      liveDate: "",
+      liveLoading: false,
+      liveError: false,
       paused: false,
-      showRing: false,
       showWire: false,
       width: 1,
       height: 1,
@@ -919,18 +961,191 @@
       maskHeight: 1,
       maskPixels: new Uint8Array(4),
       dragging: false,
+      activePointers: new Map(),
+      pinchStartDistance: 0,
+      pinchStartScale: 1,
       lastPointer: { x: 0, y: 0 },
       velocity: { x: 0.0007, y: 0.002 },
       fpsFrames: 0,
       fpsLast: performance.now(),
       fpsValue: 0,
-      ringCacheRadius: 0,
-      ringCacheText: orbitText,
-      ringAngle: 0.02
+      mapHandoffCharge: 0,
+      mapHandoffTriggered: false,
+      mapReady: false,
+      pendingMapTarget: null,
+      zoomAnchorLngLat: null,
+      zoomAnchorPoint: null,
+      zoomLockUntil: 0,
+      handoffTargetLngLat: null,
+      mapReturnCharge: 0,
+      previousMapZoom: 6.2,
+      mapReturnLockedUntil: 0
     };
 
+    document.body.dataset.viewMode = "globe";
+    stage.dataset.mode = "globe";
+
+    const EOX_WMS = "https://tiles.maps.eox.at/wms";
+    const EOX_SATELLITE_LAYER = "s2cloudless-2024";
+
+    const SATELLITE_STYLE = {
+      version: 8,
+      sources: {
+        satellite: {
+          type: "raster",
+          tiles: [
+            "https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2024_3857/default/g/{z}/{y}/{x}.jpg"
+          ],
+          tileSize: 256,
+          maxzoom: 14,
+          attribution: "EOX Sentinel-2 cloudless"
+        }
+      },
+      layers: [
+        {
+          id: "satellite",
+          type: "raster",
+          source: "satellite",
+          paint: {
+            "raster-opacity": 1,
+            "raster-brightness-min": 0,
+            "raster-brightness-max": 0.88,
+            "raster-contrast": 0.08,
+            "raster-saturation": -0.12,
+            "raster-fade-duration": 220
+          }
+        }
+      ]
+    };
+
+    const map = new maplibregl.Map({
+      container: mapNode,
+      style: SATELLITE_STYLE,
+      center: [105, 31],
+      zoom: 6.2,
+      minZoom: 5.4,
+      maxZoom: 14.6,
+      pitch: 0,
+      bearing: 0,
+      renderWorldCopies: false,
+      attributionControl: false
+    });
+
+    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    function markMapReady() {
+      state.mapReady = true;
+      stage.dataset.mapStyle = "satellite";
+      setMapProjection("mercator");
+      if (state.pendingMapTarget) {
+        enterMapAtTarget(state.pendingMapTarget);
+        state.pendingMapTarget = null;
+      }
+    }
+
+    map.on("style.load", markMapReady);
+    map.on("load", markMapReady);
+    map.on("idle", markMapReady);
+    window.setTimeout(markMapReady, 1200);
+
+    function setMapProjection(type) {
+      if (!map.setProjection) return;
+      try {
+        map.setProjection({ type });
+        stage.dataset.mapProjection = type;
+      } catch {
+        stage.dataset.mapProjection = "default";
+      }
+    }
+
+    function syncMapDataset() {
+      if (!state.mapReady) return;
+      const center = map.getCenter();
+      stage.dataset.mapCenter = `${center.lng.toFixed(4)},${center.lat.toFixed(4)}`;
+      stage.dataset.mapZoom = map.getZoom().toFixed(2);
+      updateMapLabels();
+    }
+
+    function setMapWheelEnabled(enabled) {
+      if (!map.scrollZoom) return;
+      if (enabled) map.scrollZoom.enable();
+      else map.scrollZoom.disable();
+    }
+
+    function lngDistance(a, b) {
+      return Math.abs(((a - b + 540) % 360) - 180);
+    }
+
+    function nearestCity(center) {
+      return mapCities.reduce((best, city) => {
+        const dx = lngDistance(city.lng, center.lng) * Math.cos(center.lat * Math.PI / 180);
+        const dy = city.lat - center.lat;
+        const distance = Math.hypot(dx, dy);
+        return distance < best.distance ? { city, distance } : best;
+      }, { city: mapCities[0], distance: Infinity }).city;
+    }
+
+    function updateMapLabels() {
+      if (!els.mapLabelLayer || !state.mapReady || document.body.dataset.viewMode !== "map") return;
+      const center = map.getCenter();
+      const zoom = map.getZoom();
+      const labelCount = zoom > 10.5 ? 4 : 3;
+      const candidates = mapCities
+        .map(city => {
+          const projected = map.project([city.lng, city.lat]);
+          const dx = lngDistance(city.lng, center.lng) * Math.cos(center.lat * Math.PI / 180);
+          const dy = city.lat - center.lat;
+          return {
+            city,
+            projected,
+            distance: Math.hypot(dx, dy),
+            visible: projected.x > 18 && projected.x < state.width - 18 && projected.y > 36 && projected.y < state.height - 80
+          };
+        })
+        .filter(item => item.visible)
+        .sort((a, b) => a.distance - b.distance)
+        .slice(0, labelCount);
+
+      const focusName = nearestCity(center).name;
+      els.mapLabelLayer.replaceChildren();
+      const renderLabel = (item, floating = false) => {
+        const label = document.createElement("div");
+        label.className = `map-city-label${item.city.name === focusName ? " is-focus" : ""}${floating ? " is-floating" : ""}`;
+        if (!floating) {
+          label.style.left = `${item.projected.x.toFixed(1)}px`;
+          label.style.top = `${item.projected.y.toFixed(1)}px`;
+        }
+
+        const title = document.createElement("strong");
+        title.textContent = floating ? `${item.city.name}附近` : item.city.name;
+        const sub = document.createElement("span");
+        sub.textContent = item.city.sub;
+        label.append(title, sub);
+        els.mapLabelLayer.append(label);
+      };
+
+      candidates.forEach(item => renderLabel(item));
+      if (!candidates.length) {
+        const city = nearestCity(center);
+        renderLabel({ city, projected: { x: 0, y: 0 }, distance: 0 }, true);
+      }
+
+      stage.dataset.mapFocus = focusName;
+    }
+
+    function clearMapLabels() {
+      if (els.mapLabelLayer) els.mapLabelLayer.replaceChildren();
+      delete stage.dataset.mapFocus;
+    }
+
+    map.on("error", (event) => {
+      const message = event && event.error && event.error.message ? event.error.message : "";
+      if (/tile|source|style/i.test(message)) {
+        stage.dataset.mapStatus = "retrying";
+      }
+    });
+
     const renderer = new THREE.WebGLRenderer({ canvas: globeCanvas, antialias: true, alpha: false });
-    renderer.setClearColor(0x06110f, 1);
+    renderer.setClearColor(0x020403, 1);
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
@@ -953,10 +1168,57 @@
     maskScene.add(maskGroup);
 
     const sphereGeometry = new THREE.SphereGeometry(1, 96, 96);
+
+    function makeCloudTexture() {
+      const canvas = document.createElement("canvas");
+      canvas.width = 1024;
+      canvas.height = 512;
+      const cloudCtx = canvas.getContext("2d");
+      cloudCtx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const belts = [
+        { y: 0.27, spread: 0.12, count: 150, alpha: 0.055 },
+        { y: 0.48, spread: 0.09, count: 190, alpha: 0.07 },
+        { y: 0.68, spread: 0.11, count: 155, alpha: 0.05 }
+      ];
+
+      belts.forEach((belt, beltIndex) => {
+        for (let i = 0; i < belt.count; i += 1) {
+          const x = Math.random() * canvas.width;
+          const wave = Math.sin((x / canvas.width) * Math.PI * 4 + beltIndex) * belt.spread * 0.36;
+          const y = (belt.y + wave + (Math.random() - 0.5) * belt.spread) * canvas.height;
+          const rx = 34 + Math.random() * 76;
+          const ry = 8 + Math.random() * 28;
+          cloudCtx.save();
+          cloudCtx.translate(x, y);
+          cloudCtx.rotate((Math.random() - 0.5) * 0.9);
+          cloudCtx.scale(1, ry / rx);
+          const gradient = cloudCtx.createRadialGradient(0, 0, 0, 0, 0, rx);
+          gradient.addColorStop(0, `rgba(255,255,255,${belt.alpha + Math.random() * 0.18})`);
+          gradient.addColorStop(0.62, `rgba(255,255,255,${belt.alpha * 0.58})`);
+          gradient.addColorStop(1, "rgba(255,255,255,0)");
+          cloudCtx.fillStyle = gradient;
+          cloudCtx.beginPath();
+          cloudCtx.arc(0, 0, rx, 0, Math.PI * 2);
+          cloudCtx.fill();
+          cloudCtx.restore();
+        }
+      });
+
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.colorSpace = THREE.SRGBColorSpace;
+      texture.wrapS = THREE.RepeatWrapping;
+      texture.wrapT = THREE.ClampToEdgeWrapping;
+      texture.needsUpdate = true;
+      return texture;
+    }
+
     const textureLoader = new THREE.TextureLoader();
+    textureLoader.setCrossOrigin("anonymous");
     const diffuseMap = await textureLoader.loadAsync("./assets/earth-blue-marble.jpg");
     const waterMap = await textureLoader.loadAsync("./assets/earth-water.png");
     diffuseMap.colorSpace = THREE.SRGBColorSpace;
+    stage.dataset.globeTexture = "blue-marble";
 
     const earthMaterial = new THREE.MeshPhongMaterial({
       map: diffuseMap,
@@ -968,11 +1230,40 @@
     const earthMesh = new THREE.Mesh(sphereGeometry, earthMaterial);
     earthGroup.add(earthMesh);
 
+    textureLoader.loadAsync(eoxSatelliteGlobeUrl())
+      .then(texture => {
+        texture.colorSpace = THREE.SRGBColorSpace;
+        texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        state.satelliteTexture = texture;
+        if (state.dataMode === "atlas") {
+          applyEarthMap(texture);
+        }
+        stage.dataset.globeTexture = "satellite";
+        syncControls();
+      })
+      .catch(() => {
+        stage.dataset.globeTexture = "blue-marble";
+      });
+
+    const cloudMap = makeCloudTexture();
+    const cloudMaterial = new THREE.MeshPhongMaterial({
+      map: cloudMap,
+      transparent: true,
+      opacity: 0,
+      depthWrite: false,
+      specular: new THREE.Color(0x111111),
+      shininess: 2
+    });
+    const cloudMesh = new THREE.Mesh(sphereGeometry, cloudMaterial);
+    cloudMesh.scale.setScalar(1.014);
+    cloudMesh.visible = false;
+    earthGroup.add(cloudMesh);
+
     const wireMaterial = new THREE.MeshBasicMaterial({
       color: 0x7df6e3,
       wireframe: true,
       transparent: true,
-      opacity: 0,
+      opacity: 0.18,
       depthWrite: false
     });
     const wireMesh = new THREE.Mesh(sphereGeometry, wireMaterial);
@@ -1067,10 +1358,227 @@
       state.maskHeight = Math.max(96, Math.floor(state.height * scale));
       maskTarget.setSize(state.maskWidth, state.maskHeight);
       state.maskPixels = new Uint8Array(state.maskWidth * state.maskHeight * 4);
-      state.ringCacheRadius = 0;
     }
 
     const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const MIN_GLOBE_SCALE = 0.78;
+    const MAX_GLOBE_SCALE = 1.72;
+    const WHEEL_ZOOM_SENSITIVITY = 0.00115;
+    const MAP_HANDOFF_WHEEL_THRESHOLD = 130;
+    const MAP_HANDOFF_ZOOM = 12.2;
+    const MAP_RETURN_ZOOM = 5.58;
+    const MAP_RETURN_WHEEL_THRESHOLD = 420;
+    const ZOOM_INTERACTION_IDLE_MS = 850;
+    const ZOOM_ANCHOR_MOVE_PX = 28;
+    const handoffRaycaster = new THREE.Raycaster();
+
+    function lngLatFromUv(uv) {
+      const rawLng = uv.x * 360 - 180;
+      const lng = ((rawLng + 540) % 360) - 180;
+      const lat = uv.y * 180 - 90;
+      return [
+        Number(lng.toFixed(4)),
+        Number(clamp(lat, -82, 82).toFixed(4))
+      ];
+    }
+
+    function setGlobeScaleTarget(value, immediate = false) {
+      const next = clamp(value, MIN_GLOBE_SCALE, MAX_GLOBE_SCALE);
+      state.targetGlobeScale = next;
+      stage.dataset.zoom = next.toFixed(2);
+      if (immediate) {
+        state.globeScale = next;
+        updateGlobeFrame();
+      }
+      syncControls();
+    }
+
+    function wheelDeltaPixels(event) {
+      if (event.deltaMode === 1) return event.deltaY * 16;
+      if (event.deltaMode === 2) return event.deltaY * Math.max(1, state.height);
+      return event.deltaY;
+    }
+
+    function pinchDistance() {
+      const points = Array.from(state.activePointers.values());
+      if (points.length < 2) return 0;
+      return Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+    }
+
+    function earthCenterLngLat() {
+      camera.updateMatrixWorld();
+      earthMesh.updateWorldMatrix(true, false);
+      const centerWorld = new THREE.Vector3();
+      earthGroup.getWorldPosition(centerWorld);
+      const projected = centerWorld.clone().project(camera);
+      handoffRaycaster.setFromCamera({ x: projected.x, y: projected.y }, camera);
+      const hit = handoffRaycaster.intersectObject(earthMesh, false)[0];
+      if (!hit || !hit.uv) return [105, 31];
+      return lngLatFromUv(hit.uv);
+    }
+
+    function earthLngLatAtPoint(point, fallback = true) {
+      camera.updateMatrixWorld();
+      earthMesh.updateWorldMatrix(true, false);
+      const ndc = {
+        x: (point.x / Math.max(1, state.width)) * 2 - 1,
+        y: -(point.y / Math.max(1, state.height)) * 2 + 1
+      };
+      handoffRaycaster.setFromCamera(ndc, camera);
+      const hit = handoffRaycaster.intersectObject(earthMesh, false)[0];
+      if (!hit || !hit.uv) return fallback ? earthCenterLngLat() : null;
+      return lngLatFromUv(hit.uv);
+    }
+
+    function lockMapReturn(duration = 0) {
+      state.mapReturnLockedUntil = Date.now() + duration;
+    }
+
+    function setViewMode(mode) {
+      document.body.dataset.viewMode = mode;
+      stage.dataset.mode = mode;
+      mapNode.classList.toggle("is-visible", mode === "map");
+      mapNode.style.opacity = mode === "map" ? "1" : "";
+      mapNode.style.visibility = mode === "map" ? "visible" : "";
+      mapNode.style.transform = mode === "map" ? "scale(1)" : "";
+      setPressed(els.mobileMap, mode === "map");
+      if (mode === "globe") {
+        delete document.body.dataset.handoff;
+        delete stage.dataset.handoff;
+        delete stage.dataset.mapStatus;
+      }
+    }
+
+    function enterMapAtTarget(target) {
+      if (!state.mapReady) {
+        state.pendingMapTarget = target;
+        return;
+      }
+
+      const center = [
+        Number(target.center[0].toFixed(4)),
+        Number(target.center[1].toFixed(4))
+      ];
+      const zoom = target.zoom || MAP_HANDOFF_ZOOM;
+      state.mapHandoffTriggered = true;
+      state.previousMapZoom = zoom;
+      state.handoffTargetLngLat = center;
+      lockMapReturn(2600);
+      stage.dataset.handoff = "map";
+      stage.dataset.handoffCenter = `${center[0]},${center[1]}`;
+      stage.dataset.zoomAnchor = `${center[0]},${center[1]}`;
+      stage.dataset.mapZoom = zoom.toFixed(2);
+      stage.dataset.mapCenter = `${center[0]},${center[1]}`;
+      document.body.dataset.handoff = "map";
+
+      map.resize();
+      if (map.stop) map.stop();
+      setMapWheelEnabled(false);
+      setMapProjection("mercator");
+      map.jumpTo({
+        center,
+        zoom,
+        pitch: 0,
+        bearing: 0
+      });
+      syncMapDataset();
+
+      window.setTimeout(() => {
+        setViewMode("map");
+        map.resize();
+        syncMapDataset();
+        window.setTimeout(() => {
+          setMapWheelEnabled(true);
+          delete document.body.dataset.handoff;
+          delete stage.dataset.handoff;
+        }, 760);
+      }, 180);
+    }
+
+    function triggerRealMapHandoff(focusPoint = null) {
+      if (state.mapHandoffTriggered) return;
+      const focusTarget = !state.zoomAnchorLngLat && focusPoint ? earthLngLatAtPoint(focusPoint, false) : null;
+      const target = state.zoomAnchorLngLat || focusTarget || earthCenterLngLat();
+      const [lng, lat] = target;
+      state.zoomAnchorLngLat = [lng, lat];
+      state.velocity.x = 0;
+      state.velocity.y = 0;
+      enterMapAtTarget({ center: [lng, lat], zoom: MAP_HANDOFF_ZOOM });
+    }
+
+    function returnToGlobeView(keepScale = true) {
+      if (map.stop) map.stop();
+      setMapWheelEnabled(true);
+      state.mapHandoffTriggered = false;
+      state.mapHandoffCharge = 0;
+      state.zoomAnchorLngLat = null;
+      state.zoomAnchorPoint = null;
+      state.zoomLockUntil = 0;
+      state.handoffTargetLngLat = null;
+      state.mapReturnCharge = 0;
+      stage.dataset.handoffCharge = "0";
+      delete stage.dataset.zoomAnchor;
+      delete stage.dataset.mapCenter;
+      delete stage.dataset.mapReturnCharge;
+      clearMapLabels();
+      setViewMode("globe");
+      setGlobeScaleTarget(keepScale ? MAX_GLOBE_SCALE : 1, true);
+    }
+
+    map.on("zoom", () => {
+      if (document.body.dataset.viewMode !== "map") return;
+      syncMapDataset();
+    });
+
+    map.on("move", () => {
+      if (document.body.dataset.viewMode !== "map") return;
+      syncMapDataset();
+    });
+
+    function handleMapWheel(event) {
+      if (document.body.dataset.viewMode !== "map") return;
+      if (!state.mapReady) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const deltaPixels = wheelDeltaPixels(event);
+      const zoomingOut = deltaPixels > 0;
+      const currentZoom = map.getZoom();
+
+      if (!zoomingOut) {
+        state.mapReturnCharge = 0;
+        stage.dataset.mapReturnCharge = "0";
+        const nextZoom = clamp(currentZoom - deltaPixels * 0.00135, map.getMinZoom ? map.getMinZoom() : 5.4, map.getMaxZoom ? map.getMaxZoom() : 14.6);
+        if (map.stop) map.stop();
+        map.easeTo({ zoom: nextZoom, duration: 120 });
+        return;
+      }
+
+      const nextZoom = clamp(currentZoom - deltaPixels * 0.00135, map.getMinZoom ? map.getMinZoom() : 5.4, map.getMaxZoom ? map.getMaxZoom() : 14.6);
+      if (currentZoom > MAP_RETURN_ZOOM) {
+        state.mapReturnCharge = 0;
+        stage.dataset.mapReturnCharge = "0";
+        if (map.stop) map.stop();
+        map.easeTo({ zoom: nextZoom, duration: 120 });
+        return;
+      }
+
+      if (currentZoom <= MAP_RETURN_ZOOM) {
+        state.mapReturnCharge += Math.abs(deltaPixels);
+        stage.dataset.mapReturnCharge = String(Math.min(100, Math.round((state.mapReturnCharge / MAP_RETURN_WHEEL_THRESHOLD) * 100)));
+        if (state.mapReturnCharge >= MAP_RETURN_WHEEL_THRESHOLD) {
+          if (map.stop) map.stop();
+          returnToGlobeView(false);
+        }
+        return;
+      }
+
+      state.mapReturnCharge = 0;
+      stage.dataset.mapReturnCharge = "0";
+    }
+
+    window.addEventListener("wheel", handleMapWheel, { passive: false, capture: true });
+    stage.addEventListener("wheel", handleMapWheel, { passive: false, capture: true });
+
     const paletteLabels = {
       teal: "青绿",
       blue: "冷蓝",
@@ -1083,12 +1591,69 @@
       theme: "跟随主题"
     };
 
+    const dataModeLabels = {
+      atlas: "离线底图",
+      live: "近实时云图"
+    };
+
     const paletteMaterials = {
-      teal: { clear: 0x06110f, wire: 0x7df6e3, atmosphere: 0x9cf7ee, fill: 0x7df6e3, alert: 0xe6423e },
+      teal: { clear: 0x020403, wire: 0x7df6e3, atmosphere: 0x9cf7ee, fill: 0x7df6e3, alert: 0xe6423e },
       blue: { clear: 0x050b17, wire: 0x89c7ff, atmosphere: 0xa8d7ff, fill: 0x89c7ff, alert: 0xffb86d },
       amber: { clear: 0x120b05, wire: 0xffbf68, atmosphere: 0xffd995, fill: 0xffbf68, alert: 0x7df6e3 },
       red: { clear: 0x120305, wire: 0xff5151, atmosphere: 0xff7a70, fill: 0xff5151, alert: 0xffd06f }
     };
+
+    const GIBS_WMS = "https://gibs.earthdata.nasa.gov/wms/epsg4326/best/wms.cgi";
+    const GIBS_TRUE_COLOR_LAYER = "VIIRS_SNPP_CorrectedReflectance_TrueColor";
+    function formatDateUTC(date) {
+      return date.toISOString().slice(0, 10);
+    }
+
+    function recentGibsDates() {
+      const now = new Date();
+      const dates = [];
+      for (let offset = 1; offset <= 6; offset += 1) {
+        dates.push(formatDateUTC(new Date(Date.UTC(
+          now.getUTCFullYear(),
+          now.getUTCMonth(),
+          now.getUTCDate() - offset
+        ))));
+      }
+      return dates;
+    }
+
+    function gibsWmsUrl(layer, date) {
+      const params = new URLSearchParams({
+        SERVICE: "WMS",
+        VERSION: "1.3.0",
+        REQUEST: "GetMap",
+        LAYERS: layer,
+        STYLES: "",
+        FORMAT: "image/jpeg",
+        CRS: "EPSG:4326",
+        BBOX: "-90,-180,90,180",
+        WIDTH: "1024",
+        HEIGHT: "512",
+        TIME: date
+      });
+      return `${GIBS_WMS}?${params.toString()}`;
+    }
+
+    function eoxSatelliteGlobeUrl() {
+      const params = new URLSearchParams({
+        SERVICE: "WMS",
+        VERSION: "1.3.0",
+        REQUEST: "GetMap",
+        LAYERS: EOX_SATELLITE_LAYER,
+        STYLES: "",
+        FORMAT: "image/jpeg",
+        CRS: "EPSG:4326",
+        BBOX: "-90,-180,90,180",
+        WIDTH: "2048",
+        HEIGHT: "1024"
+      });
+      return `${EOX_WMS}?${params.toString()}`;
+    }
 
     function hashText(text) {
       let hash = 0;
@@ -1152,22 +1717,34 @@
       button.setAttribute("aria-pressed", String(value));
     }
 
+    function setText(node, value) {
+      if (!node) return;
+      node.textContent = value;
+    }
+
     function syncControls() {
       document.body.dataset.earthTone = state.earthTone;
-      els.speedValue.textContent = state.speed.toFixed(2);
-      els.densityValue.textContent = String(state.lineHeight);
-      els.alphaValue.textContent = state.textAlpha.toFixed(2);
-      els.globeScaleValue.textContent = state.globeScale.toFixed(2);
-      els.paletteValue.textContent = paletteLabels[state.palette] || "青绿";
+      document.body.dataset.dataMode = state.dataMode;
+      const displayedScale = state.targetGlobeScale || state.globeScale;
+      stage.dataset.zoom = displayedScale.toFixed(2);
+      setText(els.speedValue, state.speed.toFixed(2));
+      setText(els.densityValue, String(state.lineHeight));
+      setText(els.alphaValue, state.textAlpha.toFixed(2));
+      setText(els.globeScaleValue, displayedScale.toFixed(2));
+      setText(els.paletteValue, paletteLabels[state.palette] || "青绿");
       els.paletteButtons.forEach(button => setPressed(button, button.dataset.palette === state.palette));
-      els.earthToneValue.textContent = earthToneLabels[state.earthTone] || "原色";
+      setText(els.earthToneValue, earthToneLabels[state.earthTone] || "原色");
       els.earthToneButtons.forEach(button => setPressed(button, button.dataset.earthTone === state.earthTone));
+      setText(els.dataModeValue, dataModeLabels[state.dataMode] || "离线底图");
+      els.dataModeButtons.forEach(button => setPressed(button, button.dataset.dataMode === state.dataMode));
       setPressed(els.pause, state.paused);
       setPressed(els.mobilePause, state.paused);
-      setPressed(els.ring, state.showRing);
-      setPressed(els.mobileRing, state.showRing);
+      setPressed(els.mobileData, state.dataMode === "live");
+      setPressed(els.mobileMap, document.body.dataset.viewMode === "map");
       setPressed(els.wire, state.showWire);
       wireMesh.visible = state.showWire;
+      cloudMesh.visible = false;
+
     }
 
     function applyPalette(name) {
@@ -1205,25 +1782,73 @@
       syncControls();
     }
 
-    els.speed.addEventListener("input", () => {
+    function applyEarthMap(texture) {
+      earthMaterial.map = texture;
+      earthMaterial.needsUpdate = true;
+    }
+
+    async function loadLiveEarthTexture() {
+      if (state.liveTexture) {
+        applyEarthMap(state.liveTexture);
+        return;
+      }
+
+      state.liveLoading = true;
+      state.liveError = false;
+      syncControls();
+
+      const dates = recentGibsDates();
+      for (const date of dates) {
+        try {
+          const texture = await textureLoader.loadAsync(gibsWmsUrl(GIBS_TRUE_COLOR_LAYER, date));
+          texture.colorSpace = THREE.SRGBColorSpace;
+          texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
+          state.liveTexture = texture;
+          state.liveDate = date;
+          applyEarthMap(texture);
+          state.liveLoading = false;
+          syncControls();
+          return;
+        } catch {
+        }
+      }
+
+      state.liveLoading = false;
+      state.liveError = true;
+      state.dataMode = "atlas";
+      applyEarthMap(state.satelliteTexture || diffuseMap);
+      syncControls();
+    }
+
+    async function applyDataMode(name) {
+      if (!dataModeLabels[name]) return;
+      if (name !== "live") state.liveError = false;
+      state.dataMode = name;
+      if (name === "live") {
+        await loadLiveEarthTexture();
+      } else {
+        applyEarthMap(state.satelliteTexture || diffuseMap);
+      }
+      syncControls();
+    }
+
+    els.speed?.addEventListener("input", () => {
       state.speed = Number(els.speed.value);
       syncControls();
     });
 
-    els.density.addEventListener("input", () => {
+    els.density?.addEventListener("input", () => {
       state.lineHeight = Number(els.density.value);
       syncControls();
     });
 
-    els.alpha.addEventListener("input", () => {
+    els.alpha?.addEventListener("input", () => {
       state.textAlpha = Number(els.alpha.value);
       syncControls();
     });
 
-    els.globeScale.addEventListener("input", () => {
-      state.globeScale = Number(els.globeScale.value);
-      updateGlobeFrame();
-      syncControls();
+    els.globeScale?.addEventListener("input", () => {
+      setGlobeScaleTarget(Number(els.globeScale.value), true);
     });
 
     els.paletteButtons.forEach(button => {
@@ -1234,7 +1859,13 @@
       button.addEventListener("click", () => applyEarthTone(button.dataset.earthTone));
     });
 
-    els.viewToggle.addEventListener("click", () => {
+    els.dataModeButtons.forEach(button => {
+      button.addEventListener("click", () => {
+        applyDataMode(button.dataset.dataMode);
+      });
+    });
+
+    els.viewToggle?.addEventListener("click", () => {
       const isOpen = els.viewPanel.classList.toggle("open");
       els.viewToggle.setAttribute("aria-expanded", String(isOpen));
     });
@@ -1244,30 +1875,43 @@
       syncControls();
     }
 
-    function toggleRing() {
-      state.showRing = !state.showRing;
-      syncControls();
-    }
-
     function resetView() {
       state.velocity.x = 0.0007;
       state.velocity.y = 0.002;
       earthGroup.rotation.x = -0.24;
       earthGroup.rotation.y = -1.18;
+      state.zoomAnchorLngLat = null;
+      state.zoomAnchorPoint = null;
+      state.zoomLockUntil = 0;
+      state.handoffTargetLngLat = null;
+      delete stage.dataset.zoomAnchor;
+      if (document.body.dataset.viewMode === "map") {
+        returnToGlobeView(false);
+      } else {
+        setGlobeScaleTarget(1, true);
+      }
       state.paused = false;
       syncControls();
     }
 
-    els.pause.addEventListener("click", togglePause);
-    els.mobilePause.addEventListener("click", togglePause);
-    els.ring.addEventListener("click", toggleRing);
-    els.mobileRing.addEventListener("click", toggleRing);
-    els.wire.addEventListener("click", () => {
+    els.pause?.addEventListener("click", togglePause);
+    els.mobilePause?.addEventListener("click", togglePause);
+    els.mobileData?.addEventListener("click", () => {
+      applyDataMode(state.dataMode === "live" ? "atlas" : "live");
+    });
+    els.mobileMap?.addEventListener("click", () => {
+      if (document.body.dataset.viewMode === "map") {
+        returnToGlobeView(true);
+        return;
+      }
+      triggerRealMapHandoff();
+    });
+    els.wire?.addEventListener("click", () => {
       state.showWire = !state.showWire;
       syncControls();
     });
-    els.reset.addEventListener("click", resetView);
-    els.mobileReset.addEventListener("click", resetView);
+    els.reset?.addEventListener("click", resetView);
+    els.mobileReset?.addEventListener("click", resetView);
 
     function pointerPoint(event) {
       const rect = stage.getBoundingClientRect();
@@ -1278,68 +1922,131 @@
     }
 
     stage.addEventListener("pointerdown", (event) => {
-      if (event.target.closest("button, input")) return;
-      state.dragging = true;
-      state.lastPointer = pointerPoint(event);
+      if (document.body.dataset.viewMode === "map") return;
+      if (event.target.closest("button, input, a")) return;
+      const point = pointerPoint(event);
+      state.activePointers.set(event.pointerId, point);
+      state.dragging = state.activePointers.size === 1;
+      state.lastPointer = point;
+      if (state.activePointers.size === 2) {
+        state.dragging = false;
+        state.pinchStartDistance = pinchDistance();
+        state.pinchStartScale = state.targetGlobeScale;
+      }
+      stage.dataset.dragging = state.activePointers.size ? "true" : "false";
       stage.setPointerCapture(event.pointerId);
       if (els.drag) els.drag.textContent = "拖拽旋转：锁定";
+      event.preventDefault();
     });
 
-    stage.addEventListener("pointerup", (event) => {
-      state.dragging = false;
+    function endPointer(event) {
+      state.activePointers.delete(event.pointerId);
+      state.dragging = state.activePointers.size === 1;
+      state.pinchStartDistance = 0;
+      state.pinchStartScale = state.targetGlobeScale;
+      if (state.dragging) {
+        state.lastPointer = Array.from(state.activePointers.values())[0];
+      }
+      if (state.activePointers.size === 0) {
+        state.dragging = false;
+        stage.dataset.dragging = "false";
+      }
       if (stage.hasPointerCapture(event.pointerId)) {
         stage.releasePointerCapture(event.pointerId);
       }
-      if (els.drag) els.drag.textContent = "拖拽旋转：空闲";
-    });
+      if (els.drag) els.drag.textContent = state.dragging ? "拖拽旋转：锁定" : "拖拽旋转：空闲";
+    }
 
-    stage.addEventListener("pointercancel", () => {
-      state.dragging = false;
-      if (els.drag) els.drag.textContent = "拖拽旋转：空闲";
-    });
+    stage.addEventListener("pointerup", endPointer);
+    stage.addEventListener("pointercancel", endPointer);
+    stage.addEventListener("lostpointercapture", endPointer);
 
     stage.addEventListener("pointermove", (event) => {
-      if (!state.dragging) return;
+      if (document.body.dataset.viewMode === "map") return;
       const next = pointerPoint(event);
+      if (state.activePointers.has(event.pointerId)) {
+        state.activePointers.set(event.pointerId, next);
+      }
+
+      if (state.activePointers.size >= 2) {
+        const distance = pinchDistance();
+        if (state.pinchStartDistance > 0) {
+          const delta = (distance - state.pinchStartDistance) / Math.max(1, Math.min(state.width, state.height));
+          setGlobeScaleTarget(state.pinchStartScale + delta * 1.18);
+        }
+        event.preventDefault();
+        return;
+      }
+
+      if (!state.dragging) return;
       const dx = next.x - state.lastPointer.x;
       const dy = next.y - state.lastPointer.y;
       state.velocity.x = clamp(dy * 0.0048, -0.05, 0.05);
       state.velocity.y = clamp(dx * 0.0048, -0.05, 0.05);
       state.lastPointer = next;
+      event.preventDefault();
     });
 
-    function makeRingText(radius) {
-      if (Math.abs(state.ringCacheRadius - radius) < 1) return;
-      state.ringCacheRadius = radius;
-      ctx.font = "11px Courier New, monospace";
-      const charWidth = Math.max(5, ctx.measureText("M").width * 1.06);
-      const count = Math.max(40, Math.floor((Math.PI * 2 * radius) / charWidth));
-      let text = "";
-      while (text.length < count) text += orbitText;
-      state.ringCacheText = text.slice(0, count);
-      state.ringAngle = (Math.PI * 2) / state.ringCacheText.length;
-    }
-
-    function drawOrbitRing(screenRadius, now) {
-      const ringRadius = screenRadius * 1.25;
-      makeRingText(ringRadius);
-
-      ctx.save();
-      ctx.translate(state.width / 2, state.height / 2);
-      ctx.rotate(now * 0.000045);
-      ctx.font = "11px Courier New, monospace";
-      ctx.fillStyle = "rgba(247, 243, 232, 0.28)";
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      for (let i = 0; i < state.ringCacheText.length; i += 1) {
-        ctx.save();
-        ctx.rotate(i * state.ringAngle);
-        ctx.translate(0, -ringRadius);
-        ctx.fillText(state.ringCacheText[i], 0, 0);
-        ctx.restore();
+    stage.addEventListener("wheel", (event) => {
+      if (document.body.dataset.viewMode === "map") return;
+      if (event.target.closest("button, input, a, .topbar, .right-stack, .bottom-ticker, .mobile-dock")) return;
+      event.preventDefault();
+      if (state.mapHandoffTriggered) return;
+      const deltaPixels = wheelDeltaPixels(event);
+      const zoomingIn = deltaPixels < 0;
+      const wheelPoint = pointerPoint(event);
+      const now = performance.now();
+      const gestureExpired = now > state.zoomLockUntil;
+      const anchorMoved = !state.zoomAnchorPoint ||
+        Math.hypot(wheelPoint.x - state.zoomAnchorPoint.x, wheelPoint.y - state.zoomAnchorPoint.y) > ZOOM_ANCHOR_MOVE_PX;
+      state.zoomLockUntil = now + ZOOM_INTERACTION_IDLE_MS;
+      state.velocity.x = 0;
+      state.velocity.y = 0;
+      let wheelAnchor = null;
+      if (zoomingIn) {
+        wheelAnchor = earthLngLatAtPoint(wheelPoint, false);
+        if (wheelAnchor && (gestureExpired || anchorMoved || !state.zoomAnchorLngLat)) {
+          state.zoomAnchorLngLat = wheelAnchor;
+          state.zoomAnchorPoint = wheelPoint;
+          stage.dataset.zoomAnchor = `${wheelAnchor[0]},${wheelAnchor[1]}`;
+        } else if (!wheelAnchor && gestureExpired) {
+          state.zoomAnchorLngLat = null;
+          state.zoomAnchorPoint = null;
+          delete stage.dataset.zoomAnchor;
+        }
       }
-      ctx.restore();
-    }
+      const wasAtMax = state.targetGlobeScale >= MAX_GLOBE_SCALE - 0.01;
+      const nextScale = state.targetGlobeScale - deltaPixels * WHEEL_ZOOM_SENSITIVITY;
+
+      if (zoomingIn && wasAtMax && nextScale >= MAX_GLOBE_SCALE) {
+        if (!wheelAnchor && !state.zoomAnchorLngLat) {
+          state.mapHandoffCharge = 0;
+          stage.dataset.handoffCharge = "0";
+          setGlobeScaleTarget(MAX_GLOBE_SCALE);
+          return;
+        }
+        state.mapHandoffCharge += Math.abs(deltaPixels);
+        stage.dataset.handoffCharge = String(Math.min(100, Math.round((state.mapHandoffCharge / MAP_HANDOFF_WHEEL_THRESHOLD) * 100)));
+        setGlobeScaleTarget(MAX_GLOBE_SCALE);
+        if (state.mapHandoffCharge >= MAP_HANDOFF_WHEEL_THRESHOLD) {
+          triggerRealMapHandoff(wheelPoint);
+        }
+        return;
+      }
+
+      if (!zoomingIn || nextScale < MAX_GLOBE_SCALE - 0.02) {
+        state.mapHandoffCharge = 0;
+        stage.dataset.handoffCharge = "0";
+        if (!zoomingIn && nextScale < MAX_GLOBE_SCALE - 0.1) {
+          state.zoomAnchorLngLat = null;
+          state.zoomAnchorPoint = null;
+          state.handoffTargetLngLat = null;
+          delete stage.dataset.zoomAnchor;
+        }
+      }
+
+      setGlobeScaleTarget(nextScale);
+    }, { passive: false });
 
     function layoutWords(maxWidth, cursor) {
       const maxChars = Math.max(4, Math.floor(maxWidth / 6.45));
@@ -1416,13 +2123,13 @@
       const linkStates = ["接收命令中", "执行命令中", "汇报工作中"];
       const sector = linkStates[Math.floor(now * 0.00045) % linkStates.length];
 
-      els.fps.textContent = state.fpsValue ? String(state.fpsValue) : "--";
-      els.rot.textContent = earthGroup.rotation.y.toFixed(2);
-      els.mask.textContent = state.maskPixels[0] !== undefined ? "运行" : "就绪";
-      els.status.textContent = state.paused ? "暂停" : "在线";
-      els.sector.textContent = sector;
-      els.coordA.textContent = `${serviceProfile.area} / ${serviceProfile.source}`;
-      els.coordB.textContent = operatorSeat;
+      setText(els.fps, state.fpsValue ? String(state.fpsValue) : "--");
+      setText(els.rot, earthGroup.rotation.y.toFixed(2));
+      setText(els.mask, state.maskPixels[0] !== undefined ? "运行" : "就绪");
+      setText(els.status, state.paused ? "暂停" : "在线");
+      setText(els.sector, sector);
+      setText(els.coordA, `${serviceProfile.area} / ${serviceProfile.source}`);
+      setText(els.coordB, operatorSeat);
     }
 
     function updateClock() {
@@ -1438,15 +2145,24 @@
     function render(now) {
       requestAnimationFrame(render);
 
+      if (Math.abs(state.targetGlobeScale - state.globeScale) > 0.001) {
+        state.globeScale += (state.targetGlobeScale - state.globeScale) * 0.16;
+        updateGlobeFrame();
+      }
+
       if (!state.paused) {
-        if (!state.dragging) {
+        const zoomInteractionActive = performance.now() < state.zoomLockUntil || state.mapHandoffTriggered;
+        if (!state.dragging && !zoomInteractionActive) {
           state.velocity.x *= 0.95;
           state.velocity.y *= 0.95;
           const floor = 0.002 * state.speed;
           if (Math.abs(state.velocity.y) < floor) state.velocity.y = floor;
         }
-        earthGroup.rotation.x += state.velocity.x * state.speed;
-        earthGroup.rotation.y += state.velocity.y * state.speed;
+        if (!zoomInteractionActive) {
+          earthGroup.rotation.x += state.velocity.x * state.speed;
+          earthGroup.rotation.y += state.velocity.y * state.speed;
+        }
+        cloudMesh.rotation.y += 0.00018 * state.speed;
       }
 
       earthGroup.rotation.x = clamp(earthGroup.rotation.x, -0.92, 0.92);
@@ -1462,11 +2178,6 @@
 
       ctx.clearRect(0, 0, state.width, state.height);
 
-      const fov = camera.fov * Math.PI / 180;
-      const visibleHeight = 2 * Math.tan(fov / 2) * camera.position.z;
-      const screenRadius = (1 / (visibleHeight / 2)) * (state.height / 2);
-
-      if (state.showRing) drawOrbitRing(screenRadius, now);
       drawSurfaceText(now);
       updatePanels(now);
     }

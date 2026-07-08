@@ -1,6 +1,9 @@
 .venv/
 __pycache__/
 *.pyc
+.env
+.env.*
+!.env.example
 
 .pio/
 firmware/**/.pio/
@@ -8,6 +11,7 @@ firmware/**/include/wifi_credentials.h
 docs/electronics/hg113_tmp/
 
 logs/
+data/
 *.log
 node_modules/
 .superpowers/
