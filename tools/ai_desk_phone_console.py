@@ -34,6 +34,11 @@ DEFAULT_UDP_COMMAND_PORT = 8767
 SERIAL_SCAN_INTERVAL_SECONDS = 2.0
 SERIAL_LOG_INTERVAL_SECONDS = 15.0
 FIRMWARE_DATA_WAIT_SECONDS = 3.0
+OPERATOR_RING_ON_SECONDS = 1.0
+OPERATOR_RING_OFF_SECONDS = 4.0
+OPERATOR_RING_TIMEOUT_SECONDS = 90.0
+OPERATOR_BUSY_ON_SECONDS = 0.5
+OPERATOR_BUSY_OFF_SECONDS = 0.5
 
 HOOK_SCHEMES: dict[str, dict[str, str]] = {
     "scheme1": {
@@ -50,8 +55,8 @@ HOOK_SCHEMES: dict[str, dict[str, str]] = {
 
 BUSINESS_MODES: dict[str, dict[str, str]] = {
     "codex": {
-        "label": "方案一：Codex 提醒",
-        "description": "AI 任务完成后持续响铃并点亮 LED，抬起电话后停止提醒。",
+        "label": "方案一：接线员模式",
+        "description": "文字输入任务完成后，按 1 秒响、4 秒停循环提醒；摘机后停止。",
     },
     "doubao": {
         "label": "方案二：豆包语音",
@@ -501,6 +506,10 @@ class AppState:
         self.udp_last_seen: float | None = None
         self.udp_lock = threading.Lock()
         self.alerting = False
+        self.alert_phase = "idle"
+        self.alert_started_at: float | None = None
+        self.alert_stop_event = threading.Event()
+        self.alert_thread: threading.Thread | None = None
         self.pending_report_text: str | None = None
 
     def interpreted_state_for_sample(self, sample: SensorSample) -> str:
@@ -640,15 +649,18 @@ class AppState:
         state = self.interpreted_state_for_sample(sample)
         if state:
             self.last_state = state
-        cleared_alert = False
+        with self.lock:
+            should_clear_alert = self.alerting and state == "RELEASED"
+        if should_clear_alert:
+            self.clear_ai_alert("摘机接听")
+
         scheme = normalize_hook_scheme(self.config.hook_scheme)
         business_mode = normalize_business_mode(self.config.business_mode)
         with self.lock:
-            if self.alerting and state == "RELEASED":
-                self.alerting = False
-                self.pending_report_text = None
-                cleared_alert = True
             alerting = self.alerting
+            alert_phase = self.alert_phase
+            alert_started_at = self.alert_started_at
+            alert_elapsed_seconds = int(time.monotonic() - alert_started_at) if alert_started_at else 0
             pending_report_text = self.pending_report_text
         payload = {
             "ms": sample.ms,
@@ -665,6 +677,8 @@ class AppState:
             "pressed_level": hook_pressed_level(self.config),
             "hook_label": hook_state_label(state),
             "alerting": alerting,
+            "alert_phase": alert_phase,
+            "alert_elapsed_seconds": alert_elapsed_seconds,
             "pending_report_text": pending_report_text,
             "score": sample.score,
             "pin": sample.pin,
@@ -683,11 +697,6 @@ class AppState:
             self.current_sample = payload
             self.samples.append(payload)
         self.publish({"type": "sample", "sample": payload})
-        if cleared_alert:
-            self.add_action_log("检测到电话抬起，AI 提醒已停止。")
-            self.run_hardware_command("ring_off")
-            self.run_hardware_command("led_off")
-            self.publish_alert_status()
 
     def set_hook_scheme(self, scheme: str) -> ConsoleConfig:
         scheme = normalize_hook_scheme(scheme)
@@ -749,6 +758,8 @@ class AppState:
                 "serial_port": self.current_serial_port(),
                 "udp_device": self.current_udp_device(),
                 "alerting": self.alerting,
+                "alert_phase": self.alert_phase,
+                "alert_elapsed_seconds": int(time.monotonic() - self.alert_started_at) if self.alert_started_at else 0,
                 "pending_report_text": self.pending_report_text,
             }
 
@@ -761,51 +772,130 @@ class AppState:
         if self.send_serial_command(command):
             self.add_action_log(f"已发送板子模拟命令：{command_type}")
 
-    def run_hardware_command(self, command: str) -> bool:
+    def has_hardware_link(self) -> bool:
+        with self.udp_lock:
+            udp_ready = self.udp_socket is not None and self.udp_device_address is not None
+        return udp_ready or self.is_serial_connected()
+
+    def run_hardware_command(self, command: str, *, log: bool = True) -> bool:
         if self.send_device_command(command):
-            self.add_action_log(f"硬件测试命令：{command}")
+            if log:
+                self.add_action_log(f"硬件测试命令：{command}")
             return True
         return False
 
     def publish_alert_status(self) -> None:
         with self.lock:
+            alert_started_at = self.alert_started_at
             payload = {
                 "type": "alert_status",
                 "alerting": self.alerting,
+                "alert_phase": self.alert_phase,
+                "alert_elapsed_seconds": int(time.monotonic() - alert_started_at) if alert_started_at else 0,
                 "pending_report_text": self.pending_report_text,
             }
         self.publish(payload)
 
+    def set_alert_phase(self, phase: str, *, alerting: bool | None = None) -> None:
+        with self.lock:
+            if alerting is not None:
+                self.alerting = alerting
+            self.alert_phase = phase
+        self.publish_alert_status()
+
+    def stop_alert_thread(self, wait_seconds: float = 0.0) -> None:
+        with self.lock:
+            stop_event = self.alert_stop_event
+            alert_thread = self.alert_thread
+        stop_event.set()
+        if (
+            wait_seconds > 0
+            and alert_thread is not None
+            and alert_thread.is_alive()
+            and alert_thread is not threading.current_thread()
+        ):
+            alert_thread.join(timeout=wait_seconds)
+
+    def operator_alert_worker(self, stop_event: threading.Event) -> None:
+        self.run_hardware_command("led_on", log=False)
+        self.add_action_log("接线员模式已启动：1 秒响、4 秒停；摘机后停止，90 秒无人接听后切忙音。")
+        deadline = time.monotonic() + OPERATOR_RING_TIMEOUT_SECONDS
+
+        while not stop_event.is_set():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            self.set_alert_phase("ring", alerting=True)
+            self.run_hardware_command("ring_on", log=False)
+            if stop_event.wait(min(OPERATOR_RING_ON_SECONDS, remaining)):
+                break
+
+            self.run_hardware_command("ring_off", log=False)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+
+            self.set_alert_phase("pause", alerting=True)
+            if stop_event.wait(min(OPERATOR_RING_OFF_SECONDS, remaining)):
+                break
+
+        if stop_event.is_set():
+            self.run_hardware_command("ring_off", log=False)
+            self.run_hardware_command("led_off", log=False)
+            return
+
+        self.run_hardware_command("ring_off", log=False)
+        self.set_alert_phase("busy", alerting=True)
+        self.add_action_log("接线员模式久叫无人接听，已切换忙音；摘机或手动停止后关闭。")
+
+        while not stop_event.is_set():
+            self.run_hardware_command("ring_on", log=False)
+            if stop_event.wait(OPERATOR_BUSY_ON_SECONDS):
+                break
+            self.run_hardware_command("ring_off", log=False)
+            if stop_event.wait(OPERATOR_BUSY_OFF_SECONDS):
+                break
+
+        self.run_hardware_command("ring_off", log=False)
+        self.run_hardware_command("led_off", log=False)
+
     def clear_ai_alert(self, reason: str = "manual") -> bool:
         with self.lock:
-            was_alerting = self.alerting
+            was_alerting = self.alerting or self.alert_phase != "idle"
             self.alerting = False
+            self.alert_phase = "idle"
+            self.alert_started_at = None
             self.pending_report_text = None
+            stop_event = self.alert_stop_event
+        stop_event.set()
         self.publish_alert_status()
         buzzer_ok = self.run_hardware_command("ring_off")
         led_ok = self.run_hardware_command("led_off")
-        self.add_action_log(f"AI 提醒已停止：{reason}")
+        self.add_action_log(f"接线员提醒已停止：{reason}")
         return was_alerting or buzzer_ok or led_ok
 
     def run_ai_hook_signal(self, source: str = "ai", text: str | None = None) -> bool:
-        report_text = (text or "").strip() or None
-        with self.lock:
-            self.alerting = True
-            self.pending_report_text = report_text
-        self.publish_alert_status()
+        del text
+        source = (source or "ai").strip() or "ai"
+        if not self.has_hardware_link():
+            self.add_action_log(f"接线员 hook 触发失败：没有可用的 ESP32 Wi-Fi 或串口链路（{source}）。")
+            return False
 
-        buzzer_ok = self.run_hardware_command("ring_on")
-        led_ok = self.run_hardware_command("led_on")
-        ok = buzzer_ok or led_ok
-        if ok:
-            self.add_action_log(f"AI hook 已进入持续提醒：{source}")
-        else:
-            with self.lock:
-                self.alerting = False
-                self.pending_report_text = None
-            self.publish_alert_status()
-            self.add_action_log(f"AI hook 提醒触发失败：{source}")
-        return ok
+        self.stop_alert_thread(wait_seconds=0.8)
+        stop_event = threading.Event()
+        alert_thread = threading.Thread(target=self.operator_alert_worker, args=(stop_event,), daemon=True)
+        with self.lock:
+            self.alert_stop_event = stop_event
+            self.alert_thread = alert_thread
+            self.alerting = True
+            self.alert_phase = "ring"
+            self.alert_started_at = time.monotonic()
+            self.pending_report_text = None
+        self.publish_alert_status()
+        alert_thread.start()
+        self.add_action_log(f"接线员 hook 已收到：{source}，开始 1 秒响、4 秒停。")
+        return True
 
     def set_test_pins(self, hook_pin: int, buzzer_pin: int, led_pin: int = 20) -> bool:
         command = json.dumps(
@@ -1018,7 +1108,7 @@ def serial_worker(app: AppState, preferred_port: str | None, baud: int, stop: th
                                         )
                                     else:
                                         app.add_state_log(
-                                            "串口已打开，但还没有收到固件数据；如果页面没有 ADC 曲线，"
+                                            "串口已打开，但还没有收到固件数据；如果页面没有 GPIO 数字波形，"
                                             "请复位板子或重新插拔 USB。"
                                         )
                                     reported_no_firmware_data = True
@@ -1236,7 +1326,7 @@ INDEX_HTML = r"""<!doctype html>
       <canvas id="digitalChart" width="900" height="170"></canvas>
       <div class="hint">拨动摘挂机开关时，数字波形应该在 HIGH 和 LOW 之间跳变。</div>
       <div class="state-line">
-        <div>AI 提醒<strong id="alertState">未触发</strong></div>
+        <div>接线员<strong id="alertState">未触发</strong></div>
         <div>蜂鸣器<strong id="buzzerState">未知</strong></div>
         <div>LED<strong id="ledState">未知</strong></div>
       </div>
@@ -1254,15 +1344,12 @@ INDEX_HTML = r"""<!doctype html>
         <h3>业务模式</h3>
         <input id="business_mode" type="hidden" value="codex">
         <div class="segmented" aria-label="业务模式">
-          <button id="modeCodexBtn" type="button" onclick="selectBusinessMode('codex')">Codex 提醒</button>
+          <button id="modeCodexBtn" type="button" onclick="selectBusinessMode('codex')">接线员模式</button>
           <button id="modeDoubaoBtn" type="button" onclick="selectBusinessMode('doubao')">豆包聊天</button>
         </div>
-        <div id="businessModeHint" class="callout">Codex 完成后响铃并亮灯；抬起电话后停止。</div>
-        <label class="section-divider">待播报内容
-          <textarea id="reportTextInput" placeholder="AI 完成后需要电话播报的内容，可以先留空。"></textarea>
-        </label>
+        <div id="businessModeHint" class="callout">文字输入任务完成后，电话按 1 秒响、4 秒停循环提醒；摘机后停止。</div>
         <div class="button-row">
-          <button class="primary" onclick="postAiHook()">触发 AI 完成提醒</button>
+          <button class="primary" onclick="postAiHook()">触发接线员提醒</button>
           <button onclick="clearAiAlert()">停止提醒</button>
         </div>
       </div>
@@ -1393,7 +1480,7 @@ INDEX_HTML = r"""<!doctype html>
       scheme2: "方案 2：LOW = 按下，HIGH = 抬起"
     };
     const businessModeDescriptions = {
-      codex: "Codex 完成任务后，电话持续响铃并亮灯；抬起电话后停止提醒。",
+      codex: "接线员模式：文字输入任务完成后，电话 1 秒响、4 秒停循环提醒；摘机后停止，约 90 秒无人接听切忙音。",
       doubao: "抬起电话后进入豆包语音报告或全双工对话；当前先保留模式入口。"
     };
     let actionPresets = {
@@ -1450,9 +1537,15 @@ INDEX_HTML = r"""<!doctype html>
       setStatusValue("deviceStatus", device || "未发现", device ? "good" : "");
     }
 
-    function updateAlertStatus(alerting, text = "") {
-      const alertText = alerting ? "提醒中" : "未触发";
-      $("alertState").textContent = text && alerting ? `${alertText}：${text.slice(0, 28)}` : alertText;
+    function updateAlertStatus(alerting, phase = "") {
+      const phaseLabels = {
+        idle: "未触发",
+        ring: "响铃 1 秒",
+        pause: "间歇 4 秒",
+        busy: "忙音"
+      };
+      const alertText = alerting ? (phaseLabels[phase] || "提醒中") : "未触发";
+      $("alertState").textContent = alertText;
       $("alertState").className = alerting ? "state-pressed" : "";
     }
 
@@ -1770,11 +1863,11 @@ INDEX_HTML = r"""<!doctype html>
         const result = await fetchJson("/api/ai/hook", {
           method: "POST",
           headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({source: "web", text: $("reportTextInput").value || ""})
+          body: JSON.stringify({source: "web"})
         }, 10000);
-        setSaveStatus(result.ok ? "AI 完成提醒已触发，抬起电话后停止。" : "AI 完成提醒发送失败", result.ok ? "ok" : "warn");
+        setSaveStatus(result.ok ? "接线员提醒已触发：1 秒响、4 秒停，摘机后停止。" : "接线员提醒发送失败", result.ok ? "ok" : "warn");
       } catch (error) {
-        setSaveStatus(`AI 完成提醒失败：${error.message}`, "warn");
+        setSaveStatus(`接线员提醒失败：${error.message}`, "warn");
       }
     }
 
@@ -1843,7 +1936,7 @@ INDEX_HTML = r"""<!doctype html>
       if (sample.pin !== null && sample.pin !== undefined) $("hookPinInput").value = sample.pin;
       if (sample.led_pin !== null && sample.led_pin !== undefined) $("ledPinInput").value = sample.led_pin;
       if (sample.business_mode) applyBusinessModeUi(sample.business_mode);
-      updateAlertStatus(Boolean(sample.alerting), sample.pending_report_text || "");
+      updateAlertStatus(Boolean(sample.alerting), sample.alert_phase || "");
       $("buzzerState").textContent = sample.buzzer || "未知";
       $("ledState").textContent = sample.led || "未知";
       $("lastSample").textContent = sample.adc_synthetic
@@ -1913,7 +2006,7 @@ INDEX_HTML = r"""<!doctype html>
           setConfigForm(payload.config);
           setSerialStatus(payload.serial_connected, payload.serial_port);
           setDeviceStatus(payload.udp_device || "");
-          updateAlertStatus(Boolean(payload.alerting), payload.pending_report_text || "");
+          updateAlertStatus(Boolean(payload.alerting), payload.alert_phase || "");
           samples = payload.samples || [];
           rawLogs.splice(0, rawLogs.length, ...(payload.raw_logs || []));
           stateLogs.splice(0, stateLogs.length, ...(payload.state_logs || []));
@@ -1939,7 +2032,7 @@ INDEX_HTML = r"""<!doctype html>
         } else if (payload.type === "udp_status") {
           setDeviceStatus(payload.device || "");
         } else if (payload.type === "alert_status") {
-          updateAlertStatus(Boolean(payload.alerting), payload.pending_report_text || "");
+          updateAlertStatus(Boolean(payload.alerting), payload.alert_phase || "");
         } else if (payload.type === "action_log") {
           pushLog(actionLogs, payload.text);
           renderLogs();

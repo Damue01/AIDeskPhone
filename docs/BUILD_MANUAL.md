@@ -1,8 +1,8 @@
 # AI Desk Phone 制作与维护手册
 
-- 整理日期：2026-06-28
-- 固件版本：`hybrid-ble-config-v1`
-- BLE HID 名称：`AIDeskPhoneKB`
+- 整理日期：2026-07-08
+- 固件版本：`esp32c3_gpio0_21_test`
+- 默认输入/输出：GPIO0 摘挂机输入，GPIO21 蜂鸣器，GPIO20 LED
 - 默认控制台地址：`http://127.0.0.1:8765`
 
 这份手册按实际制作顺序组织，目标是让读者能从材料准备开始，完成控制链路、音频链路和最终装机。开发过程中的临时脚本、测试记录和个人快捷键方案不放入本文档。
@@ -12,11 +12,11 @@
 控制链路：
 
 ```text
-座机摘挂机/按压机构
-  -> ESP32-C3 GPIO1 / ADC
-  -> ESP32-C3 固件判断按下/释放
-  -> BLE HID 键盘 AIDeskPhoneKB
-  -> Windows 目标软件快捷键
+HG113 摘挂机开关
+  -> ESP32-C3 GPIO0
+  -> Wi-Fi UDP 状态上报
+  -> 电脑端控制台判断 HIGH / LOW
+  -> Windows 目标软件快捷键或接线员提醒
 ```
 
 音频链路：
@@ -34,8 +34,8 @@
 
 | 材料 | 作用 | 备注 |
 | --- | --- | --- |
-| 老式桌面座机 | 提供外壳、听筒和摘挂机结构 | 本项目使用富桥 HCD28(3)P/TSD 作为样机 |
-| ESP32-C3 SuperMini | 读取摘挂机/按压状态，发送 BLE HID 快捷键 | 固件使用 GPIO1 / A1 作为输入 |
+| HG113 共电电话 | 提供外壳、听筒和摘挂机结构 | 不接电话外线高压 |
+| ESP32-C3 SuperMini | 读取摘挂机状态，Wi-Fi 上报 GPIO，执行蜂鸣器和 LED 命令 | GPIO0 输入，GPIO21 蜂鸣器，GPIO20 LED |
 | CSR8645 蓝牙音频模块 | 连接听筒麦克风和喇叭 | 需要 3.7V 供电 |
 | RJ9/R9/4P4C 听筒线或转接板 | 分出听筒的麦克风线和喇叭线 | 四芯线，最终线序以实测为准 |
 | 3.7V 电源 | 给 CSR8645 供电 | 不使用 ESP32-C3 的 3.3V，不把 5V 接到 `BAT+` |
@@ -80,19 +80,19 @@ py -3.12 -m venv .venv
 编译固件：
 
 ```powershell
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test
 ```
 
 烧录固件：
 
 ```powershell
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio -t upload
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test -t upload
 ```
 
 PlatformIO 会自动选择可用串口。电脑上有多个串口，或需要指定实际端口时：
 
 ```powershell
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio -t upload --upload-port COM5
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test -t upload --upload-port COM5
 ```
 
 如果控制台一直显示正在扫描，并且 Windows 只看到 `COM1`，说明 ESP32-C3 还没有枚举成 USB 串口。`COM1` 通常是 Windows 系统内置通信端口，不是本项目的板子。此时先换 USB 口或 USB 数据线，重新插拔几次，并检查板子供电和 BOOT/复位状态。Windows 正常识别后，控制台会自动连接新的 `COMx`。
@@ -101,8 +101,8 @@ PlatformIO 会自动选择可用串口。电脑上有多个串口，或需要指
 
 1. 保持电话外线断开。
 2. 将 ESP32-C3 通过 USB-C 连接 Windows 电脑。
-3. 烧录 `firmware/esp32c3_ble_gpio` 固件。
-4. 将摘挂机/按压检测点接入 ESP32-C3 的 GPIO1 / A1。
+3. 烧录 `firmware/esp32c3_gpio0_21_test` 固件。
+4. 将摘挂机开关接入 ESP32-C3 的 GPIO0 和 GND。
 5. 启动本地控制台：
 
 ```powershell
@@ -110,8 +110,8 @@ PlatformIO 会自动选择可用串口。电脑上有多个串口，或需要指
 ```
 
 6. 打开 `http://127.0.0.1:8765`。
-7. 操作电话摘挂机/按压机构，观察 ADC 曲线和状态变化。
-8. 调整按下阈值、释放阈值、消抖时间和锁定时间，让真实动作能稳定触发。
+7. 操作电话摘挂机机构，观察 GPIO 数字波形和解释状态变化。
+8. 如果 HIGH / LOW 与实际动作相反，在页面切换“方案 1 / 方案 2”。
 9. 保存配置，确认日志中出现 `ESP32 已确认配置写入板子。`
 
 保存配置时只保留一个控制台网页窗口。打开多个 `http://127.0.0.1:8765` 页面可能占用浏览器连接，导致保存请求超时。出现超时后，关闭其他控制台窗口，保留一个页面并强制刷新后再保存。
@@ -136,12 +136,12 @@ PlatformIO 会自动选择可用串口。电脑上有多个串口，或需要指
 4. 再用真实电话动作验证。
 5. 如果目标软件更换，重新配置快捷键即可，不需要改固件。
 
-## 7. Windows 蓝牙配对
+## 7. Windows 蓝牙音频配对
 
 1. 打开 Windows 蓝牙设置。
-2. 搜索并配对 `AIDeskPhoneKB`。
-3. 配对完成后，在控制台中执行模拟动作。
-4. 确认目标软件响应后，再进行真实电话动作测试。
+2. 搜索并配对蓝牙耳机音频模块。
+3. 在 Windows 中确认它能作为麦克风和扬声器使用。
+4. 控制链路仍由 ESP32-C3 和本地控制台负责，不走蓝牙 HID。
 
 ## 8. 音频链路制作
 
@@ -176,8 +176,8 @@ CSR8645 BAT+ / BAT- = 3.7V
 5. 所有裸露焊点已绝缘。
 6. 听筒线活动时不会拉扯焊点。
 7. 摘挂机/按压机构动作不会压到模块或线束。
-8. Windows 能连接 `AIDeskPhoneKB`。
-9. 目标软件能按配置响应电话动作。
+8. Windows 能连接蓝牙音频模块。
+9. 控制台能看到摘挂机状态，并能驱动蜂鸣器和 LED。
 10. CSR8645 音频输入和输出正常。
 11. 座机本体显示正常；如果显示异常或不亮，先更换座机电池。
 
@@ -185,7 +185,7 @@ CSR8645 BAT+ / BAT- = 3.7V
 
 ```powershell
 .\.venv\Scripts\python.exe -m py_compile tools\ai_desk_phone_console.py
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_ble_gpio
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test
 ```
 
 仓库中保留：
