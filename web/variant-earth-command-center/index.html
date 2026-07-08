@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
   <title>AI 桌面电话服务通信中枢</title>
   <style>
     :root {
@@ -23,6 +24,45 @@
       --black-86: rgba(6, 17, 15, 0.86);
       --mono: "JetBrains Mono", "Courier New", monospace;
       --display: Inter, Arial Black, Impact, system-ui, sans-serif;
+    }
+
+    body[data-palette="blue"] {
+      --bg: #050b17;
+      --cyan: #89c7ff;
+      --cyan-soft: rgba(137, 199, 255, 0.13);
+      --cyan-line: rgba(137, 199, 255, 0.42);
+      --red: #ffb86d;
+      --red-soft: rgba(255, 184, 109, 0.12);
+      --red-line: rgba(255, 184, 109, 0.36);
+      --surface: rgba(7, 17, 34, 0.9);
+      --black-72: rgba(5, 11, 23, 0.72);
+      --black-86: rgba(5, 11, 23, 0.88);
+    }
+
+    body[data-palette="amber"] {
+      --bg: #120b05;
+      --cyan: #ffbf68;
+      --cyan-soft: rgba(255, 191, 104, 0.13);
+      --cyan-line: rgba(255, 191, 104, 0.42);
+      --red: #7df6e3;
+      --red-soft: rgba(125, 246, 227, 0.1);
+      --red-line: rgba(125, 246, 227, 0.34);
+      --surface: rgba(28, 16, 8, 0.9);
+      --black-72: rgba(18, 11, 5, 0.72);
+      --black-86: rgba(18, 11, 5, 0.88);
+    }
+
+    body[data-palette="red"] {
+      --bg: #120305;
+      --cyan: #ff5151;
+      --cyan-soft: rgba(255, 81, 81, 0.13);
+      --cyan-line: rgba(255, 81, 81, 0.44);
+      --red: #ffd06f;
+      --red-soft: rgba(255, 208, 111, 0.1);
+      --red-line: rgba(255, 208, 111, 0.34);
+      --surface: rgba(30, 5, 8, 0.9);
+      --black-72: rgba(18, 3, 5, 0.72);
+      --black-86: rgba(18, 3, 5, 0.88);
     }
 
     * {
@@ -91,6 +131,7 @@
     }
 
     .scanline {
+      display: none;
       position: absolute;
       left: 0;
       right: 0;
@@ -123,12 +164,12 @@
 
     .brand-block {
       pointer-events: auto;
-      border: 2px solid var(--cyan-line);
-      background: var(--surface);
       width: min(620px, 100%);
-      padding: 12px 14px 13px;
-      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 16px 48px rgba(0, 0, 0, 0.22);
-      backdrop-filter: blur(14px);
+      padding: 0;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      backdrop-filter: none;
     }
 
     .brand-row {
@@ -139,17 +180,18 @@
     }
 
     .brand-mark {
-      width: 38px;
-      height: 38px;
+      width: auto;
+      height: auto;
       display: grid;
       place-items: center;
-      flex: 0 0 38px;
-      background: var(--cyan);
-      color: #06110f;
+      flex: 0 0 auto;
+      background: transparent;
+      color: var(--cyan);
       font-family: var(--display);
-      font-size: 26px;
+      font-size: 34px;
       font-weight: 900;
       line-height: 1;
+      text-shadow: 0 0 18px rgba(125, 246, 227, 0.22);
     }
 
     h1 {
@@ -161,6 +203,7 @@
       text-transform: none;
       letter-spacing: 0;
       overflow-wrap: anywhere;
+      text-shadow: 0 8px 28px rgba(0, 0, 0, 0.6);
     }
 
     .brand-meta {
@@ -177,14 +220,16 @@
     .clock-block {
       pointer-events: auto;
       min-width: 220px;
-      border: 2px solid var(--cyan-line);
-      background: var(--paper);
-      color: #06110f;
-      padding: 10px 12px;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      padding: 0;
       text-align: right;
+      text-shadow: 0 10px 28px rgba(0, 0, 0, 0.72), 0 0 18px rgba(125, 246, 227, 0.16);
     }
 
     .clock-label {
+      color: var(--muted);
       font-size: 11px;
       font-weight: 900;
       text-transform: none;
@@ -204,21 +249,37 @@
       left: 16px;
       top: 158px;
       width: 300px;
-      border: 2px solid var(--cyan-line);
-      background: var(--surface);
+      border: 0;
+      background: transparent;
       pointer-events: auto;
-      backdrop-filter: blur(14px);
+      backdrop-filter: none;
+    }
+
+    .view-toggle {
+      height: 40px;
+      padding: 0 14px;
+      border: 1px solid var(--cyan-line);
+      border-radius: 0;
+      background: var(--black-86);
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 900;
+      text-transform: none;
+      box-shadow: 0 10px 26px rgba(0, 0, 0, 0.28);
     }
 
     .panel-head {
-      display: grid;
+      display: none;
       grid-template-columns: 1fr auto;
       align-items: center;
       gap: 8px;
+      margin-top: 8px;
       min-height: 42px;
       padding: 0 12px;
-      border-bottom: 2px solid var(--cyan-line);
-      background: var(--cyan-soft);
+      border: 1px solid var(--cyan-line);
+      border-bottom: 0;
+      background: var(--black-86);
       color: var(--ink);
       font-size: 12px;
       font-weight: 900;
@@ -226,9 +287,18 @@
     }
 
     .panel-body {
-      display: grid;
+      display: none;
       gap: 13px;
       padding: 13px 12px 14px;
+      border: 1px solid var(--cyan-line);
+      background: var(--surface);
+      box-shadow: 0 18px 52px rgba(0, 0, 0, 0.34);
+      backdrop-filter: blur(14px);
+    }
+
+    .left-panel.open .panel-head,
+    .left-panel.open .panel-body {
+      display: grid;
     }
 
     .control {
@@ -258,6 +328,29 @@
       margin: 0;
       accent-color: var(--cyan);
       cursor: pointer;
+    }
+
+    .palette-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .palette-button {
+      height: 32px;
+      border: 1px solid var(--dim);
+      border-radius: 0;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--ink);
+      cursor: pointer;
+      font-size: 10px;
+      font-weight: 900;
+    }
+
+    .palette-button[aria-pressed="true"] {
+      border-color: var(--cyan);
+      color: #06110f;
+      background: var(--cyan);
     }
 
     .button-grid {
@@ -602,11 +695,10 @@
     }
   </style>
 </head>
-<body>
+<body data-palette="teal">
   <main class="stage" id="stage" aria-label="服务通信中枢">
     <canvas id="globe-canvas"></canvas>
     <canvas id="text-canvas"></canvas>
-    <div class="scanline" aria-hidden="true"></div>
 
     <header class="topbar">
       <section class="brand-block" aria-label="系统身份">
@@ -628,12 +720,26 @@
       </section>
     </header>
 
-    <aside class="left-panel" aria-label="地球视图控制">
+    <aside class="left-panel" id="view-panel" aria-label="地球视图控制">
+      <button class="view-toggle" id="view-toggle" type="button" aria-expanded="false">视图控制</button>
       <div class="panel-head">
         <span>视图控制</span>
         <span>地球</span>
       </div>
       <div class="panel-body">
+        <div class="control">
+          <div class="control-row">
+            <span>界面颜色</span>
+            <output id="palette-value">青绿</output>
+          </div>
+          <div class="palette-row" aria-label="界面颜色">
+            <button class="palette-button" type="button" data-palette="teal" aria-pressed="true">青绿</button>
+            <button class="palette-button" type="button" data-palette="blue" aria-pressed="false">冷蓝</button>
+            <button class="palette-button" type="button" data-palette="amber" aria-pressed="false">琥珀</button>
+            <button class="palette-button" type="button" data-palette="red" aria-pressed="false">暗红</button>
+          </div>
+        </div>
+
         <div class="control">
           <div class="control-row">
             <label for="speed">地球转速</label>
@@ -660,7 +766,7 @@
 
         <div class="button-grid">
           <button class="cmd-button" id="pause" type="button" aria-pressed="false">暂停</button>
-          <button class="cmd-button" id="ring" type="button" aria-pressed="true">轨道环</button>
+          <button class="cmd-button" id="ring" type="button" aria-pressed="false">轨道环</button>
           <button class="cmd-button" id="wire" type="button" aria-pressed="true">经纬网</button>
           <button class="cmd-button" id="reset" type="button">复位</button>
         </div>
@@ -706,7 +812,7 @@
 
     <nav class="mobile-dock" aria-label="移动端控制">
       <button id="m-pause" type="button" aria-pressed="false">暂停</button>
-      <button id="m-ring" type="button" aria-pressed="true">轨道环</button>
+      <button id="m-ring" type="button" aria-pressed="false">轨道环</button>
       <button id="m-reset" type="button">复位</button>
     </nav>
 
@@ -743,6 +849,10 @@
       mobilePause: document.getElementById("m-pause"),
       mobileRing: document.getElementById("m-ring"),
       mobileReset: document.getElementById("m-reset"),
+      viewPanel: document.getElementById("view-panel"),
+      viewToggle: document.getElementById("view-toggle"),
+      paletteValue: document.getElementById("palette-value"),
+      paletteButtons: [...document.querySelectorAll(".palette-button[data-palette]")],
       fps: document.getElementById("fps"),
       rot: document.getElementById("rot"),
       mask: document.getElementById("mask-state"),
@@ -769,8 +879,9 @@
       speed: 1,
       lineHeight: 14,
       textAlpha: 0.74,
+      palette: "teal",
       paused: false,
-      showRing: true,
+      showRing: false,
       showWire: true,
       width: 1,
       height: 1,
@@ -842,7 +953,7 @@
     const atmosphereMaterial = new THREE.MeshBasicMaterial({
       color: 0x9cf7ee,
       transparent: true,
-      opacity: 0.12,
+      opacity: 0,
       side: THREE.BackSide,
       depthWrite: false
     });
@@ -915,6 +1026,18 @@
     }
 
     const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const paletteLabels = {
+      teal: "青绿",
+      blue: "冷蓝",
+      amber: "琥珀",
+      red: "暗红"
+    };
+    const paletteMaterials = {
+      teal: { clear: 0x06110f, wire: 0x7df6e3, atmosphere: 0x9cf7ee, fill: 0x7df6e3, alert: 0xe6423e },
+      blue: { clear: 0x050b17, wire: 0x89c7ff, atmosphere: 0xa8d7ff, fill: 0x89c7ff, alert: 0xffb86d },
+      amber: { clear: 0x120b05, wire: 0xffbf68, atmosphere: 0xffd995, fill: 0xffbf68, alert: 0x7df6e3 },
+      red: { clear: 0x120305, wire: 0xff5151, atmosphere: 0xff7a70, fill: 0xff5151, alert: 0xffd06f }
+    };
 
     function setPressed(button, value) {
       button.setAttribute("aria-pressed", String(value));
@@ -924,12 +1047,27 @@
       els.speedValue.textContent = state.speed.toFixed(2);
       els.densityValue.textContent = String(state.lineHeight);
       els.alphaValue.textContent = state.textAlpha.toFixed(2);
+      els.paletteValue.textContent = paletteLabels[state.palette] || "青绿";
+      els.paletteButtons.forEach(button => setPressed(button, button.dataset.palette === state.palette));
       setPressed(els.pause, state.paused);
       setPressed(els.mobilePause, state.paused);
       setPressed(els.ring, state.showRing);
       setPressed(els.mobileRing, state.showRing);
       setPressed(els.wire, state.showWire);
       wireMesh.visible = state.showWire;
+    }
+
+    function applyPalette(name) {
+      if (!paletteMaterials[name]) return;
+      state.palette = name;
+      document.body.dataset.palette = name;
+      const material = paletteMaterials[name];
+      renderer.setClearColor(material.clear, 1);
+      wireMaterial.color.setHex(material.wire);
+      atmosphereMaterial.color.setHex(material.atmosphere);
+      fillLight.color.setHex(material.fill);
+      redLight.color.setHex(material.alert);
+      syncControls();
     }
 
     els.speed.addEventListener("input", () => {
@@ -945,6 +1083,15 @@
     els.alpha.addEventListener("input", () => {
       state.textAlpha = Number(els.alpha.value);
       syncControls();
+    });
+
+    els.paletteButtons.forEach(button => {
+      button.addEventListener("click", () => applyPalette(button.dataset.palette));
+    });
+
+    els.viewToggle.addEventListener("click", () => {
+      const isOpen = els.viewPanel.classList.toggle("open");
+      els.viewToggle.setAttribute("aria-expanded", String(isOpen));
     });
 
     function togglePause() {
