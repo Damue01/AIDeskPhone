@@ -510,6 +510,7 @@ class AppState:
         self.alert_started_at: float | None = None
         self.alert_stop_event = threading.Event()
         self.alert_thread: threading.Thread | None = None
+        self.alert_last_hook_state: str | None = None
         self.pending_report_text: str | None = None
 
     def interpreted_state_for_sample(self, sample: SensorSample) -> str:
@@ -650,7 +651,13 @@ class AppState:
         if state:
             self.last_state = state
         with self.lock:
-            should_clear_alert = self.alerting and state == "RELEASED"
+            should_clear_alert = (
+                self.alerting
+                and self.alert_last_hook_state == "PRESSED"
+                and state == "RELEASED"
+            )
+            if self.alerting and state:
+                self.alert_last_hook_state = state
         if should_clear_alert:
             self.clear_ai_alert("摘机接听")
 
@@ -832,6 +839,7 @@ class AppState:
                 break
 
             self.run_hardware_command("ring_off", log=False)
+            self.run_hardware_command("led_on", log=False)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
@@ -846,6 +854,7 @@ class AppState:
             return
 
         self.run_hardware_command("ring_off", log=False)
+        self.run_hardware_command("led_on", log=False)
         self.set_alert_phase("busy", alerting=True)
         self.add_action_log("接线员模式久叫无人接听，已切换忙音；摘机或手动停止后关闭。")
 
@@ -854,6 +863,7 @@ class AppState:
             if stop_event.wait(OPERATOR_BUSY_ON_SECONDS):
                 break
             self.run_hardware_command("ring_off", log=False)
+            self.run_hardware_command("led_on", log=False)
             if stop_event.wait(OPERATOR_BUSY_OFF_SECONDS):
                 break
 
@@ -866,6 +876,7 @@ class AppState:
             self.alerting = False
             self.alert_phase = "idle"
             self.alert_started_at = None
+            self.alert_last_hook_state = None
             self.pending_report_text = None
             stop_event = self.alert_stop_event
         stop_event.set()
@@ -891,6 +902,7 @@ class AppState:
             self.alerting = True
             self.alert_phase = "ring"
             self.alert_started_at = time.monotonic()
+            self.alert_last_hook_state = self.last_state
             self.pending_report_text = None
         self.publish_alert_status()
         alert_thread.start()
