@@ -558,17 +558,18 @@
       position: relative;
       z-index: 1;
       align-self: stretch;
-      display: block;
+      display: grid;
+      place-items: center;
       gap: 0;
       width: 132px;
       flex: 0 0 132px;
       margin-left: 0;
-      padding: 0;
+      padding: 0 0 4px;
       border-radius: 0;
       background: transparent;
       color: rgba(247, 243, 232, 0.92);
       font-size: 22px;
-      line-height: 56px;
+      line-height: 1;
       font-weight: 940;
       letter-spacing: 0;
       text-transform: none;
@@ -997,6 +998,7 @@
         reply: {},
         alerting: false,
         alertPhase: "",
+        agent: {},
         actionLog: "",
         lastPhase: "",
         lastVoiceText: "",
@@ -1411,6 +1413,21 @@
       }
     }
 
+    function applyCommandCenterCommand(payload = {}) {
+      const command = payload.command || payload;
+      const action = command.action || command.command || "";
+      if (!action) return { ok: false, reason: "missing-action" };
+
+      const result = runConsoleCommand(action, command.payload, command.options || {});
+      dispatchConsoleResult(command.requestId || command.id, action, result);
+      if (result && result.ok) {
+        appendConsoleLog(`[AGENT] ${command.skill || "skill"} -> ${action}`);
+      } else {
+        appendConsoleLog(`[AGENT] ${action || "command"} 执行失败`);
+      }
+      return result;
+    }
+
     function applyTelemetryPayload(payload = {}) {
       state.telemetry.lastEventAt = Date.now();
       setTelemetryConnection(true);
@@ -1419,6 +1436,7 @@
         if (payload.current_sample) state.telemetry.sample = payload.current_sample;
         state.telemetry.voice = {...state.telemetry.voice, ...payload};
         state.telemetry.reply = {...state.telemetry.reply, ...payload};
+        if (payload.agent) state.telemetry.agent = {...state.telemetry.agent, ...payload.agent};
         state.telemetry.alerting = Boolean(payload.alerting || (payload.current_sample || {}).alerting);
         state.telemetry.alertPhase = payload.alert_phase || (payload.current_sample || {}).alert_phase || "";
       } else if (payload.type === "sample") {
@@ -1433,6 +1451,11 @@
         state.telemetry.reply = {...state.telemetry.reply, ...payload};
         const text = shortText(payload.pending_report_text || replyText(payload.active_reply) || "");
         if (text && text !== state.telemetry.lastReplyText) state.telemetry.lastReplyText = text;
+      } else if (payload.type === "agent_status") {
+        state.telemetry.agent = {...state.telemetry.agent, ...payload};
+      } else if (payload.type === "command_center_command") {
+        applyCommandCenterCommand(payload);
+        return;
       } else if (payload.type === "alert_status") {
         state.telemetry.alerting = Boolean(payload.alerting);
         state.telemetry.alertPhase = payload.alert_phase || "";

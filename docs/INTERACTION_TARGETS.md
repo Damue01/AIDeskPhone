@@ -51,6 +51,75 @@ be in front.
    or "不用了" before a task has been committed, the current voice turn should be
    canceled instead of submitted.
 
+## Minimal Agent Runtime
+
+The first Agent runtime is intentionally small, but it must keep the same shape
+as a larger model-driven Agent:
+
+1. A user turn enters through phone ASR or `POST /api/agent/turn`.
+2. The Agent loop plans one or more tool calls.
+3. Tool calls are executed by registered skills.
+4. Skill results are summarized into an operator report.
+5. The report enters the existing reply queue and callback flow.
+
+Current runtime file:
+
+```text
+tools/agent_runtime.py
+```
+
+Current skill:
+
+```text
+command_center.earth
+```
+
+It supports these tool calls:
+
+```text
+set_phase     -> command center status phase
+focus_city    -> command center city navigation
+fly_to        -> command center lng/lat navigation
+show_globe    -> return to globe standby view
+```
+
+Backend text entry:
+
+```http
+POST http://127.0.0.1:8765/api/agent/turn
+Content-Type: application/json
+
+{
+  "source": "codex",
+  "text": "定位北京",
+  "reply_behavior": "direct"
+}
+```
+
+The command center page receives skill effects through `/events` as
+`command_center_command` events. The page then calls its existing
+`window.AILandline` bridge, so the Earth renderer remains a UI skill target
+rather than backend-rendered state.
+
+### Reference posture
+
+Keep the demo small, but borrow the right shape from existing assistants and
+agent systems:
+
+1. Pi-style interaction: the phone Agent should feel calm, patient, and
+   conversational. It should not expose internal telemetry, raw JSON, or tool
+   chatter to the user unless the user asks for diagnostics.
+2. Tool-call loop: a user turn should become explicit tool calls, the app should
+   execute those tools, and the final spoken report should summarize the result.
+3. Skill ownership: each skill owns one bounded surface. The current Earth skill
+   owns command-center navigation only; it must not reach into renderer internals
+   or mutate unrelated phone state.
+4. Traceability: each turn should keep enough metadata to debug later: input
+   text, planned tool calls, tool results, final report, and timing.
+5. Minimal demo boundary: do not add a general-purpose task runner, shell access,
+   browser automation, or multi-agent handoff until this single Earth skill is
+   reliable from voice input through callback report.
+
 ## Shortcut Profiles
 
 1. Multiple shortcut profiles can be created.

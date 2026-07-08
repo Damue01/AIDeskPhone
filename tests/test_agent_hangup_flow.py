@@ -175,8 +175,8 @@ class AgentHangupFlowTest(unittest.TestCase):
         app.handle_voice_reply_text("打开灯", "direct", 7)
 
         self.assertEqual(app.reply_status()["queue_size"], 1)
-        self.assertEqual(app.reply_queue[0].source, "voice-asr")
-        self.assertEqual(alerts, ["voice-asr"])
+        self.assertEqual(app.reply_queue[0].source, "agent")
+        self.assertEqual(alerts, ["agent"])
 
     def test_hangup_while_processing_keeps_current_voice_session(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao"))
@@ -209,9 +209,29 @@ class AgentHangupFlowTest(unittest.TestCase):
 
         self.assertFalse(recorder.is_recording())
         self.assertEqual(app.reply_status()["queue_size"], 1)
-        self.assertEqual(alerts, ["voice-asr"])
+        self.assertEqual(alerts, ["agent"])
         self.assertFalse(app.voice_processing)
         self.assertFalse(app.voice_recording)
+
+    def test_agent_voice_turn_publishes_command_center_skill_event(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
+        app.last_state = "PRESSED"
+        app.voice_session_id = 4
+        subscriber = app.subscribe()
+        self.addCleanup(lambda: app.unsubscribe(subscriber))
+
+        app.handle_voice_reply_text("定位北京", "direct", 4)
+
+        events: list[dict[str, object]] = []
+        while not subscriber.empty():
+            events.append(subscriber.get_nowait())
+
+        command_events = [event for event in events if event.get("type") == "command_center_command"]
+        self.assertEqual(len(command_events), 1)
+        self.assertEqual(command_events[0]["command"]["action"], "focusCity")
+        self.assertEqual(command_events[0]["command"]["payload"], "北京")
+        self.assertEqual(app.reply_queue[0].source, "agent")
+        self.assertIn("北京", app.reply_queue[0].text)
 
     def test_voice_stop_uses_streaming_asr_result_before_file_fallback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))

@@ -48,6 +48,7 @@ api.pushLog("[CMD] 打开浏览器");
 设置屏幕右侧状态。可用值：
 
 - `waiting`
+- `listening`
 - `executing`
 - `feedback`
 - `reporting`
@@ -186,6 +187,36 @@ api.invoke("setPhase", "feedback");
 api.invoke("flyTo", { lng: -0.1276, lat: 51.5072, label: "伦敦" });
 api.invoke("fx", "orbital");
 api.invoke("showGlobe");
+```
+
+## Backend Agent Skill Events
+
+本机控制台的最小 Agent 会通过 `/events` 发布地球 skill 命令，页面收到后会复用上面的 `invoke` 能力：
+
+```json
+{
+  "type": "command_center_command",
+  "command": {
+    "source": "agent",
+    "skill": "command_center.earth",
+    "action": "focusCity",
+    "payload": "北京",
+    "options": { "zoom": 11.8 }
+  }
+}
+```
+
+外部工具也可以直接给后端提交一轮文本：
+
+```http
+POST http://127.0.0.1:8765/api/agent/turn
+Content-Type: application/json
+
+{
+  "source": "codex",
+  "text": "定位北京",
+  "reply_behavior": "direct"
+}
 ```
 
 ## Events

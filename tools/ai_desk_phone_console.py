@@ -47,6 +47,15 @@ except ImportError:  # pragma: no cover - kept optional for partial deployments
         AudioRecorder = None  # type: ignore[assignment]
         AudioRecorderError = RuntimeError  # type: ignore[assignment]
 
+try:
+    from agent_runtime import AgentContext, MinimalAgentLoop
+except ImportError:  # pragma: no cover - kept optional for package imports
+    try:
+        from tools.agent_runtime import AgentContext, MinimalAgentLoop
+    except ImportError:  # pragma: no cover - kept optional for partial deployments
+        AgentContext = None  # type: ignore[assignment]
+        MinimalAgentLoop = None  # type: ignore[assignment]
+
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "ai_desk_phone_console.json"
@@ -692,6 +701,11 @@ class AppState:
         self.callback_session_active = False
         self.speech = VolcengineSpeech() if VolcengineSpeech is not None else None
         self.recorder = AudioRecorder() if AudioRecorder is not None else None
+        self.agent_loop = MinimalAgentLoop() if MinimalAgentLoop is not None else None
+        self.agent_active = False
+        self.agent_last_result: dict[str, Any] | None = None
+        self.agent_last_error: str | None = None
+        self.agent_last_input: str | None = None
         self.voice_recording = False
         self.voice_recording_path: str | None = None
         self.voice_last_result: dict[str, Any] | None = None
@@ -1002,6 +1016,20 @@ class AppState:
     def publish_voice_status(self) -> None:
         self.publish({"type": "voice_status", **self.voice_status()})
 
+    def agent_status(self) -> dict[str, Any]:
+        with self.lock:
+            return {
+                "agent_enabled": self.agent_loop is not None,
+                "active": self.agent_active,
+                "permission_profile": self.config.agent_permission_profile,
+                "last_input": self.agent_last_input,
+                "last_result": self.agent_last_result,
+                "last_error": self.agent_last_error,
+            }
+
+    def publish_agent_status(self) -> None:
+        self.publish({"type": "agent_status", **self.agent_status()})
+
     def handle_streaming_asr_result(self, result: dict[str, Any]) -> None:
         text = str(result.get("text", "") or "").strip()
         if not text:
@@ -1191,44 +1219,128 @@ class AppState:
         self.publish_voice_status()
         return {"ok": True, "recording": False, "recording_file": recording.to_dict(), "transcript": transcript}
 
-    def handle_voice_reply_text(self, text: str, reply_behavior: str, session_id: int) -> None:
-        reply_text = f"首长，刚才识别到：{text}"
+    def deliver_reply_text(
+        self,
+        *,
+        source: str,
+        title: str,
+        text: str,
+        reply_behavior: str,
+        session_id: int | None = None,
+    ) -> None:
         with self.lock:
-            still_current = session_id == self.voice_session_id
+            still_current = session_id is None or session_id == self.voice_session_id
             phone_off_hook = self.last_state == "RELEASED"
             callback_enabled = self.config.enable_callback
 
         if not still_current:
-            self.add_action_log("语音回复已丢弃：会话已取消或已被新会话替换。")
+            self.add_action_log("回话已丢弃：会话已取消或已被新会话替换。")
             return
 
         if reply_behavior == "none":
             return
 
         if reply_behavior == "direct":
-            self.enqueue_reply("voice-asr", reply_text, title="语音识别回报")
+            self.enqueue_reply(source, text, title=title)
             if phone_off_hook:
                 with self.lock:
                     self.callback_session_active = True
-                self.start_reply_playback("语音会话直接回报")
+                self.start_reply_playback(f"{title}直接回报")
             elif callback_enabled:
-                self.add_action_log("电话已挂机：语音回报转入回拨提醒。")
-                self.start_operator_alert("voice-asr")
+                self.add_action_log("电话已挂机：回话转入回拨提醒。")
+                self.start_operator_alert(source)
             else:
-                self.add_action_log("语音回报已入队：电话已挂机且回拨开关关闭。")
+                self.add_action_log("回话已入队：电话已挂机且回拨开关关闭。")
             return
 
-        self.enqueue_reply("voice-asr", reply_text, title="语音识别回报")
+        self.enqueue_reply(source, text, title=title)
         with self.lock:
             phone_off_hook = self.last_state == "RELEASED"
             should_alert = self.last_state == "PRESSED" and callback_enabled
         if phone_off_hook:
             with self.lock:
                 self.callback_session_active = True
-            self.start_reply_playback("语音回拨已接听")
+            self.start_reply_playback(f"{title}已接听")
             return
         if should_alert:
-            self.start_operator_alert("voice-asr")
+            self.start_operator_alert(source)
+
+    def handle_voice_reply_text(self, text: str, reply_behavior: str, session_id: int) -> None:
+        if normalize_business_mode(self.config.business_mode) == "doubao":
+            self.run_agent_turn(text, reply_behavior=reply_behavior, session_id=session_id, source="voice-asr")
+            return
+
+        reply_text = f"首长，刚才识别到：{text}"
+        self.deliver_reply_text(
+            source="voice-asr",
+            title="语音识别回报",
+            text=reply_text,
+            reply_behavior=reply_behavior,
+            session_id=session_id,
+        )
+
+    def run_agent_turn(
+        self,
+        text: str,
+        *,
+        reply_behavior: str = "direct",
+        session_id: int | None = None,
+        source: str = "manual",
+    ) -> dict[str, Any]:
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return {"ok": False, "error": "empty agent input"}
+        if self.agent_loop is None or AgentContext is None:
+            error = "agent runtime is not available"
+            with self.lock:
+                self.agent_last_error = error
+            self.add_action_log(f"Agent 未启动：{error}")
+            self.publish_agent_status()
+            return {"ok": False, "error": error}
+
+        with self.lock:
+            if session_id is not None and session_id != self.voice_session_id:
+                self.add_action_log("Agent 命令已丢弃：会话已取消或已被新会话替换。")
+                return {"ok": False, "error": "voice session is stale"}
+            self.agent_active = True
+            self.agent_last_input = clean_text
+            self.agent_last_error = None
+        self.add_action_log(f"Agent 收到命令：{clean_text}")
+        self.publish_agent_status()
+
+        try:
+            context = AgentContext(permission_profile=self.config.agent_permission_profile, source=source)
+            result = self.agent_loop.run(clean_text, context)
+        except Exception as exc:
+            error = str(exc)
+            with self.lock:
+                self.agent_active = False
+                self.agent_last_error = error
+            self.add_action_log(f"Agent 执行失败：{error}")
+            self.publish_agent_status()
+            return {"ok": False, "error": error}
+
+        result_payload = result.to_dict()
+        for tool_result in result.tool_results:
+            if tool_result.event:
+                self.publish(tool_result.event)
+            self.add_action_log(f"Agent tool call：{tool_result.message}")
+
+        with self.lock:
+            self.agent_active = False
+            self.agent_last_result = result_payload
+            self.agent_last_error = None
+        self.publish_agent_status()
+
+        completion_behavior = self.resolve_voice_reply_behavior(reply_behavior, self.config.voice_reply_policy)
+        self.deliver_reply_text(
+            source="agent",
+            title="Agent 回报",
+            text=result.final_text,
+            reply_behavior=completion_behavior,
+            session_id=session_id,
+        )
+        return {"ok": True, **result_payload}
 
     def start_agent_voice_session(self, reason: str = "摘机通话", *, allow_on_hook: bool = False) -> dict[str, Any]:
         with self.lock:
@@ -2052,6 +2164,7 @@ class AppState:
                 "alert_elapsed_seconds": int(time.monotonic() - self.alert_started_at) if self.alert_started_at else 0,
                 "pending_report_text": self.pending_report_text,
                 **self.voice_status(),
+                "agent": self.agent_status(),
                 **self.reply_status(),
                 **self.simulation_status(),
             }
@@ -6852,6 +6965,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self.send_json(self.app.speech_speakers(resource_id))
         elif route == "/api/voice/status":
             self.send_json(self.app.voice_status())
+        elif route == "/api/agent/status":
+            self.send_json({"ok": True, **self.app.agent_status()})
         elif route == "/events":
             self.handle_events()
         else:
@@ -6975,6 +7090,11 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             reason = str(data.get("reason", "web"))
             allow_on_hook = bool(data.get("allow_on_hook", False))
             self.send_json(self.app.start_agent_voice_session(reason, allow_on_hook=allow_on_hook))
+        elif route == "/api/agent/turn":
+            data = self.read_json()
+            text = extract_reply_text_from_hook(data)
+            reply_behavior = str(data.get("reply_behavior", data.get("reply_policy", "direct")))
+            self.send_json(self.app.run_agent_turn(text, reply_behavior=reply_behavior, source=str(data.get("source", "api"))))
         elif route == "/api/voice/stop":
             data = self.read_json()
             reason = str(data.get("reason", "web"))

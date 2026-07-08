@@ -186,6 +186,36 @@ reply_status.playback_active -> reporting
 其他空闲状态 -> waiting
 ```
 
+Agent skill 会通过同一个事件流把地球操作投递给页面：
+
+```json
+{
+  "type": "command_center_command",
+  "command": {
+    "source": "agent",
+    "skill": "command_center.earth",
+    "action": "focusCity",
+    "payload": "北京",
+    "options": { "zoom": 11.8 }
+  }
+}
+```
+
+页面收到后会复用现有桥接命令执行，不需要刷新页面。
+
+最小 Agent 文字入口：
+
+```http
+POST /api/agent/turn
+Content-Type: application/json
+
+{
+  "source": "codex",
+  "text": "定位北京",
+  "reply_behavior": "direct"
+}
+```
+
 可直接调用的本机控制命令：
 
 ```js
@@ -206,6 +236,7 @@ window.AILandline.ledOff()
 
 ```text
 POST /api/agent/start
+POST /api/agent/turn
 POST /api/voice/stop
 POST /api/playback/stop
 POST /api/alert/clear
