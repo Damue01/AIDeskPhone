@@ -461,7 +461,7 @@ def extract_reply_text_from_hook(data: dict[str, Any]) -> str:
         if text:
             return text
 
-    return "任务已经完成，通讯员等待向首长回报。"
+    return ""
 
 
 VOICE_CANCEL_PATTERNS = (
@@ -1418,7 +1418,9 @@ class AppState:
             return
 
         if reply_behavior == "direct":
-            self.enqueue_reply(source, text, title=title)
+            reply = self.enqueue_reply(source, text, title=title)
+            if reply is None:
+                return
             if phone_off_hook:
                 with self.lock:
                     self.callback_session_active = True
@@ -1430,7 +1432,9 @@ class AppState:
                 self.add_action_log("回话已入队：电话已挂机且回拨开关关闭。")
             return
 
-        self.enqueue_reply(source, text, title=title)
+        reply = self.enqueue_reply(source, text, title=title)
+        if reply is None:
+            return
         with self.lock:
             phone_off_hook = self.last_state == "RELEASED"
             should_alert = self.last_state == "PRESSED" and callback_enabled
@@ -1499,15 +1503,13 @@ class AppState:
             return {"ok": False, "error": error}
 
         result_payload = result.to_dict()
-        final_text = str(result.final_text or "")
         skill_context = self.format_agent_skill_context(result)
         final_text = self.prepare_phone_agent_reply_text(
             source,
             clean_text,
-            final_text,
             skill_context=skill_context,
         )
-        result_payload["final_text"] = final_text
+        result_payload["final_text"] = final_text or ""
         for tool_result in result.tool_results:
             if tool_result.event:
                 self.publish(tool_result.event)
@@ -1520,13 +1522,16 @@ class AppState:
         self.publish_agent_status()
 
         completion_behavior = self.resolve_voice_reply_behavior(reply_behavior, self.config.voice_reply_policy)
-        self.deliver_reply_text(
-            source="agent",
-            title="通讯员回报",
-            text=final_text,
-            reply_behavior=completion_behavior,
-            session_id=session_id,
-        )
+        if final_text:
+            self.deliver_reply_text(
+                source="agent",
+                title="通讯员回报",
+                text=final_text,
+                reply_behavior=completion_behavior,
+                session_id=session_id,
+            )
+        else:
+            self.add_action_log("本轮没有生成电话回话；不播放、不回拨。")
         return {"ok": True, **result_payload}
 
     def start_agent_voice_session(self, reason: str = "摘机通话", *, allow_on_hook: bool = False) -> dict[str, Any]:
@@ -1653,9 +1658,12 @@ class AppState:
             self.add_action_log(f"语音回话已清除：{reason}（{removed} 条）")
             self.publish_reply_status()
 
-    def enqueue_reply(self, source: str, text: str, title: str | None = None, audio_path: str | None = None) -> ReplyTask:
+    def enqueue_reply(self, source: str, text: str, title: str | None = None, audio_path: str | None = None) -> ReplyTask | None:
         source = (source or "ai").strip() or "ai"
-        clean_text = compact_hook_text(text) or "任务已经完成，通讯员等待向首长回报。"
+        clean_text = compact_hook_text(text)
+        if not clean_text:
+            self.add_action_log(f"回话未入队：内容为空（{source}）。")
+            return None
         with self.lock:
             self.reply_counter += 1
             reply = ReplyTask(
@@ -1674,7 +1682,10 @@ class AppState:
         return reply
 
     def prepare_operator_report_text(self, source: str, text: str) -> str:
-        clean_text = compact_hook_text(text) or "任务已经完成，通讯员等待向首长回报。"
+        clean_text = compact_hook_text(text)
+        if not clean_text:
+            self.add_action_log(f"通讯员润色跳过：内容为空（{source}）。")
+            return ""
         if self.speech is None:
             return clean_text
         is_ready = getattr(self.speech, "is_operator_ready", None)
@@ -1684,7 +1695,7 @@ class AppState:
         try:
             result = format_report(clean_text, source=source)
         except Exception as exc:
-            self.add_action_log(f"通讯员润色失败，回退原文：{exc}")
+            self.add_action_log(f"通讯员润色失败，保留原文：{exc}")
             return clean_text
         if isinstance(result, dict) and result.get("success"):
             report_text = compact_hook_text(result.get("text", ""))
@@ -1693,36 +1704,36 @@ class AppState:
                 self.add_action_log(f"通讯员润色完成：model={result.get('model', 'doubao')} {latency:.1f}s")
                 return report_text
         error = result.get("error") if isinstance(result, dict) else "unknown"
-        self.add_action_log(f"通讯员润色不可用，回退原文：{error}")
+        self.add_action_log(f"通讯员润色不可用，保留原文：{error}")
         return clean_text
 
     def prepare_phone_agent_reply_text(
         self,
         source: str,
         text: str,
-        fallback: str,
         *,
         skill_context: str = "",
-    ) -> str:
+    ) -> str | None:
         clean_text = compact_hook_text(text)
-        fallback_text = compact_hook_text(fallback) or "我在，您说。"
-        if not clean_text or self.speech is None:
-            return fallback_text
+        if not clean_text:
+            self.add_action_log("通讯员角色回复未生成：输入为空。")
+            return None
+        if self.speech is None:
+            self.add_action_log("通讯员角色回复不可用：角色模型未初始化，本轮不生成电话回话。")
+            return None
         format_reply = getattr(self.speech, "format_phone_agent_reply", None)
         if not callable(format_reply):
-            return fallback_text
+            self.add_action_log("通讯员角色回复不可用：当前语音服务不支持角色回复，本轮不生成电话回话。")
+            return None
         try:
             result = format_reply(
                 clean_text,
                 source=source,
                 skill_context=skill_context,
-                fallback_text=fallback_text,
             )
-        except TypeError:
-            result = format_reply(clean_text, source=source)
         except Exception as exc:
-            self.add_action_log(f"通讯员角色回复生成失败，使用兜底：{exc}")
-            return fallback_text
+            self.add_action_log(f"通讯员角色回复生成失败，本轮不生成电话回话：{exc}")
+            return None
         if isinstance(result, dict) and result.get("success"):
             reply_text = compact_hook_text(result.get("text", ""))
             if reply_text:
@@ -1730,8 +1741,8 @@ class AppState:
                 self.add_action_log(f"通讯员角色回复生成完成：{latency:.1f}s")
                 return reply_text
         error = result.get("error") if isinstance(result, dict) else "unknown"
-        self.add_action_log(f"通讯员角色回复不可用，使用兜底：{error}")
-        return fallback_text
+        self.add_action_log(f"通讯员角色回复不可用，本轮不生成电话回话：{error}")
+        return None
 
     def format_agent_skill_context(self, result: Any) -> str:
         rows: list[str] = []
@@ -2769,8 +2780,10 @@ class AppState:
 
     def run_ai_hook_signal(self, source: str = "ai", text: str | None = None) -> bool:
         source = (source or "ai").strip() or "ai"
-        report_text = self.prepare_operator_report_text(source, text or "任务已经完成，通讯员等待向首长回报。")
-        self.enqueue_reply(source, report_text, title=f"{source} 通讯员回报")
+        report_text = self.prepare_operator_report_text(source, text or "")
+        reply = self.enqueue_reply(source, report_text, title=f"{source} 通讯员回报")
+        if reply is None:
+            return False
         with self.lock:
             already_off_hook = self.last_state == "RELEASED"
             callback_enabled = self.config.enable_callback
@@ -7539,7 +7552,10 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             text = extract_reply_text_from_hook(data)
             title = str(data.get("title", "") or "") or None
             audio_path = str(data.get("audio_path", "") or "") or None
-            self.app.enqueue_reply(source, text, title=title, audio_path=audio_path)
+            reply = self.app.enqueue_reply(source, text, title=title, audio_path=audio_path)
+            if reply is None:
+                self.send_json({"ok": False, "error": "empty reply text", **self.app.reply_status()})
+                return
             with self.app.lock:
                 already_off_hook = self.app.last_state == "RELEASED"
                 callback_enabled = self.app.config.enable_callback

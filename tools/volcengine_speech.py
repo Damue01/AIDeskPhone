@@ -304,13 +304,11 @@ def build_phone_agent_reply_payload(
     *,
     source: str = "voice",
     skill_context: str = "",
-    fallback_text: str = "",
 ) -> dict[str, Any]:
     user_content = (
         f"来源：{source or 'voice'}\n"
         "小叶当前能办理的事：控制指挥中心地球页，包括定位城市、跳转经纬度、切换状态、返回地球屏保。\n"
         f"已经办完或没办成的事项：{skill_context or '无'}\n"
-        f"口吻参考（仅保底，不要照抄）：{fallback_text or '无'}\n"
         "请直接以“小叶”的电话通讯员身份回应下面这句话。执行类也必须走角色对话，不要复述原话，不要解释规则。\n\n"
         f"用户电话内容：\n{text}"
     )
@@ -625,7 +623,6 @@ class VolcengineSpeech:
         *,
         source: str = "voice",
         skill_context: str = "",
-        fallback_text: str = "",
     ) -> dict[str, Any]:
         clean_text = str(text or "").strip()
         if not clean_text:
@@ -643,7 +640,6 @@ class VolcengineSpeech:
             clean_text,
             source=source,
             skill_context=skill_context,
-            fallback_text=fallback_text,
         )
         started = time.time()
         response = requests.post(

@@ -25,20 +25,20 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["lng"], 116.4074)
         self.assertEqual(payload["lat"], 39.9042)
 
-    def test_non_action_turn_returns_conversation_without_tool_call(self) -> None:
+    def test_non_action_turn_does_not_synthesize_local_reply(self) -> None:
         result = MinimalAgentLoop().run("帮我整理一下文件")
 
         self.assertEqual(result.tool_calls, [])
-        self.assertEqual(result.final_text, "我在，您说。")
+        self.assertEqual(result.final_text, "")
         self.assertNotIn("帮我整理一下文件", result.final_text)
         for term in ROLE_LEAK_TERMS:
             self.assertNotIn(term, result.final_text)
 
-    def test_question_without_tool_intent_stays_in_chat_mode(self) -> None:
+    def test_question_without_tool_intent_does_not_synthesize_local_reply(self) -> None:
         result = MinimalAgentLoop().run("今天我有点累，是不是先休息一下")
 
         self.assertEqual(result.tool_calls, [])
-        self.assertEqual(result.final_text, "我在，您说。")
+        self.assertEqual(result.final_text, "")
         self.assertNotIn("今天我有点累", result.final_text)
         for term in ROLE_LEAK_TERMS:
             self.assertNotIn(term, result.final_text)

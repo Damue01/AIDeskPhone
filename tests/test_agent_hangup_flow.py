@@ -136,14 +136,12 @@ class FakePhoneAgentSpeech:
         *,
         source: str = "voice",
         skill_context: str = "",
-        fallback_text: str = "",
     ) -> dict[str, object]:
         self.calls.append(
             {
                 "text": text,
                 "source": source,
                 "skill_context": skill_context,
-                "fallback_text": fallback_text,
             }
         )
         return {
@@ -199,6 +197,7 @@ class AgentHangupFlowTest(unittest.TestCase):
 
     def test_direct_reply_on_hook_is_queued_for_callback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
+        app.speech = FakePhoneAgentSpeech("收到，我去看。")  # type: ignore[assignment]
         app.last_state = "PRESSED"
         app.voice_session_id = 7
         alerts: list[str] = []
@@ -260,6 +259,7 @@ class AgentHangupFlowTest(unittest.TestCase):
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
         recorder = FakeRecorder(recording=True)
         app.recorder = recorder  # type: ignore[assignment]
+        app.speech = FakePhoneAgentSpeech("收到，我去查。")  # type: ignore[assignment]
         app.last_state = "PRESSED"
         app.voice_recording = True
         app.voice_session_id = 9
@@ -281,9 +281,9 @@ class AgentHangupFlowTest(unittest.TestCase):
         logs = "\n".join(app.action_logs)
         self.assertIn("电话已挂机：停止录音并提交已收到的语音", logs)
         self.assertIn("收到命令：查一下状态", logs)
-        self.assertIn("回话内容：我在，您说。", logs)
+        self.assertIn("回话内容：收到，我去查。", logs)
 
-    def test_agent_voice_turn_publishes_command_center_skill_event(self) -> None:
+    def test_agent_voice_turn_publishes_command_center_skill_event_without_fallback_reply(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
         app.last_state = "PRESSED"
         app.voice_session_id = 4
@@ -300,11 +300,11 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(len(command_events), 1)
         self.assertEqual(command_events[0]["command"]["action"], "focusCity")
         self.assertEqual(command_events[0]["command"]["payload"], "北京")
-        self.assertEqual(app.reply_queue[0].source, "agent")
-        self.assertIn("北京", app.reply_queue[0].text)
+        self.assertEqual(app.reply_status()["queue_size"], 0)
         logs = "\n".join(app.action_logs)
         self.assertIn("收到命令：定位北京", logs)
-        self.assertIn("回话内容：已定位北京。", logs)
+        self.assertIn("命令执行结果：已定位北京", logs)
+        self.assertIn("本轮没有生成电话回话；不播放、不回拨。", logs)
 
     def test_non_tool_voice_turn_uses_phone_agent_role_model_when_available(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
@@ -317,7 +317,6 @@ class AgentHangupFlowTest(unittest.TestCase):
 
         self.assertEqual(app.reply_queue[0].text, "收到，我来处理。您稍等。")
         self.assertEqual(speech.calls[0]["skill_context"], "")
-        self.assertEqual(speech.calls[0]["fallback_text"], "我在，您说。")
         logs = "\n".join(app.action_logs)
         self.assertIn("通讯员角色回复生成完成", logs)
         self.assertIn("回话内容：收到，我来处理。您稍等。", logs)
@@ -333,7 +332,6 @@ class AgentHangupFlowTest(unittest.TestCase):
 
         self.assertEqual(app.reply_queue[0].text, "好了，已经定位到北京。")
         self.assertEqual(speech.calls[0]["skill_context"], "已办好：已定位北京")
-        self.assertEqual(speech.calls[0]["fallback_text"], "已定位北京。")
         logs = "\n".join(app.action_logs)
         self.assertIn("命令执行结果：已定位北京", logs)
         self.assertIn("回话内容：好了，已经定位到北京。", logs)
@@ -353,7 +351,7 @@ class AgentHangupFlowTest(unittest.TestCase):
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["transcript"]["text"], "打开会议纪要")
-        self.assertEqual(app.reply_status()["queue_size"], 1)
+        self.assertEqual(app.reply_status()["queue_size"], 0)
         self.assertEqual(app.voice_status()["partial_text"], "打开会议纪要")
         self.assertTrue(stream.submitted)
 

@@ -384,10 +384,8 @@ def valid_lng_lat(lng: float, lat: float) -> bool:
 
 
 def build_conversation_text(text: str) -> str:
-    clean = normalize_text(text)
-    if not clean:
-        return "我没听清，您再说一遍。"
-    return "我在，您说。"
+    del text
+    return ""
 
 
 def build_final_text(text: str, results: list[AgentToolResult]) -> str:
