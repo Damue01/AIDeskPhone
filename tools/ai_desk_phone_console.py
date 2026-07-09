@@ -48,12 +48,13 @@ except ImportError:  # pragma: no cover - kept optional for partial deployments
         AudioRecorderError = RuntimeError  # type: ignore[assignment]
 
 try:
-    from agent_runtime import AgentContext, MinimalAgentLoop
+    from agent_runtime import AgentContext, AgentToolCall, MinimalAgentLoop
 except ImportError:  # pragma: no cover - kept optional for package imports
     try:
-        from tools.agent_runtime import AgentContext, MinimalAgentLoop
+        from tools.agent_runtime import AgentContext, AgentToolCall, MinimalAgentLoop
     except ImportError:  # pragma: no cover - kept optional for partial deployments
         AgentContext = None  # type: ignore[assignment]
+        AgentToolCall = None  # type: ignore[assignment]
         MinimalAgentLoop = None  # type: ignore[assignment]
 
 
@@ -71,6 +72,7 @@ FIRMWARE_DATA_WAIT_SECONDS = 3.0
 RAW_LOG_PUBLISH_INTERVAL_SECONDS = 0.25
 SAMPLE_PUBLISH_INTERVAL_SECONDS = 0.12
 REAL_SAMPLE_SUPPRESS_SIMULATION_SECONDS = 4.0
+UDP_DEVICE_STALE_SECONDS = 8.0
 FIRMWARE_UPLOAD_TIMEOUT_SECONDS = 180.0
 OPERATOR_RING_ON_SECONDS = 1.0
 OPERATOR_RING_OFF_SECONDS = 4.0
@@ -162,6 +164,7 @@ class SensorSample:
     wifi_rssi: int | None = None
     wifi_status: int | None = None
     wifi_disconnect_reason: int | None = None
+    wifi_tx_power: int | None = None
     adc_synthetic: bool = False
 
 
@@ -402,6 +405,7 @@ def parse_serial_line(line: str) -> SensorSample | None:
                 wifi_rssi=payload.get("wifi_rssi"),
                 wifi_status=payload.get("wifi_status"),
                 wifi_disconnect_reason=payload.get("wifi_disconnect_reason"),
+                wifi_tx_power=payload.get("wifi_tx_power"),
                 adc_synthetic=bool(payload.get("adc_synthetic", not has_adc)),
             )
 
@@ -587,6 +591,8 @@ class WindowsHotkeySender:
         "space": 0x20,
         "tab": 0x09,
         "esc": 0x1B,
+        **{chr(code).lower(): code for code in range(ord("A"), ord("Z") + 1)},
+        **{str(number): ord(str(number)) for number in range(10)},
     }
     KEYEVENTF_KEYUP = 0x0002
 
@@ -1051,6 +1057,12 @@ class AppState:
                 "udp_last_seen_seconds": age_seconds,
             }
 
+    def has_fresh_udp_device(self) -> bool:
+        with self.udp_lock:
+            if self.udp_socket is None or self.udp_device_address is None or self.udp_last_seen is None:
+                return False
+            return time.monotonic() - self.udp_last_seen <= UDP_DEVICE_STALE_SECONDS
+
     def simulation_label(self) -> str | None:
         with self.lock:
             if not self.simulation_enabled:
@@ -1089,15 +1101,31 @@ class AppState:
             current_sample = dict(self.current_sample) if isinstance(self.current_sample, dict) else None
             sample_count = len(self.samples)
             simulation_enabled = self.simulation_enabled
+            real_sample_last_seen = self.real_sample_last_seen
         udp = self.udp_status()
-        source = str((current_sample or {}).get("sample_source") or "")
+        udp_fresh = (
+            udp["udp_device"] is not None
+            and udp["udp_last_seen_seconds"] is not None
+            and udp["udp_last_seen_seconds"] <= UDP_DEVICE_STALE_SECONDS
+        )
+        real_sample_last_seen_seconds = (
+            max(0.0, time.monotonic() - real_sample_last_seen)
+            if real_sample_last_seen is not None
+            else None
+        )
+        real_sample_fresh = (
+            real_sample_last_seen_seconds is not None
+            and real_sample_last_seen_seconds <= UDP_DEVICE_STALE_SECONDS
+        )
+        serial_connected = self.is_serial_connected()
         return {
             "ok": True,
             **udp,
             **self.serial_debug_status(),
-            "serial_connected": self.is_serial_connected(),
+            "serial_connected": serial_connected,
             "serial_port": self.current_serial_port(),
-            "real_device_connected": bool(udp["udp_device"]) or source == "device",
+            "real_device_connected": udp_fresh or serial_connected or real_sample_fresh,
+            "real_sample_last_seen_seconds": real_sample_last_seen_seconds,
             "simulation_enabled": simulation_enabled,
             "sample_count": sample_count,
             "current_sample": current_sample,
@@ -1557,6 +1585,122 @@ class AppState:
             session_id=session_id,
         )
 
+    def agent_tool_specs(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "skill": "command_center.earth",
+                "name": "focus_city",
+                "function": {
+                    "name": "command_center_earth_focus_city",
+                    "description": "定位并放大到指定城市。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "city": {"type": "string", "description": "城市名称，例如北京、上海。"},
+                            "zoom": {"type": "number", "description": "地图缩放等级，默认 11.8。"},
+                        },
+                        "required": ["city"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "skill": "command_center.earth",
+                "name": "fly_to",
+                "function": {
+                    "name": "command_center_earth_fly_to",
+                    "description": "跳转到指定经纬度坐标。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "lng": {"type": "number", "description": "经度。"},
+                            "lat": {"type": "number", "description": "纬度。"},
+                            "label": {"type": "string", "description": "坐标标签。"},
+                            "zoom": {"type": "number", "description": "地图缩放等级，默认 9。"},
+                        },
+                        "required": ["lng", "lat"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "skill": "command_center.earth",
+                "name": "set_phase",
+                "function": {
+                    "name": "command_center_earth_set_phase",
+                    "description": "切换指挥中心当前阶段。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "phase": {
+                                "type": "string",
+                                "enum": ["waiting", "listening", "executing", "feedback", "reporting"],
+                            }
+                        },
+                        "required": ["phase"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "skill": "command_center.earth",
+                "name": "show_globe",
+                "function": {
+                    "name": "command_center_earth_show_globe",
+                    "description": "返回地球屏保视图。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "phase": {
+                                "type": "string",
+                                "enum": ["waiting", "listening", "executing", "feedback", "reporting"],
+                            }
+                        },
+                    },
+                },
+            },
+        ]
+
+    def execute_agent_tool_call(self, call_payload: dict[str, Any], context: Any) -> dict[str, Any]:
+        if self.agent_loop is None or AgentToolCall is None:
+            return {"ok": False, "message": "agent runtime is not available"}
+
+        function_name = str(call_payload.get("function_name") or call_payload.get("name") or "")
+        skill = str(call_payload.get("skill") or "")
+        name = str(call_payload.get("name") or "")
+        for spec in self.agent_tool_specs():
+            spec_function = (spec.get("function") or {}).get("name")
+            if function_name == spec_function:
+                skill = str(spec.get("skill") or skill)
+                name = str(spec.get("name") or name)
+                break
+        if not skill:
+            skill = "command_center.earth"
+        if function_name.startswith("command_center_earth_") and name == function_name:
+            name = function_name.removeprefix("command_center_earth_")
+
+        arguments = call_payload.get("arguments") or {}
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments)
+            except json.JSONDecodeError:
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+
+        call = AgentToolCall(
+            id=str(call_payload.get("id") or f"call-{uuid.uuid4().hex[:12]}"),
+            skill=skill,
+            name=name,
+            arguments=arguments,
+        )
+        result = self.agent_loop.execute(call, context)
+        if result.event:
+            self.publish(result.event)
+        self.add_action_log(f"工具调用结果：{result.message}")
+        return result.to_dict()
+
     def run_agent_turn(
         self,
         text: str,
@@ -1586,8 +1730,91 @@ class AppState:
         self.add_action_log(f"收到命令：{compact_log_text(clean_text)}")
         self.publish_agent_status()
 
+        context = AgentContext(permission_profile=self.config.agent_permission_profile, source=source, cwd=str(ROOT))
+        model_agent = getattr(self.speech, "run_phone_agent_turn", None) if self.speech is not None else None
+        if callable(model_agent):
+            try:
+                result_payload = model_agent(
+                    clean_text,
+                    source=source,
+                    tools=self.agent_tool_specs(),
+                    execute_tool=lambda call_payload: self.execute_agent_tool_call(call_payload, context),
+                )
+            except Exception as exc:
+                error = str(exc)
+                with self.lock:
+                    self.agent_active = False
+                    self.agent_last_error = error
+                self.add_action_log(f"Agent 执行失败：{error}")
+                self.publish_agent_status()
+                return {"ok": False, "error": error}
+
+            if not isinstance(result_payload, dict) or not result_payload.get("success"):
+                error = (
+                    result_payload.get("error")
+                    if isinstance(result_payload, dict)
+                    else "model agent returned invalid result"
+                )
+                with self.lock:
+                    self.agent_active = False
+                    self.agent_last_error = str(error)
+                self.add_action_log(f"Agent 执行失败：{error}")
+                self.publish_agent_status()
+                return {"ok": False, "error": str(error)}
+
+            fallback_skill_context = ""
+            fallback_final_text = ""
+            if not result_payload.get("tool_calls"):
+                try:
+                    fallback_result = self.agent_loop.run(clean_text, context)
+                except Exception as exc:
+                    self.add_action_log(f"Agent 本地兜底执行失败：{exc}")
+                else:
+                    if getattr(fallback_result, "tool_calls", None):
+                        fallback_payload = fallback_result.to_dict()
+                        result_payload["tool_calls"] = fallback_payload.get("tool_calls", [])
+                        result_payload["tool_results"] = fallback_payload.get("tool_results", [])
+                        result_payload["agent_fallback"] = "local_command_center"
+                        fallback_skill_context = self.format_agent_skill_context(fallback_result)
+                        fallback_final_text = compact_hook_text(fallback_payload.get("final_text") or "")
+                        self.add_action_log("Agent 模型没有调用工具，已用本地指挥中心规划兜底执行。")
+                        for tool_result in fallback_result.tool_results:
+                            if tool_result.event:
+                                self.publish(tool_result.event)
+                            self.add_action_log(f"命令执行结果：{tool_result.message}")
+
+            final_text = compact_hook_text(result_payload.get("final_text") or result_payload.get("text") or "")
+            if fallback_skill_context:
+                final_text = (
+                    self.prepare_phone_agent_reply_text(
+                        source,
+                        clean_text,
+                        skill_context=fallback_skill_context,
+                    )
+                    or fallback_final_text
+                    or final_text
+                )
+            result_payload["final_text"] = final_text
+            with self.lock:
+                self.agent_active = False
+                self.agent_last_result = result_payload
+                self.agent_last_error = None
+            self.publish_agent_status()
+
+            completion_behavior = self.resolve_voice_reply_behavior(reply_behavior, self.config.voice_reply_policy)
+            if final_text:
+                self.deliver_reply_text(
+                    source="agent",
+                    title="通讯员回报",
+                    text=final_text,
+                    reply_behavior=completion_behavior,
+                    session_id=session_id,
+                )
+            else:
+                self.add_action_log("本轮没有生成电话回话；不播放、不回拨。")
+            return {"ok": True, **result_payload}
+
         try:
-            context = AgentContext(permission_profile=self.config.agent_permission_profile, source=source, cwd=str(ROOT))
             result = self.agent_loop.run(clean_text, context)
         except Exception as exc:
             error = str(exc)
@@ -1903,6 +2130,30 @@ class AppState:
         self.clear_ai_alert(reason)
         self.add_action_log(f"回话队列已清空：{reason}")
         self.publish_reply_status()
+
+    def clear_runtime_memory(self, reason: str = "manual") -> dict[str, Any]:
+        self.stop_reply_playback(f"{reason} clear runtime memory", wait_seconds=0.8)
+        with self.lock:
+            self.reply_queue.clear()
+            self.active_reply = None
+            self.completed_replies.clear()
+            self.pending_report_text = None
+            self.callback_session_active = False
+            self.voice_last_result = None
+            self.voice_last_error = None
+            self.voice_last_partial = None
+            self.voice_last_partial_at = None
+            self.voice_last_partial_changed_at = None
+            self.voice_cancel_reason = None
+            self.agent_last_input = None
+            self.agent_last_result = None
+            self.agent_last_error = None
+        self.clear_ai_alert(reason)
+        self.add_action_log(f"历史记忆已清空：{reason}")
+        self.publish_reply_status()
+        self.publish_voice_status()
+        self.publish_agent_status()
+        return {"ok": True, **self.reply_status(), **self.voice_status(), "agent": self.agent_status()}
 
     def expire_unanswered_callback(self, reason: str = "回拨无人接听自动取消") -> int:
         self.stop_reply_playback(f"{reason} 停止播放", wait_seconds=0.0)
@@ -2574,6 +2825,7 @@ class AppState:
             "wifi_rssi": sample.wifi_rssi,
             "wifi_status": sample.wifi_status,
             "wifi_disconnect_reason": sample.wifi_disconnect_reason,
+            "wifi_tx_power": sample.wifi_tx_power,
             "adc_synthetic": sample.adc_synthetic,
         }
         now = time.monotonic()
@@ -2634,8 +2886,11 @@ class AppState:
             self.last_state = self.machine.stable_state
             simulation_enabled = self.simulation_enabled
             sim_state = self.sim_hook_state
-        if self.is_serial_connected() and self.send_serial_command(build_device_config_command(config)):
+        command = build_device_config_command(config)
+        if self.is_serial_connected() and self.send_serial_command(command):
             self.add_state_log("配置已保存到电脑，并已发送给 ESP32 写入板子。")
+        elif self.has_fresh_udp_device() and self.send_udp_command(command):
+            self.add_state_log("配置已保存到电脑，并已通过 Wi-Fi 发送给 ESP32。")
         elif simulation_enabled:
             self.add_state_log("配置已保存到电脑，模拟发送端已按当前配置刷新样本。")
             self.emit_simulated_sample(sim_state, "配置同步")
@@ -2693,9 +2948,7 @@ class AppState:
         return False
 
     def has_hardware_link(self) -> bool:
-        with self.udp_lock:
-            udp_ready = self.udp_socket is not None and self.udp_device_address is not None
-        return udp_ready or self.is_serial_connected()
+        return self.has_fresh_udp_device() or self.is_serial_connected()
 
     def run_hardware_command(self, command: str, *, log: bool = True) -> bool:
         if self.has_hardware_link() and self.send_device_command(command):
@@ -3120,6 +3373,8 @@ def handle_board_line(app: AppState, line: str) -> bool:
         app.add_state_log("ESP32 已确认配置写入板子。")
     elif event_type == "config":
         app.add_state_log("ESP32 已回传当前板载配置。")
+    elif event_type == "command_received":
+        app.add_state_log(f"ESP32 已收到 UDP 命令：{payload.get('bytes')} bytes port={payload.get('port')}")
     elif event_type == "ble":
         app.add_state_log(f"BLE 状态：{payload.get('state')}")
     elif event_type == "buzzer":
@@ -6375,6 +6630,15 @@ INDEX_HTML = r"""<!doctype html>
           </div>
 
           <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="eraser"></i></span>
+            <div class="row-label"><strong>历史记忆</strong></div>
+            <div class="row-control read-only-control">
+              <span class="text-value">语音、回话、角色记录</span>
+              <button class="small-action" type="button" onclick="clearRuntimeMemory()">清空</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
             <span class="icon-cell"><i data-lucide="link"></i></span>
             <div class="row-label"><strong>回话入口</strong></div>
             <div class="row-control read-only-control">
@@ -7250,8 +7514,12 @@ INDEX_HTML = r"""<!doctype html>
     function updateHardwareDebugStatus(payload = {}) {
       latestHardwareStatus = {...latestHardwareStatus, ...payload};
       const sample = payload.current_sample || payload.sample || latestHardwareStatus.current_sample || {};
+      const realConnected = Boolean(payload.real_device_connected ?? latestHardwareStatus.real_device_connected);
+      const udpAge = Number(latestHardwareStatus.udp_last_seen_seconds ?? Number.POSITIVE_INFINITY);
+      const udpFresh = Boolean(latestHardwareStatus.udp_device) && udpAge <= 8;
+      const liveDeviceSample = payload.live_sample === true && sample.sample_source === "device";
       let state = "未监听";
-      if (payload.real_device_connected || sample.sample_source === "device" || latestHardwareStatus.udp_device) {
+      if (realConnected || udpFresh || liveDeviceSample) {
         state = "设备在线";
       } else if (latestHardwareStatus.serial_connected) {
         state = `串口 ${latestHardwareStatus.serial_port || latestHardwareStatus.port || "已连接"}`;
@@ -7524,6 +7792,21 @@ INDEX_HTML = r"""<!doctype html>
       }
     }
 
+    async function clearRuntimeMemory() {
+      try {
+        const result = await fetchJson("/api/memory/clear", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "settings"})
+        }, 10000);
+        updateReplyStatus(result);
+        updateVoiceDebugStatus(result);
+        setSaveStatus("历史记忆已清空。", "ok");
+      } catch (error) {
+        setSaveStatus(`清空历史记忆失败：${error.message}`, "warn");
+      }
+    }
+
     async function copyCallbackEndpoint() {
       updateCallbackEndpoint();
       const endpoint = $("callbackEndpoint").value;
@@ -7686,7 +7969,7 @@ INDEX_HTML = r"""<!doctype html>
       if ($("hardwareLedState")) $("hardwareLedState").textContent = sample.led || "--";
       if ($("hardwareBuzzerState")) $("hardwareBuzzerState").textContent = sample.buzzer || "--";
       if ($("hardwarePulseHint")) $("hardwarePulseHint").textContent = hint;
-      updateHardwareDebugStatus({current_sample: sample, real_device_connected: sample.sample_source === "device"});
+      updateHardwareDebugStatus({current_sample: sample, live_sample: true});
       if (sample.digital || sample.digital_value !== undefined) {
         hardwareSamples.push(sample);
         while (hardwareSamples.length > 180) hardwareSamples.shift();
@@ -7924,6 +8207,7 @@ INDEX_HTML = r"""<!doctype html>
       postFirmwareUpload,
       applyPreset,
       clearReplyQueue,
+      clearRuntimeMemory,
       copyCallbackEndpoint,
       showSettingsPage,
       refreshDebugStatus,
@@ -8057,6 +8341,10 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             reason = str(data.get("reason", "manual"))
             self.app.clear_reply_queue(reason)
             self.send_json({"ok": True, **self.app.reply_status()})
+        elif route == "/api/memory/clear":
+            data = self.read_json()
+            reason = str(data.get("reason", "manual"))
+            self.send_json(self.app.clear_runtime_memory(reason))
         elif route == "/api/playback/stop":
             data = self.read_json()
             reason = str(data.get("reason", "manual"))

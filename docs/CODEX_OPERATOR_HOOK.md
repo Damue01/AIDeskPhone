@@ -170,3 +170,95 @@ POST http://127.0.0.1:8765/api/voice/start
 POST http://127.0.0.1:8765/api/voice/stop
 GET  http://127.0.0.1:8765/api/voice/status
 ```
+
+在 `business_mode = doubao` 时，电话 `RELEASED` 会进入摘机通话；后台用静音检测自动截断一轮语音并调用豆包 ASR。
+如果电话仍然保持摘机，识别结果会按配置直接播放或入队；如果用户说完后 `PRESSED` 挂机，当前录音/识别会继续在后台完成，完成后通过回话队列回拨。只有 AI 正在播报时挂机，才会立即停止当前播报并结束这次语音回话。
+
+## 抬起 / 按下信号
+
+通信协议保持原来的接口，不改字段和路径：
+
+```text
+POST http://127.0.0.1:8765/api/simulate/release
+POST http://127.0.0.1:8765/api/simulate/press
+```
+
+业务层解释为：
+
+```text
+RELEASED = 抬起
+PRESSED  = 按下
+```
+
+接听、停止播放、快捷键触发都由这两个已有信号派生。页面可以显示“抬起 / 按下”，但不改变底层通信协议。
+
+## 在 Codex 里配置 hooks
+
+本仓库已经提供 repo-local hooks 配置：
+
+```text
+.codex/hooks.json
+.codex/hooks/ai_desk_phone_stop_hook.py
+```
+
+Codex 的 `Stop` 事件会在当前回合停止时调用 hook。首次启用或修改 hook 后，需要在 Codex 中使用
+`/hooks` 查看并信任这条项目 hook。信任后，Codex 完成当前回合时会调用
+`tools/codex_operator_hook.py`，把完成消息发送到本地控制台。
+
+这个 hook 会先读取：
+
+```text
+GET http://127.0.0.1:8765/api/replies
+```
+
+如果 `callback_enabled` 为 `false`，脚本会直接跳过，不会发送完成消息。控制台接收端也会再次检查
+“完成后电话回拨”开关；如果开关关闭，即使外部误发了 `/api/ai/hook`，也会丢弃，不入队、不响铃。
+
+当前本机 Codex 还配置了全局 `notify` 包装脚本：
+
+```text
+.codex/hooks/ai_desk_phone_notify.py
+```
+
+它会先调用 Codex 原来的 `codex-computer-use.exe turn-ended` 通知，再在当前工作目录属于
+`AIDeskPhone` 仓库时调用 `tools/codex_operator_hook.py`。这样 Codex 桌面端结束一轮任务时，
+即使没有手动进入 `/hooks` 信任 repo-local Stop hook，也能触发本地电话回拨；其他项目不会误触发电话。
+如果原始通知程序不在 `PATH` 中，可以通过 `CODEX_AI_DESK_PHONE_UPSTREAM_NOTIFY` 指定完整命令。
+
+## 可选环境变量
+
+默认 hook 地址是：
+
+```text
+http://127.0.0.1:8765/api/ai/hook
+```
+
+需要改地址时设置：
+
+```powershell
+$env:AI_DESK_PHONE_HOOK_URL="http://127.0.0.1:8765/api/ai/hook"
+$env:AI_DESK_PHONE_SOURCE="codex"
+```
+
+脚本请求失败时会直接跳过并返回成功码，避免电话控制台没开时影响 Codex 正常结束。
+
+## Hook 请求体
+
+最小请求体：
+
+```json
+{
+  "source": "codex"
+}
+```
+
+携带回话文本：
+
+```json
+{
+  "source": "codex",
+  "text": "首长，任务已经完成。"
+}
+```
+
+控制台会依次尝试读取 `text`、`reply`、`summary`、`message` 字段。没有文本时不会入队。

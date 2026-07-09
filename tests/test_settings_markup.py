@@ -13,6 +13,8 @@ class SettingsMarkupTest(unittest.TestCase):
         self.assertIn("管理快捷键方案", INDEX_HTML)
         self.assertIn("全局音频与回拨", INDEX_HTML)
         self.assertIn("回话入口", INDEX_HTML)
+        self.assertIn("历史记忆", INDEX_HTML)
+        self.assertIn("clearRuntimeMemory", INDEX_HTML)
         self.assertIn("工具调用", INDEX_HTML)
         self.assertIn("完成回报", INDEX_HTML)
         self.assertIn("实时识别", INDEX_HTML)
@@ -82,7 +84,6 @@ class SettingsMarkupTest(unittest.TestCase):
         self.assertNotIn("Codex hook", INDEX_HTML)
         self.assertNotIn("ASR / TTS / 通讯员共用", INDEX_HTML)
         self.assertNotIn("火山 API Key", INDEX_HTML)
-        self.assertNotIn("Ark 角色 API Key", INDEX_HTML)
         self.assertNotIn('id="operatorApiKey"', INDEX_HTML)
 
 

@@ -12,6 +12,7 @@ from tools.volcengine_speech import (
     SpeechConfig,
     StreamingAsrSession,
     VolcengineSpeech,
+    VolcengineSpeechError,
     auth_headers,
     build_phone_agent_reply_payload,
     build_operator_report_payload,
@@ -183,6 +184,20 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
 
         self.assertEqual(chunks, [audio])
 
+    def test_tts_sse_business_error_is_raised_immediately(self) -> None:
+        class FakeResponse:
+            headers = {"Content-Type": "text/event-stream"}
+
+            def iter_lines(self, decode_unicode: bool = False):
+                del decode_unicode
+                yield 'data: {"code":45002001,"message":"No readable text!"}'
+
+        with self.assertRaises(VolcengineSpeechError) as raised:
+            list(VolcengineSpeech(make_config()).iter_tts_audio_chunks(FakeResponse()))
+
+        self.assertIn("45002001", str(raised.exception))
+        self.assertIn("No readable text", str(raised.exception))
+
     def test_operator_report_payload_targets_character_model(self) -> None:
         config = make_config(operator_model="doubao-seed-character-260628")
 
@@ -220,10 +235,14 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
         self.assertEqual(payload["model"], "doubao-seed-character-260628")
         self.assertEqual(payload["messages"][0]["content"], DEFAULT_PHONE_AGENT_SYSTEM_PROMPT)
         self.assertIn("小叶", payload["messages"][0]["content"])
+        self.assertIn("用户是首长", payload["messages"][0]["content"])
+        self.assertNotIn("称呼首长", payload["messages"][0]["content"])
+        self.assertNotIn("不要每句话机械套用称呼", payload["messages"][0]["content"])
         self.assertIn("不要固定套话", payload["messages"][0]["content"])
         self.assertIn("用户是电话另一端的首长", payload["messages"][0]["content"])
         self.assertIn("不要假装已经完成任何动作", payload["messages"][1]["content"])
         self.assertIn("执行类也必须走角色对话", payload["messages"][1]["content"])
+        self.assertIn("没有工具结果前不要说已经完成", payload["messages"][1]["content"])
         self.assertIn("小叶当前能办理的事", payload["messages"][1]["content"])
         self.assertIn("已办好：已定位北京", payload["messages"][1]["content"])
         self.assertIn("最近通话历史", payload["messages"][1]["content"])
@@ -239,6 +258,84 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
         payload = {"choices": [{"message": {"content": "首长，任务已经完成。"}}]}
 
         self.assertEqual(extract_chat_completion_text(payload), "首长，任务已经完成。")
+
+    def test_phone_agent_turn_runs_model_tool_call_loop(self) -> None:
+        config = make_config(operator_api_key="ark-key", operator_model="doubao-seed-character-260628")
+        calls: list[dict[str, object]] = []
+        executed: list[dict[str, object]] = []
+
+        class FakeResponse:
+            def __init__(self, body: dict[str, object]) -> None:
+                self.body = body
+                self.status_code = 200
+
+            def json(self) -> dict[str, object]:
+                return self.body
+
+        responses = [
+            FakeResponse(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "command_center_earth_focus_city",
+                                            "arguments": "{\"city\":\"北京\",\"zoom\":11.8}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ),
+            FakeResponse({"choices": [{"message": {"role": "assistant", "content": "好了，已经定位到北京。"}}]}),
+        ]
+
+        def fake_post(url: str, *, headers: dict[str, str], data: bytes, timeout: int) -> FakeResponse:
+            del url, headers, timeout
+            calls.append(json.loads(data.decode("utf-8")))
+            return responses.pop(0)
+
+        def execute_tool(call: dict[str, object]) -> dict[str, object]:
+            executed.append(call)
+            return {"ok": True, "message": "已定位北京", "name": call["name"], "call_id": call["id"]}
+
+        tools = [
+            {
+                "type": "function",
+                "skill": "command_center.earth",
+                "name": "focus_city",
+                "function": {
+                    "name": "command_center_earth_focus_city",
+                    "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
+                },
+            }
+        ]
+
+        fake_requests = type("FakeRequests", (), {"post": staticmethod(fake_post)})
+        with patch.dict("sys.modules", {"requests": fake_requests}):
+            result = VolcengineSpeech(config).run_phone_agent_turn(
+                "定位北京",
+                source="voice-asr",
+                tools=tools,
+                execute_tool=execute_tool,
+            )
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["final_text"], "好了，已经定位到北京。")
+        self.assertEqual(executed[0]["skill"], "command_center.earth")
+        self.assertEqual(executed[0]["name"], "focus_city")
+        self.assertEqual(executed[0]["arguments"], {"city": "北京", "zoom": 11.8})
+        self.assertIn("tools", calls[0])
+        self.assertEqual(calls[1]["messages"][-1]["role"], "tool")
+        self.assertEqual(result["tool_results"][0]["message"], "已定位北京")
 
     def test_clearable_speech_env_values_can_be_saved_empty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

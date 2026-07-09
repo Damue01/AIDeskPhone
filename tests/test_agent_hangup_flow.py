@@ -155,6 +155,85 @@ class FakePhoneAgentSpeech:
         }
 
 
+class FakeModelDrivenAgentSpeech:
+    def __init__(self, reply: str = "好了，已经定位到北京。") -> None:
+        self.reply = reply
+        self.calls: list[dict[str, object]] = []
+
+    def run_phone_agent_turn(self, text: str, **kwargs: object) -> dict[str, object]:
+        execute_tool = kwargs["execute_tool"]
+        tool_result = execute_tool(
+            {
+                "id": "call-model-1",
+                "skill": "command_center.earth",
+                "name": "focus_city",
+                "arguments": {"city": "北京", "zoom": 11.8},
+            }
+        )
+        self.calls.append({"text": text, **kwargs})
+        return {
+            "success": True,
+            "final_text": self.reply,
+            "tool_calls": [
+                {
+                    "id": "call-model-1",
+                    "skill": "command_center.earth",
+                    "name": "focus_city",
+                    "arguments": {"city": "北京", "zoom": 11.8},
+                }
+            ],
+            "tool_results": [tool_result],
+            "inference_latency": 0.1,
+        }
+
+
+class FakeModelNoToolAgentSpeech:
+    def __init__(
+        self,
+        *,
+        model_reply: str = "收到！小叶立刻定位到上海，您稍等。",
+        formatted_reply: str = "好了，已经定位到上海。",
+    ) -> None:
+        self.model_reply = model_reply
+        self.formatted_reply = formatted_reply
+        self.calls: list[dict[str, object]] = []
+        self.reply_calls: list[dict[str, str]] = []
+
+    def run_phone_agent_turn(self, text: str, **kwargs: object) -> dict[str, object]:
+        self.calls.append({"text": text, **kwargs})
+        return {
+            "success": True,
+            "final_text": self.model_reply,
+            "tool_calls": [],
+            "tool_results": [],
+            "inference_latency": 0.1,
+        }
+
+    def format_phone_agent_reply(
+        self,
+        text: str,
+        *,
+        source: str = "voice",
+        skill_context: str = "",
+        conversation_context: str = "",
+    ) -> dict[str, object]:
+        self.reply_calls.append(
+            {
+                "text": text,
+                "source": source,
+                "skill_context": skill_context,
+                "conversation_context": conversation_context,
+            }
+        )
+        return {
+            "success": True,
+            "text": self.formatted_reply,
+            "source": source,
+            "raw_text": text,
+            "inference_latency": 0.1,
+        }
+
+
 def make_app(test_case: unittest.TestCase, config: ConsoleConfig | None = None) -> AppState:
     directory = tempfile.TemporaryDirectory()
     test_case.addCleanup(directory.cleanup)
@@ -390,6 +469,52 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertIn("已办好：已定位北京", speech.calls[1]["conversation_context"])
         self.assertIn("首长，小叶记得。", speech.calls[1]["conversation_context"])
 
+    def test_model_driven_agent_decides_tool_calls_and_final_reply(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
+        speech = FakeModelDrivenAgentSpeech()
+        app.speech = speech  # type: ignore[assignment]
+        app.last_state = "PRESSED"
+        app.voice_session_id = 12
+        subscriber = app.subscribe()
+        self.addCleanup(lambda: app.unsubscribe(subscriber))
+
+        app.handle_voice_reply_text("你自己判断要不要定位北京", "direct", 12)
+
+        events: list[dict[str, object]] = []
+        while not subscriber.empty():
+            events.append(subscriber.get_nowait())
+
+        command_events = [event for event in events if event.get("type") == "command_center_command"]
+        self.assertEqual(len(command_events), 1)
+        self.assertEqual(command_events[0]["command"]["action"], "focusCity")
+        self.assertEqual(command_events[0]["command"]["payload"], "北京")
+        self.assertEqual(app.reply_queue[0].text, "好了，已经定位到北京。")
+        self.assertTrue(callable(speech.calls[0]["execute_tool"]))
+        self.assertIn("工具调用结果：已定位北京", "\n".join(app.action_logs))
+
+    def test_model_agent_without_tool_call_uses_local_command_center_fallback(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
+        speech = FakeModelNoToolAgentSpeech()
+        app.speech = speech  # type: ignore[assignment]
+        app.last_state = "PRESSED"
+        app.voice_session_id = 13
+        subscriber = app.subscribe()
+        self.addCleanup(lambda: app.unsubscribe(subscriber))
+
+        app.handle_voice_reply_text("切换到上海的地图", "direct", 13)
+
+        events: list[dict[str, object]] = []
+        while not subscriber.empty():
+            events.append(subscriber.get_nowait())
+
+        command_events = [event for event in events if event.get("type") == "command_center_command"]
+        self.assertEqual(len(command_events), 1)
+        self.assertEqual(command_events[0]["command"]["action"], "focusCity")
+        self.assertEqual(command_events[0]["command"]["payload"], "上海")
+        self.assertEqual(app.reply_queue[0].text, "好了，已经定位到上海。")
+        self.assertEqual(speech.reply_calls[0]["skill_context"], "已办好：已定位上海")
+        self.assertEqual(app.agent_last_result["agent_fallback"], "local_command_center")
+
     def test_voice_stop_uses_streaming_asr_result_before_file_fallback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
         recorder = FakeRecorder(recording=False)
@@ -489,6 +614,61 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(app.reply_queue[0].text, "完成")
         self.assertEqual(app.reply_queue[0].status, "queued")
         self.assertTrue(app.callback_session_active)
+
+    def test_reply_playback_restarts_listening_after_report_when_handset_stays_off_hook(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao"))
+        app.last_state = "RELEASED"
+        app.active_reply = ReplyTask(id="reply-test", source="agent", title="通讯员回报", text="完成")
+        app.wait_for_reply_audio = lambda reply, stop_event: (True, None)  # type: ignore[method-assign]
+        timer_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        class FakeTimer:
+            def __init__(self, *args: object, **kwargs: object) -> None:
+                timer_calls.append((args, kwargs))
+
+            def start(self) -> None:
+                pass
+
+        with patch.object(console.threading, "Timer", FakeTimer):
+            app.reply_playback_worker(console.threading.Event())
+
+        self.assertEqual(len(timer_calls), 1)
+        self.assertEqual(timer_calls[0][0][0], console.VOICE_RESTART_DELAY_SECONDS)
+        self.assertEqual(timer_calls[0][1], {"args": ("回报后继续通话",)})
+        self.assertFalse(app.voice_status()["recording"])
+
+    def test_clear_runtime_memory_clears_reply_voice_and_agent_history(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao"))
+        app.reply_queue.append(ReplyTask(id="queued", source="agent", title="待播", text="稍后回报"))
+        app.completed_replies.append(ReplyTask(id="done", source="agent", title="已播", text="已经回报", status="done"))
+        app.pending_report_text = "稍后回报"
+        app.callback_session_active = True
+        app.voice_last_result = {"success": True, "text": "上一句"}
+        app.voice_last_error = "old voice error"
+        app.voice_last_partial = "上一句"
+        app.voice_last_partial_at = 123.0
+        app.voice_last_partial_changed_at = 123.0
+        app.voice_cancel_reason = "旧取消原因"
+        app.agent_last_input = "上次命令"
+        app.agent_last_result = {"final_text": "上次结果"}
+        app.agent_last_error = "old agent error"
+        app.stop_reply_playback = lambda reason="", wait_seconds=0.0: True  # type: ignore[method-assign]
+        app.clear_ai_alert = lambda reason="": True  # type: ignore[method-assign]
+
+        result = app.clear_runtime_memory("settings")
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(app.reply_status()["queue_size"], 0)
+        self.assertEqual(app.reply_status()["completed_replies"], [])
+        self.assertIsNone(app.reply_status()["pending_report_text"])
+        self.assertFalse(app.reply_status()["callback_session_active"])
+        self.assertIsNone(app.voice_status()["last_result"])
+        self.assertIsNone(app.voice_status()["last_error"])
+        self.assertIsNone(app.voice_status()["partial_text"])
+        self.assertIsNone(app.voice_status()["cancel_reason"])
+        self.assertIsNone(app.agent_status()["last_input"])
+        self.assertIsNone(app.agent_status()["last_result"])
+        self.assertIsNone(app.agent_status()["last_error"])
 
 
 if __name__ == "__main__":
