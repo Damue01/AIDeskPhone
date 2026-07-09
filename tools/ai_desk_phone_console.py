@@ -86,6 +86,7 @@ SIMULATED_REPLY_MIN_SECONDS = 1.5
 SIMULATED_REPLY_MAX_SECONDS = 18.0
 VOICE_TURN_MIN_SECONDS = 1.0
 VOICE_TURN_SILENCE_SECONDS = 1.1
+VOICE_TURN_ASR_STABLE_SECONDS = 1.6
 VOICE_TURN_MAX_SECONDS = 25.0
 VOICE_RESTART_DELAY_SECONDS = 0.5
 VOICE_LEVEL_THRESHOLD = 650.0
@@ -775,6 +776,8 @@ class AppState:
         self.voice_last_result: dict[str, Any] | None = None
         self.voice_last_error: str | None = None
         self.voice_last_partial: str | None = None
+        self.voice_last_partial_at: float | None = None
+        self.voice_last_partial_changed_at: float | None = None
         self.voice_asr_session: Any | None = None
         self.voice_session_id = 0
         self.voice_monitor_thread: threading.Thread | None = None
@@ -1120,6 +1123,7 @@ class AppState:
             "asr_boosting_table_name": config.asr_boosting_table_name,
             "asr_hotwords_configured": bool(config.asr_hotwords or config.asr_boosting_table_id or config.asr_boosting_table_name),
             "operator_ready": self.speech.is_operator_ready() if hasattr(self.speech, "is_operator_ready") else False,
+            "operator_credential_mode": config.operator_credential_mode(),
             "operator_polish_enabled": config.operator_polish_enabled,
             "operator_model": config.operator_model,
             "operator_endpoint": config.operator_endpoint,
@@ -1210,7 +1214,11 @@ class AppState:
         text = str(result.get("text", "") or "").strip()
         if not text:
             return
+        now = time.monotonic()
         with self.lock:
+            if text != self.voice_last_partial:
+                self.voice_last_partial_changed_at = now
+            self.voice_last_partial_at = now
             self.voice_last_partial = text
             self.voice_last_result = {**result, "partial": True}
         self.publish_voice_status()
@@ -1233,6 +1241,9 @@ class AppState:
                 return {"ok": False, "recording": False, "processing": True, "error": "voice turn is processing"}
             sample_rate = int(self.config.voice_record_sample_rate or 16000)
             device = self.config.voice_record_device.strip() or None
+            self.voice_last_partial = None
+            self.voice_last_partial_at = None
+            self.voice_last_partial_changed_at = None
 
         if self.recorder is None:
             error = "audio_recorder module is not available"
@@ -1587,11 +1598,23 @@ class AppState:
             duration = activity["duration_seconds"]
             silence = activity["silence_seconds"]
             has_voice = activity["peak_level"] >= VOICE_LEVEL_THRESHOLD
+            with self.lock:
+                partial_text = (self.voice_last_partial or "").strip()
+                partial_changed_at = self.voice_last_partial_changed_at
+            partial_stable = (
+                bool(partial_text)
+                and partial_changed_at is not None
+                and duration >= VOICE_TURN_MIN_SECONDS
+                and time.monotonic() - partial_changed_at >= VOICE_TURN_ASR_STABLE_SECONDS
+            )
             if has_voice and duration >= VOICE_TURN_MAX_SECONDS:
                 self.stop_voice_recording("达到最长语音轮次，自动提交", reply_behavior="legacy", session_id=session_id)
                 return
             if has_voice and duration >= VOICE_TURN_MIN_SECONDS and silence >= VOICE_TURN_SILENCE_SECONDS:
                 self.stop_voice_recording("静音自动提交", reply_behavior="legacy", session_id=session_id)
+                return
+            if partial_stable:
+                self.stop_voice_recording("ASR 文本稳定，自动提交", reply_behavior="legacy", session_id=session_id)
                 return
 
     def submit_agent_voice_turn_after_hangup(self, reason: str = "电话挂机") -> bool:

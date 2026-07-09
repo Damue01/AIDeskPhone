@@ -150,7 +150,7 @@ hook 只负责告诉本地控制台“任务结束了，可以开始呼叫”。
 
 自建链路只用于更需要控制的任务型能力：
 
-- Ark 角色模型：把 Codex hook 或任务完成文本润色成“通讯员回报”，默认使用 `doubao-seed-character-260628`，凭据复用 `VOLCENGINE_API_KEY`，必要时可用 `ARK_API_KEY` 单独覆盖。
+- Ark 角色模型：把 Codex hook 或任务完成文本润色成“通讯员回报”，默认使用 `doubao-seed-character-260628`，凭据使用 `ARK_API_KEY`；如果确认 `VOLCENGINE_API_KEY` 同时也是 Ark Chat Completions key，可显式开启兼容复用。
 - 火山引擎 ASR：把电话命令转成文字。
 - Agent：执行本机软件、接口和配置操作。
 - 火山引擎豆包 TTS 2.0：把任务结果转成回话音频，默认优先用 SSE PCM 块做流式播放，默认音色按“甜美桃子 2.0”配置。

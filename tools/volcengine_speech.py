@@ -176,6 +176,7 @@ class SpeechConfig:
         ark_api_key = os.getenv("ARK_API_KEY") or ""
         access_token = os.getenv("VOLCENGINE_ACCESS_TOKEN") or os.getenv("DOUBAO_ACCESS_TOKEN") or ""
         api_key = os.getenv("VOLCENGINE_API_KEY") or os.getenv("DOUBAO_API_KEY") or ""
+        reuse_speech_key = env_bool("DOUBAO_OPERATOR_USE_SPEECH_API_KEY", False)
         app_key = os.getenv("VOLCENGINE_APP_KEY") or os.getenv("VOLCENGINE_APP_ID") or os.getenv("DOUBAO_APP_KEY") or os.getenv("DOUBAO_APP_ID") or ""
         access_key = os.getenv("VOLCENGINE_ACCESS_KEY") or os.getenv("DOUBAO_ACCESS_KEY") or access_token
         return cls(
@@ -203,7 +204,7 @@ class SpeechConfig:
             asr_boosting_table_id=os.getenv("DOUBAO_ASR_BOOSTING_TABLE_ID", ""),
             asr_boosting_table_name=os.getenv("DOUBAO_ASR_BOOSTING_TABLE_NAME", ""),
             asr_hotwords=os.getenv("DOUBAO_ASR_HOTWORDS", ""),
-            operator_api_key=ark_api_key or api_key,
+            operator_api_key=ark_api_key or (api_key if reuse_speech_key else ""),
             operator_endpoint=os.getenv("ARK_CHAT_COMPLETIONS_ENDPOINT") or DEFAULT_OPERATOR_ENDPOINT,
             operator_model=os.getenv("DOUBAO_OPERATOR_MODEL") or DEFAULT_OPERATOR_MODEL,
             operator_polish_enabled=env_bool("DOUBAO_OPERATOR_POLISH_ENABLED", True),
@@ -220,6 +221,13 @@ class SpeechConfig:
         if self.app_key and self.access_key:
             return "app_access_key"
         return "missing"
+
+    def operator_credential_mode(self) -> str:
+        if not self.operator_api_key:
+            return "missing"
+        if self.api_key and self.operator_api_key == self.api_key:
+            return "speech_api_key"
+        return "ark_api_key"
 
 
 class VolcengineSpeechError(RuntimeError):
@@ -582,7 +590,7 @@ class VolcengineSpeech:
         if not clean_text:
             return {"success": False, "error": "empty operator report input"}
         if not self.is_operator_ready():
-            return {"success": False, "error": "Doubao operator role model is not configured. Fill VOLCENGINE_API_KEY or ARK_API_KEY in .env."}
+            return {"success": False, "error": "Doubao operator role model is not configured. Fill ARK_API_KEY in .env."}
 
         try:
             import requests
@@ -628,7 +636,7 @@ class VolcengineSpeech:
         if not clean_text:
             return {"success": False, "error": "empty phone agent input"}
         if not self.is_operator_ready():
-            return {"success": False, "error": "phone agent role model is not configured"}
+            return {"success": False, "error": "phone agent role model is not configured. Fill ARK_API_KEY in .env."}
 
         try:
             import requests

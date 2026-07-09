@@ -81,7 +81,7 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
             },
         )
 
-    def test_operator_credentials_reuse_main_api_key_by_default(self) -> None:
+    def test_operator_credentials_require_ark_key_by_default(self) -> None:
         env = {
             "VOLCENGINE_API_KEY": "main-key",
             "ARK_API_KEY": "",
@@ -90,7 +90,21 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
             config = SpeechConfig.from_env()
 
         self.assertEqual(config.api_key, "main-key")
+        self.assertEqual(config.operator_api_key, "")
+        self.assertEqual(config.operator_credential_mode(), "missing")
+        self.assertFalse(VolcengineSpeech(config).is_operator_ready())
+
+    def test_operator_credentials_can_explicitly_reuse_main_api_key(self) -> None:
+        env = {
+            "VOLCENGINE_API_KEY": "main-key",
+            "ARK_API_KEY": "",
+            "DOUBAO_OPERATOR_USE_SPEECH_API_KEY": "true",
+        }
+        with patch.dict(os.environ, env, clear=True):
+            config = SpeechConfig.from_env()
+
         self.assertEqual(config.operator_api_key, "main-key")
+        self.assertEqual(config.operator_credential_mode(), "speech_api_key")
         self.assertTrue(VolcengineSpeech(config).is_operator_ready())
 
     def test_speaker_refresh_without_openapi_keys_keeps_default_path(self) -> None:

@@ -76,16 +76,17 @@ DOUBAO_TTS_SPEAKER=zh_female_tianmeitaozi_uranus_bigtts
 录音会话会优先使用 BigASR WebSocket 流式识别，麦克风音频会在录音期间按 `DOUBAO_ASR_CHUNK_MS`
 持续发送，默认 200ms；如果流式结果为空或失败，会自动回退到保存下来的 WAV 文件识别。
 
-Codex hook 文本可以先交给 Ark 角色模型润色成“通讯员回报”再入队。默认复用
-`VOLCENGINE_API_KEY`；如果角色模型要走独立凭据，再额外填写 `ARK_API_KEY`。配置后，`/api/ai/hook`
+Codex hook 文本可以先交给 Ark 角色模型润色成“通讯员回报”再入队。语音 ASR/TTS 使用
+`VOLCENGINE_API_KEY`，角色回复使用 `ARK_API_KEY`。配置后，`/api/ai/hook`
 和 `/hook` 会把 Codex 原始回复整理成更适合电话播报的口吻；如果模型未配置或请求失败，会保留原文。
 
 ```text
-ARK_API_KEY=...  # optional
+ARK_API_KEY=...
 ARK_CHAT_COMPLETIONS_ENDPOINT=https://ark.cn-beijing.volces.com/api/v3/chat/completions
 DOUBAO_OPERATOR_POLISH_ENABLED=true
 DOUBAO_OPERATOR_MODEL=doubao-seed-character-260628
 DOUBAO_OPERATOR_MAX_TOKENS=900
+DOUBAO_OPERATOR_USE_SPEECH_API_KEY=false
 ```
 
 专业词或自定义词可以放到热词配置里，例如：

@@ -379,6 +379,29 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(app.voice_status()["partial_text"], "打开会议纪要")
         self.assertTrue(stream.submitted)
 
+    def test_stable_streaming_asr_partial_auto_submits_even_without_energy_silence(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
+        recorder = FakeRecorder(recording=True)
+        app.recorder = recorder  # type: ignore[assignment]
+        app.last_state = "RELEASED"
+        app.voice_session_id = 11
+        app.voice_recording = True
+        app.voice_last_partial = "可以听到我说话吗？"
+        app.voice_last_partial_changed_at = time.monotonic() - 5
+        calls: list[str] = []
+
+        def fake_stop(reason: str = "", **kwargs: object) -> dict[str, object]:
+            calls.append(reason)
+            recorder.recording = False
+            return {"ok": True}
+
+        app.stop_voice_recording = fake_stop  # type: ignore[method-assign]
+
+        with patch.object(console, "VOICE_TURN_ASR_STABLE_SECONDS", 0.01):
+            app.voice_turn_monitor_worker(11)
+
+        self.assertEqual(calls, ["ASR 文本稳定，自动提交"])
+
     def test_voice_cancel_phrase_does_not_enqueue_reply(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
         recorder = FakeRecorder(recording=False)
