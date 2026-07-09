@@ -1499,6 +1499,10 @@ class AppState:
             return {"ok": False, "error": error}
 
         result_payload = result.to_dict()
+        final_text = str(result.final_text or "")
+        if not result.tool_calls:
+            final_text = self.prepare_phone_agent_reply_text(source, clean_text, final_text)
+            result_payload["final_text"] = final_text
         for tool_result in result.tool_results:
             if tool_result.event:
                 self.publish(tool_result.event)
@@ -1514,7 +1518,7 @@ class AppState:
         self.deliver_reply_text(
             source="agent",
             title="通讯员回报",
-            text=result.final_text,
+            text=final_text,
             reply_behavior=completion_behavior,
             session_id=session_id,
         )
@@ -1686,6 +1690,29 @@ class AppState:
         error = result.get("error") if isinstance(result, dict) else "unknown"
         self.add_action_log(f"通讯员润色不可用，回退原文：{error}")
         return clean_text
+
+    def prepare_phone_agent_reply_text(self, source: str, text: str, fallback: str) -> str:
+        clean_text = compact_hook_text(text)
+        fallback_text = compact_hook_text(fallback) or "我在，您说。"
+        if not clean_text or self.speech is None:
+            return fallback_text
+        format_reply = getattr(self.speech, "format_phone_agent_reply", None)
+        if not callable(format_reply):
+            return fallback_text
+        try:
+            result = format_reply(clean_text, source=source)
+        except Exception as exc:
+            self.add_action_log(f"通讯员角色回复生成失败，使用兜底：{exc}")
+            return fallback_text
+        if isinstance(result, dict) and result.get("success"):
+            reply_text = compact_hook_text(result.get("text", ""))
+            if reply_text:
+                latency = float(result.get("inference_latency") or 0)
+                self.add_action_log(f"通讯员角色回复生成完成：{latency:.1f}s")
+                return reply_text
+        error = result.get("error") if isinstance(result, dict) else "unknown"
+        self.add_action_log(f"通讯员角色回复不可用，使用兜底：{error}")
+        return fallback_text
 
     def clear_reply_queue(self, reason: str = "manual") -> None:
         self.stop_reply_playback(f"{reason} 清空回话队列", wait_seconds=0.8)

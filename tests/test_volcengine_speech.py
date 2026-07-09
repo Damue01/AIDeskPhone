@@ -8,10 +8,12 @@ from unittest.mock import patch
 
 from tools.volcengine_speech import (
     DEFAULT_OPERATOR_SYSTEM_PROMPT,
+    DEFAULT_PHONE_AGENT_SYSTEM_PROMPT,
     SpeechConfig,
     StreamingAsrSession,
     VolcengineSpeech,
     auth_headers,
+    build_phone_agent_reply_payload,
     build_operator_report_payload,
     build_asr_init_payload,
     extract_chat_completion_text,
@@ -189,6 +191,19 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
         self.assertNotIn("用户是首长", payload["messages"][0]["content"])
         self.assertNotIn("AI 任务完成结果", payload["messages"][1]["content"])
         self.assertNotIn("外部 AI", payload["messages"][0]["content"])
+
+    def test_phone_agent_reply_payload_uses_style_prompt_not_fixed_reply(self) -> None:
+        config = make_config(operator_model="doubao-seed-character-260628")
+
+        payload = build_phone_agent_reply_payload(config, "帮我整理一下文件", source="voice-asr")
+
+        self.assertEqual(payload["model"], "doubao-seed-character-260628")
+        self.assertEqual(payload["messages"][0]["content"], DEFAULT_PHONE_AGENT_SYSTEM_PROMPT)
+        self.assertIn("小叶", payload["messages"][0]["content"])
+        self.assertIn("不要固定套话", payload["messages"][0]["content"])
+        self.assertIn("帮我整理一下文件", payload["messages"][1]["content"])
+        self.assertNotIn("收到首长", payload["messages"][0]["content"])
+        self.assertLessEqual(payload["max_tokens"], 220)
 
     def test_extract_chat_completion_text_accepts_openai_shape(self) -> None:
         payload = {"choices": [{"message": {"content": "首长，任务已经完成。"}}]}

@@ -220,7 +220,7 @@ class CommandCenterEarthSkill:
             skill=call.skill,
             name=call.name,
             ok=False,
-            message="这项调度暂时无法完成",
+            message="这件事暂时办不了",
         )
 
     def command_result(
@@ -310,7 +310,7 @@ class MinimalAgentLoop:
             skill=call.skill,
             name=call.name,
             ok=False,
-            message="这项调度暂时无法完成",
+            message="这件事暂时办不了",
         )
 
 
@@ -385,32 +385,9 @@ def valid_lng_lat(lng: float, lat: float) -> bool:
 
 def build_conversation_text(text: str) -> str:
     clean = normalize_text(text)
-    compact = clean.rstrip("。！？!?")
-    lower = compact.lower()
-    if not compact:
+    if not clean:
         return "我没听清，您再说一遍。"
-
-    greetings = ("你好", "喂", "在吗", "早上好", "晚上好", "hello", "hi")
-    if any(greeting in lower for greeting in greetings):
-        return "我在，您说。"
-
-    thanks = ("谢谢", "辛苦", "多谢")
-    if any(word in compact for word in thanks):
-        return "不客气。"
-
-    mood_terms = ("累", "烦", "焦虑", "紧张", "困", "压力", "难受", "开心", "高兴")
-    if any(word in compact for word in mood_terms):
-        return "先缓一缓。我在这儿，您慢慢说。"
-
-    request_terms = ("帮我", "帮忙", "替我", "给我", "整理", "写", "看看", "查一下", "看一下")
-    if any(word in compact for word in request_terms):
-        return "可以。您说要怎么弄，我听着。"
-
-    question_marks = ("吗", "呢", "怎么", "为什么", "是不是", "能不能", "?")
-    if any(mark in compact for mark in question_marks):
-        return "可以，我们先聊这个。"
-
-    return "嗯，我在听。您继续说。"
+    return "我在，您说。"
 
 
 def build_final_text(text: str, results: list[AgentToolResult]) -> str:

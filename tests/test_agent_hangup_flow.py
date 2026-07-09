@@ -125,6 +125,17 @@ class FakeOperatorSpeech:
         }
 
 
+class FakePhoneAgentSpeech:
+    def format_phone_agent_reply(self, text: str, *, source: str = "voice") -> dict[str, object]:
+        return {
+            "success": True,
+            "text": "收到，我来处理。您稍等。",
+            "source": source,
+            "raw_text": text,
+            "inference_latency": 0.1,
+        }
+
+
 def make_app(test_case: unittest.TestCase, config: ConsoleConfig | None = None) -> AppState:
     directory = tempfile.TemporaryDirectory()
     test_case.addCleanup(directory.cleanup)
@@ -251,7 +262,7 @@ class AgentHangupFlowTest(unittest.TestCase):
         logs = "\n".join(app.action_logs)
         self.assertIn("电话已挂机：停止录音并提交已收到的语音", logs)
         self.assertIn("收到命令：查一下状态", logs)
-        self.assertIn("回话内容：可以。您说要怎么弄，我听着。", logs)
+        self.assertIn("回话内容：我在，您说。", logs)
 
     def test_agent_voice_turn_publishes_command_center_skill_event(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
@@ -275,6 +286,19 @@ class AgentHangupFlowTest(unittest.TestCase):
         logs = "\n".join(app.action_logs)
         self.assertIn("收到命令：定位北京", logs)
         self.assertIn("回话内容：已定位北京。", logs)
+
+    def test_non_tool_voice_turn_uses_phone_agent_role_model_when_available(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
+        app.speech = FakePhoneAgentSpeech()  # type: ignore[assignment]
+        app.last_state = "PRESSED"
+        app.voice_session_id = 5
+
+        app.handle_voice_reply_text("帮我整理一下文件", "direct", 5)
+
+        self.assertEqual(app.reply_queue[0].text, "收到，我来处理。您稍等。")
+        logs = "\n".join(app.action_logs)
+        self.assertIn("通讯员角色回复生成完成", logs)
+        self.assertIn("回话内容：收到，我来处理。您稍等。", logs)
 
     def test_voice_stop_uses_streaming_asr_result_before_file_fallback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))

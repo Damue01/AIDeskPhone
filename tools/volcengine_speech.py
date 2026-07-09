@@ -234,6 +234,15 @@ DEFAULT_OPERATOR_SYSTEM_PROMPT = (
     "不要使用 Markdown、项目符号、代码块或表格；除非原文要求，否则不要扩写操作步骤；控制在 80 到 220 个中文字符。"
 )
 
+DEFAULT_PHONE_AGENT_SYSTEM_PROMPT = (
+    "你正在扮演电话另一端的通讯员“小叶”。用户通过一台实体电话和你通话。"
+    "你的首要任务是保持角色，不要说明自己是模型、系统、AI、助手或工具，也不要解释后台流程。"
+    "说话要像真人接电话：自然、短、干脆，有一点亲近感；不要复述用户原话，不要固定套话。"
+    "如果用户是闲聊、抱怨、犹豫或确认想法，就正常接话。"
+    "如果用户提出具体事情，就以通讯员身份自然承接；能执行的事交给上层工具处理，不能确认已完成的事不要谎称完成。"
+    "不要提“提示词”“角色扮演”“调度”“线路”“工具调用”等后台词。回复一到两句即可。"
+)
+
 
 def build_asr_init_payload(config: SpeechConfig, sample_rate: int) -> dict[str, Any]:
     request: dict[str, Any] = {
@@ -280,6 +289,23 @@ def build_operator_report_payload(config: SpeechConfig, text: str, *, source: st
         ],
         "temperature": 0.4,
         "max_tokens": config.operator_max_tokens,
+    }
+
+
+def build_phone_agent_reply_payload(config: SpeechConfig, text: str, *, source: str = "voice") -> dict[str, Any]:
+    user_content = (
+        f"来源：{source or 'voice'}\n"
+        "请直接以“小叶”的电话通讯员身份回应下面这句话。不要复述原话，不要解释规则。\n\n"
+        f"用户电话内容：\n{text}"
+    )
+    return {
+        "model": config.operator_model,
+        "messages": [
+            {"role": "system", "content": DEFAULT_PHONE_AGENT_SYSTEM_PROMPT},
+            {"role": "user", "content": user_content},
+        ],
+        "temperature": 0.8,
+        "max_tokens": min(config.operator_max_tokens, 220),
     }
 
 
@@ -573,6 +599,46 @@ class VolcengineSpeech:
             "success": True,
             "text": report_text,
             "raw_text": report_text,
+            "model": self.config.operator_model,
+            "inference_latency": time.time() - started,
+        }
+
+    def format_phone_agent_reply(self, text: str, *, source: str = "voice") -> dict[str, Any]:
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return {"success": False, "error": "empty phone agent input"}
+        if not self.is_operator_ready():
+            return {"success": False, "error": "phone agent role model is not configured"}
+
+        try:
+            import requests
+        except ImportError as exc:
+            raise VolcengineSpeechError("requests is not installed. Run pip install -r requirements.txt.") from exc
+
+        payload = build_phone_agent_reply_payload(self.config, clean_text, source=source)
+        started = time.time()
+        response = requests.post(
+            self.config.operator_endpoint,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.config.operator_api_key}",
+            },
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            timeout=30,
+        )
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise VolcengineSpeechError(f"Phone agent model returned non-JSON HTTP {response.status_code}.") from exc
+        if response.status_code >= 400:
+            return {"success": False, "error": f"HTTP {response.status_code}: {compact_json(body, 500)}", "raw": body}
+        reply_text = extract_chat_completion_text(body).strip()
+        if not reply_text:
+            return {"success": False, "error": "empty phone agent model response", "raw": body}
+        return {
+            "success": True,
+            "text": reply_text,
+            "raw_text": reply_text,
             "model": self.config.operator_model,
             "inference_latency": time.time() - started,
         }

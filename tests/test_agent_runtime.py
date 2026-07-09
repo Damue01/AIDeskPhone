@@ -29,7 +29,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         result = MinimalAgentLoop().run("帮我整理一下文件")
 
         self.assertEqual(result.tool_calls, [])
-        self.assertEqual(result.final_text, "可以。您说要怎么弄，我听着。")
+        self.assertEqual(result.final_text, "我在，您说。")
         self.assertNotIn("帮我整理一下文件", result.final_text)
         for term in ROLE_LEAK_TERMS:
             self.assertNotIn(term, result.final_text)
@@ -38,7 +38,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         result = MinimalAgentLoop().run("今天我有点累，是不是先休息一下")
 
         self.assertEqual(result.tool_calls, [])
-        self.assertEqual(result.final_text, "先缓一缓。我在这儿，您慢慢说。")
+        self.assertEqual(result.final_text, "我在，您说。")
         self.assertNotIn("今天我有点累", result.final_text)
         for term in ROLE_LEAK_TERMS:
             self.assertNotIn(term, result.final_text)
