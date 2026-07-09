@@ -102,7 +102,7 @@ api.flyTo({
 
 ### focusPlace(place, options)
 
-用于地点跳转。当前页面不做联网地理编码；如果是非内置城市，建议传经纬度。
+用于地点跳转。页面不做联网地理编码；如果是非内置城市，建议传经纬度。
 
 ```js
 api.focusPlace({
@@ -124,7 +124,7 @@ api.showGlobe({ keepScale: false, phase: "waiting" });
 
 ### getState()
 
-读取当前页面状态。
+读取页面状态。
 
 ```js
 const state = api.getState();

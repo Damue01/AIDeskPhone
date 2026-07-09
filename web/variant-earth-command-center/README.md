@@ -14,7 +14,7 @@ http://127.0.0.1:8765/
 
 ## 页面负责什么
 
-地球指挥中心只负责“看见电话和 Agent 当前在做什么”。它不保存核心状态，也不直接处理 ASR、TTS、硬件和工具调用。
+地球指挥中心只负责“看见电话和 Agent 正在做什么”。它不保存核心状态，也不直接处理 ASR、TTS、硬件和工具调用。
 
 它负责：
 
@@ -35,8 +35,8 @@ http://127.0.0.1:8765/
 
 | 文件 | 作用 |
 | --- | --- |
-| `index.html` | 当前主入口，融合 Three.js 地球和 MapLibre 卫星地图。 |
-| `real-map.html` | 真实地图探索页，保留作调试和对照。 |
+| `index.html` | 页面主入口，融合 Three.js 地球和 MapLibre 卫星地图。 |
+| `real-map.html` | 真实地图探索页，用于调试地图能力。 |
 | `API.md` | 页面桥接对象、事件、postMessage 和 URL 参数的详细 API。 |
 | `assets/` | 地球纹理图片。 |
 | `vendor/three.module.js` | 本地 Three.js 依赖，避免页面启动时依赖外部 CDN。 |

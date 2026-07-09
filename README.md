@@ -2,16 +2,16 @@
 
 AI Desk Phone 是一套把 HG113 共电电话外壳改造成本地 AI 桌面电话的项目。
 
-仓库已经提供电脑端控制台、最小 Agent runtime、地球指挥中心页面、ESP32-C3 固件、语音 ASR/TTS 接入和调试工具。真实电话外壳、听筒音频、蜂鸣器、LED、供电和内部走线仍然需要你按自己的硬件实物改造；本项目不会直接把一台普通座机变成成品电话，也不接入电话外线。
+仓库提供电脑端控制台、最小 Agent runtime、地球指挥中心页面、ESP32-C3 固件、语音 ASR/TTS 接入和调试工具。真实电话外壳、听筒音频、蜂鸣器、LED、供电和内部走线需要你按自己的硬件实物改造；本项目不会直接把一台普通座机变成成品电话，也不接入电话外线。
 
-## 当前能做什么
+## 能力概览
 
 - 没有 ESP32 时，可以用本地模拟发送端和网页模拟页完整跑通摘机、挂机、回拨和 Agent 流程。
 - 有 ESP32-C3 时，固件读取摘挂机开关，通过 Wi-Fi UDP 上报状态，并接收电脑端命令驱动蜂鸣器和 LED。
 - 有手柄音频模块时，听筒可以作为 Windows 的麦克风和扬声器，由电脑端完成 ASR、TTS 和 Agent 处理。
 - Agent 模式下，用户拿起听筒说话，ASR 实时识别；停顿或挂机后提交一轮；后台继续处理、调用工具、生成回话；任务完成后通过蜂鸣器和 LED 回拨提醒。
 - Agent runtime 使用 PI 风格的会话结构：`system`、`developer`、`user`、`assistant`、`toolCall`、`toolResult`、session 文件、自动压缩和技能加载。
-- 目前只加载项目本地 `.pi/skills`。默认技能是 `command-center-earth`，用于指导 Agent 操作地球/地图页面。
+- 只加载项目本地 `.pi/skills`。默认技能是 `command-center-earth`，用于指导 Agent 操作地球/地图页面。
 
 ## 从 0 开始跑起来
 
@@ -62,7 +62,7 @@ ARK_API_KEY=               # 思考模型、通讯员回话润色、Agent 角色
 
 **Agent 模式**
 
-电话本身就是服务终端。摘机开始录音；停顿或挂机提交本轮语音；后台继续 ASR、工具调用和回复生成。挂机只关闭麦克风和听筒，不取消已经提交的后台任务。任务完成后，电话进入回拨；接听后播报结果。Agent 播报中挂机会暂停当前回报并重新进入回拨，用户再抬起听筒后继续听。
+电话本身就是服务终端。摘机开始录音；停顿或挂机提交本轮语音；后台继续 ASR、工具调用和回复生成。挂机只关闭麦克风和听筒，不取消已提交的后台任务。任务完成后，电话进入回拨；接听后播报结果。Agent 播报中挂机会暂停本次回报并重新进入回拨，用户再抬起听筒后继续听。
 
 更细的行为契约见 [交互目标](docs/INTERACTION_TARGETS.md)。
 
@@ -83,7 +83,7 @@ ARK_API_KEY=               # 思考模型、通讯员回话润色、Agent 角色
 | `.codex/hooks/` | 仓库本地 Codex hook 配置。 |
 | `.pi/skills/command-center-earth/SKILL.md` | 本项目唯一默认加载的本地技能，说明地球/地图如何被 Agent 操作。 |
 | `web/variant-earth-command-center/` | 地球屏保和真实地图指挥中心页面。 |
-| `firmware/esp32c3_gpio0_21_test/` | 当前主线 ESP32-C3 固件，负责 GPIO 输入、Wi-Fi 状态上报、蜂鸣器和 LED 命令。 |
+| `firmware/esp32c3_gpio0_21_test/` | ESP32-C3 主固件，负责 GPIO 输入、Wi-Fi 状态上报、蜂鸣器和 LED 命令。 |
 | `firmware/esp32c3_wifi_minimal_test/` | Wi-Fi 排查用最小工程。 |
 | `firmware/esp32c3_wifi_pioarduino_test/` | pioarduino Wi-Fi 排查工程。 |
 | `docs/` | 制作、接线、交互、Hook 和硬件资料。 |
@@ -94,7 +94,7 @@ ARK_API_KEY=               # 思考模型、通讯员回话润色、Agent 角色
 
 ## Agent 的基础能力
 
-当前 Agent runtime 保持最小可用，不额外加载全局 PI skills，也不加载用户目录里的 `.agents`。它只从当前项目向上查找 `.pi/skills`。
+Agent runtime 保持最小可用，不额外加载全局 PI skills，也不加载用户目录里的 `.agents`。它只从项目目录向上查找 `.pi/skills`。
 
 内置工具面向这些基础能力：
 
@@ -104,7 +104,7 @@ ARK_API_KEY=               # 思考模型、通讯员回话润色、Agent 角色
 - 本地程序：启动 allowlist 中的应用。
 - 命令执行：只执行用户明确要求的命令，带危险模式拦截、超时和输出截断。
 
-后台页面的 Agent 维护区可以查看 system/developer prompt、当前 session、最近消息、已加载 skills、可用 tools、自动压缩摘要，也可以新建或删除当前 session。
+后台页面的 Agent 维护区可以查看 system/developer prompt、session、最近消息、已加载 skills、可用 tools、自动压缩摘要，也可以新建或删除 session。
 
 ## 硬件路线
 
@@ -135,7 +135,7 @@ GPIO21 = 蜂鸣器输出
 GPIO20 = LED 输出
 ```
 
-已经测通的一种 HG113 六脚簧片开关接法：
+HG113 六脚簧片开关参考接法：
 
 ```text
 ESP32-C3 GPIO0 -> 开关 6 脚

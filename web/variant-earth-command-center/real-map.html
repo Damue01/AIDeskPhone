@@ -630,7 +630,7 @@
       els.cloudState.textContent = "云层：不叠加";
       els.signalState.textContent = "星环：地图模式隐藏";
       els.zoomState.textContent = `缩放：${zoomLabel(zoom)}`;
-      els.statusLine.textContent = "已承接地球当前位置，可继续滚轮放大查看街区";
+      els.statusLine.textContent = "已承接地球定位，可继续滚轮放大查看街区";
 
       map.resize();
       if (map.stop) map.stop();
@@ -662,10 +662,10 @@
       els.globeView.setAttribute("aria-pressed", "true");
       els.cityView.setAttribute("aria-pressed", "false");
       els.baseState.textContent = "底图：Blue Marble";
-      els.cloudState.textContent = "云层：暂不启用";
+      els.cloudState.textContent = "云层：关闭";
       els.signalState.textContent = "星环：弧形文字";
       els.zoomState.textContent = "缩放：全球";
-      els.statusLine.textContent = "已切到 Three.js 地球；按参考保留地表短词与弧形文字环，云层暂不启用";
+      els.statusLine.textContent = "已切到 Three.js 地球；显示地表短词与弧形文字环，云层关闭";
       window.dispatchEvent(new CustomEvent("earth-reset-view"));
     }
 
