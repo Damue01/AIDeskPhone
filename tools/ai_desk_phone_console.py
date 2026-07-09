@@ -1503,7 +1503,7 @@ class AppState:
         completion_behavior = self.resolve_voice_reply_behavior(reply_behavior, self.config.voice_reply_policy)
         self.deliver_reply_text(
             source="agent",
-            title="Agent 回报",
+            title="通讯员回报",
             text=result.final_text,
             reply_behavior=completion_behavior,
             session_id=session_id,

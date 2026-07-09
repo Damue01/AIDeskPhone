@@ -84,6 +84,14 @@ PHASE_ALIASES: tuple[tuple[str, str], ...] = (
     ("播报", "reporting"),
 )
 
+PHASE_SPOKEN_LABELS: dict[str, str] = {
+    "waiting": "待命状态",
+    "listening": "接收指令状态",
+    "executing": "执行状态",
+    "feedback": "等待接听状态",
+    "reporting": "播报状态",
+}
+
 
 CITY_ALIASES: dict[str, tuple[str, ...]] = {
     "北京": ("北京", "beijing", "首都"),
@@ -187,7 +195,8 @@ class CommandCenterEarthSkill:
         del context
         if call.name == "set_phase":
             phase = str(call.arguments.get("phase") or "waiting")
-            return self.command_result(call, "setPhase", phase, f"状态已切到 {phase}")
+            label = PHASE_SPOKEN_LABELS.get(phase, "指定状态")
+            return self.command_result(call, "setPhase", phase, f"已转入{label}")
 
         if call.name == "show_globe":
             payload = {"phase": str(call.arguments.get("phase") or "waiting")}
@@ -196,7 +205,7 @@ class CommandCenterEarthSkill:
         if call.name == "focus_city":
             city = str(call.arguments.get("city") or "").strip()
             options = {"zoom": number_or_default(call.arguments.get("zoom"), 11.8)}
-            return self.command_result(call, "focusCity", city, f"已定位 {city}", options=options)
+            return self.command_result(call, "focusCity", city, f"已定位{city}", options=options)
 
         if call.name == "fly_to":
             lng = float(call.arguments["lng"])
@@ -211,7 +220,7 @@ class CommandCenterEarthSkill:
             skill=call.skill,
             name=call.name,
             ok=False,
-            message=f"未知地球技能：{call.name}",
+            message="这项调度暂时无法完成",
         )
 
     def command_result(
@@ -301,7 +310,7 @@ class MinimalAgentLoop:
             skill=call.skill,
             name=call.name,
             ok=False,
-            message=f"技能未注册：{call.skill}",
+            message="这项调度暂时无法完成",
         )
 
 
@@ -384,5 +393,5 @@ def build_final_text(text: str, results: list[AgentToolResult]) -> str:
     if failed:
         return "首长，命令没有执行成功：" + "，".join(failed) + "。"
     if text:
-        return "首长，我已收到命令。当前最小 Agent 已接入地球指挥中心技能，可以处理城市定位、经纬度跳转和返回地球屏保。"
-    return "首长，我没有收到有效命令。"
+        return "首长，命令已收到。这项任务当前没有可执行线路。"
+    return "首长，线路里没有收到有效命令。"

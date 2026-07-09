@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.volcengine_speech import (
+    DEFAULT_OPERATOR_SYSTEM_PROMPT,
     SpeechConfig,
     StreamingAsrSession,
     VolcengineSpeech,
@@ -175,6 +176,17 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["role"], "system")
         self.assertIn("任务已经完成", payload["messages"][1]["content"])
         self.assertEqual(payload["max_tokens"], 900)
+
+    def test_default_operator_prompt_keeps_in_character_boundary(self) -> None:
+        config = make_config(operator_system_prompt="")
+
+        payload = build_operator_report_payload(config, "任务已经完成，改了配置页。", source="codex")
+
+        self.assertEqual(payload["messages"][0]["content"], DEFAULT_OPERATOR_SYSTEM_PROMPT)
+        self.assertIn("电话通讯员", payload["messages"][0]["content"])
+        self.assertIn("不暴露任何后台身份", payload["messages"][0]["content"])
+        self.assertNotIn("AI 任务完成结果", payload["messages"][1]["content"])
+        self.assertNotIn("外部 AI", payload["messages"][0]["content"])
 
     def test_extract_chat_completion_text_accepts_openai_shape(self) -> None:
         payload = {"choices": [{"message": {"content": "首长，任务已经完成。"}}]}

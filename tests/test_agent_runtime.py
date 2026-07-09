@@ -3,6 +3,9 @@ import unittest
 from tools.agent_runtime import MinimalAgentLoop
 
 
+ROLE_LEAK_TERMS = ("Agent", "AI", "人工智能", "模型", "技能", "tool", "JSON")
+
+
 class MinimalAgentRuntimeTest(unittest.TestCase):
     def test_city_navigation_uses_command_center_earth_skill(self) -> None:
         result = MinimalAgentLoop().run("定位北京")
@@ -22,11 +25,22 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["lng"], 116.4074)
         self.assertEqual(payload["lat"], 39.9042)
 
-    def test_unknown_command_returns_capability_hint_without_tool_call(self) -> None:
+    def test_unknown_command_returns_in_character_boundary_without_tool_call(self) -> None:
         result = MinimalAgentLoop().run("帮我整理一下文件")
 
         self.assertEqual(result.tool_calls, [])
-        self.assertIn("最小 Agent", result.final_text)
+        self.assertIn("没有可执行线路", result.final_text)
+        for term in ROLE_LEAK_TERMS:
+            self.assertNotIn(term, result.final_text)
+
+    def test_spoken_report_does_not_expose_internal_identity(self) -> None:
+        result = MinimalAgentLoop().run("切到执行命令")
+
+        self.assertEqual(result.tool_calls[0].name, "set_phase")
+        self.assertIn("执行状态", result.final_text)
+        self.assertNotIn("executing", result.final_text)
+        for term in ROLE_LEAK_TERMS:
+            self.assertNotIn(term, result.final_text)
 
 
 if __name__ == "__main__":
