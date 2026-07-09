@@ -25,11 +25,20 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         self.assertEqual(payload["lng"], 116.4074)
         self.assertEqual(payload["lat"], 39.9042)
 
-    def test_unknown_command_returns_in_character_boundary_without_tool_call(self) -> None:
+    def test_non_action_turn_returns_conversation_without_tool_call(self) -> None:
         result = MinimalAgentLoop().run("帮我整理一下文件")
 
         self.assertEqual(result.tool_calls, [])
-        self.assertIn("没有可执行线路", result.final_text)
+        self.assertIn("按通话处理", result.final_text)
+        self.assertIn("您继续说", result.final_text)
+        for term in ROLE_LEAK_TERMS:
+            self.assertNotIn(term, result.final_text)
+
+    def test_question_without_tool_intent_stays_in_chat_mode(self) -> None:
+        result = MinimalAgentLoop().run("今天我有点累，是不是先休息一下")
+
+        self.assertEqual(result.tool_calls, [])
+        self.assertIn("我听着", result.final_text)
         for term in ROLE_LEAK_TERMS:
             self.assertNotIn(term, result.final_text)
 

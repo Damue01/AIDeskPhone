@@ -383,6 +383,32 @@ def valid_lng_lat(lng: float, lat: float) -> bool:
     return -180.0 <= lng <= 180.0 and -85.0 <= lat <= 85.0
 
 
+def build_conversation_text(text: str) -> str:
+    clean = normalize_text(text)
+    compact = clean.rstrip("。！？!?")
+    lower = compact.lower()
+    if not compact:
+        return "首长，线路里没有听清。您再说一遍，我在。"
+
+    greetings = ("你好", "喂", "在吗", "早上好", "晚上好", "hello", "hi")
+    if any(greeting in lower for greeting in greetings):
+        return "首长，我在。您慢慢说。"
+
+    thanks = ("谢谢", "辛苦", "多谢")
+    if any(word in compact for word in thanks):
+        return "首长，不辛苦。您继续吩咐。"
+
+    mood_terms = ("累", "烦", "焦虑", "紧张", "困", "压力", "难受", "开心", "高兴")
+    if any(word in compact for word in mood_terms):
+        return f"首长，我听着。您刚才说：“{compact}”。这事先别急，我们可以慢慢捋。"
+
+    question_marks = ("吗", "呢", "怎么", "为什么", "是不是", "能不能", "?")
+    if any(mark in compact for mark in question_marks):
+        return f"首长，我听明白了。关于“{compact}”，我先按通话内容陪您分析，不调度其他线路。"
+
+    return f"首长，我听到了：{compact}。这句先按通话处理，不启动额外调度。您继续说。"
+
+
 def build_final_text(text: str, results: list[AgentToolResult]) -> str:
     successful = [result.message for result in results if result.ok]
     failed = [result.message for result in results if not result.ok]
@@ -393,5 +419,5 @@ def build_final_text(text: str, results: list[AgentToolResult]) -> str:
     if failed:
         return "首长，命令没有执行成功：" + "，".join(failed) + "。"
     if text:
-        return "首长，命令已收到。这项任务当前没有可执行线路。"
-    return "首长，线路里没有收到有效命令。"
+        return build_conversation_text(text)
+    return build_conversation_text(text)

@@ -251,7 +251,7 @@ class AgentHangupFlowTest(unittest.TestCase):
         logs = "\n".join(app.action_logs)
         self.assertIn("电话已挂机：停止录音并提交已收到的语音", logs)
         self.assertIn("收到命令：查一下状态", logs)
-        self.assertIn("回话内容：首长，命令已收到。这项任务当前没有可执行线路。", logs)
+        self.assertIn("回话内容：首长，我听到了：查一下状态。这句先按通话处理，不启动额外调度。您继续说。", logs)
 
     def test_agent_voice_turn_publishes_command_center_skill_event(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
