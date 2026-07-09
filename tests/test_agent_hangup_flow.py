@@ -212,6 +212,10 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(alerts, ["agent"])
         self.assertFalse(app.voice_processing)
         self.assertFalse(app.voice_recording)
+        logs = "\n".join(app.action_logs)
+        self.assertIn("电话已挂机：停止录音并提交已收到的语音", logs)
+        self.assertIn("收到命令：查一下状态", logs)
+        self.assertIn("回话内容：首长，命令已收到。这项任务当前没有可执行线路。", logs)
 
     def test_agent_voice_turn_publishes_command_center_skill_event(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
@@ -232,6 +236,9 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(command_events[0]["command"]["payload"], "北京")
         self.assertEqual(app.reply_queue[0].source, "agent")
         self.assertIn("北京", app.reply_queue[0].text)
+        logs = "\n".join(app.action_logs)
+        self.assertIn("收到命令：定位北京", logs)
+        self.assertIn("回话内容：首长，已定位北京。", logs)
 
     def test_voice_stop_uses_streaming_asr_result_before_file_fallback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
@@ -299,11 +306,11 @@ class AgentHangupFlowTest(unittest.TestCase):
         app.stop_reply_playback = lambda reason="", wait_seconds=0.0: calls.append("stop") or True  # type: ignore[method-assign]
         app.clear_voice_replies = lambda reason="": calls.append("clear_voice")  # type: ignore[method-assign]
         app.clear_ai_alert = lambda reason="": calls.append("clear_alert") or True  # type: ignore[method-assign]
-        app.submit_agent_voice_turn_after_hangup = lambda reason="": self.fail("playback hangup should not submit recording")  # type: ignore[method-assign]
+        app.submit_agent_voice_turn_after_hangup = lambda reason="": calls.append("submit") or False  # type: ignore[method-assign]
 
         app.handle_hook_transition("RELEASED", "PRESSED")
 
-        self.assertEqual(calls, ["stop", "clear_voice", "clear_alert"])
+        self.assertEqual(calls, ["stop", "clear_voice", "submit", "clear_alert"])
 
 
 if __name__ == "__main__":

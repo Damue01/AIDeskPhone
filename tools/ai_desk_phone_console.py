@@ -441,6 +441,13 @@ def compact_hook_text(value: Any) -> str:
     return text[:4000]
 
 
+def compact_log_text(value: Any, limit: int = 800) -> str:
+    text = compact_hook_text(value)
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 3)] + "..."
+
+
 def extract_reply_text_from_hook(data: dict[str, Any]) -> str:
     for key in ("text", "reply", "summary", "message", "codex_payload"):
         text = compact_hook_text(data.get(key))
@@ -1406,6 +1413,7 @@ class AppState:
             return
 
         if reply_behavior == "none":
+            self.add_action_log(f"通讯员回报仅记录：{compact_log_text(text) or '（空）'}")
             return
 
         if reply_behavior == "direct":
@@ -1438,6 +1446,7 @@ class AppState:
             self.run_agent_turn(text, reply_behavior=reply_behavior, session_id=session_id, source="voice-asr")
             return
 
+        self.add_action_log(f"收到命令：{compact_log_text(text) or '（空）'}")
         reply_text = f"首长，刚才识别到：{text}"
         self.deliver_reply_text(
             source="voice-asr",
@@ -1473,7 +1482,7 @@ class AppState:
             self.agent_active = True
             self.agent_last_input = clean_text
             self.agent_last_error = None
-        self.add_action_log(f"Agent 收到命令：{clean_text}")
+        self.add_action_log(f"收到命令：{compact_log_text(clean_text)}")
         self.publish_agent_status()
 
         try:
@@ -1492,7 +1501,7 @@ class AppState:
         for tool_result in result.tool_results:
             if tool_result.event:
                 self.publish(tool_result.event)
-            self.add_action_log(f"Agent tool call：{tool_result.message}")
+            self.add_action_log(f"命令执行结果：{tool_result.message}")
 
         with self.lock:
             self.agent_active = False
@@ -1573,14 +1582,14 @@ class AppState:
             recording = self.voice_recording
 
         if processing:
-            self.add_action_log("电话已挂机：语音命令继续在后台处理，完成后进入回拨。")
+            self.add_action_log("电话已挂机：已有命令正在处理；录音和播报已停止，完成后进入回拨。")
             self.publish_voice_status()
             return True
 
         if not recording or self.recorder is None or not self.recorder.is_recording():
             return False
 
-        self.add_action_log("电话已挂机：已把当前语音命令提交到后台，完成后进入回拨。")
+        self.add_action_log("电话已挂机：停止录音并提交已收到的语音，完成后进入回拨。")
         thread = threading.Thread(
             target=self.stop_voice_recording,
             args=(reason,),
@@ -1590,6 +1599,7 @@ class AppState:
         with self.lock:
             self.voice_monitor_thread = thread
         thread.start()
+        thread.join(timeout=0.2)
         self.publish_voice_status()
         return True
 
@@ -1649,6 +1659,7 @@ class AppState:
             self.pending_report_text = self.next_reply_text_locked()
 
         self.add_action_log(f"回话已入队：{reply.title}（队列 {self.reply_status()['queue_size']} 条）")
+        self.add_action_log(f"回话内容：{compact_log_text(reply.text)}")
         self.publish_reply_status()
         return reply
 
@@ -2208,9 +2219,9 @@ class AppState:
                 if playing or callback_session_active:
                     self.stop_reply_playback("电话挂机停止当前回报", wait_seconds=0.8)
                     self.clear_voice_replies("电话挂机结束当前语音回话")
+                submitted = self.submit_agent_voice_turn_after_hangup("电话挂机停止录音")
+                if submitted:
                     self.clear_ai_alert("电话挂机")
-                    return
-                if self.submit_agent_voice_turn_after_hangup("电话挂机"):
                     return
                 self.clear_ai_alert("电话挂机")
                 return
