@@ -75,6 +75,7 @@ FIRMWARE_UPLOAD_TIMEOUT_SECONDS = 180.0
 OPERATOR_RING_ON_SECONDS = 1.0
 OPERATOR_RING_OFF_SECONDS = 4.0
 OPERATOR_RING_TIMEOUT_SECONDS = 90.0
+OPERATOR_CALLBACK_EXPIRE_SECONDS = 120.0
 OPERATOR_BUSY_ON_SECONDS = 0.5
 OPERATOR_BUSY_OFF_SECONDS = 0.5
 SIM_SAMPLE_INTERVAL_SECONDS = 1.0
@@ -1704,6 +1705,35 @@ class AppState:
         self.add_action_log(f"回话队列已清空：{reason}")
         self.publish_reply_status()
 
+    def expire_unanswered_callback(self, reason: str = "回拨无人接听自动取消") -> int:
+        self.stop_reply_playback(f"{reason} 停止播放", wait_seconds=0.0)
+        expired = 0
+        with self.lock:
+            for reply in self.reply_queue:
+                reply.status = "expired"
+                reply.finished_at = time.time()
+                reply.error = reason
+                self.completed_replies.append(reply)
+                expired += 1
+            self.reply_queue.clear()
+            if self.active_reply is not None:
+                self.active_reply.status = "expired"
+                self.active_reply.finished_at = time.time()
+                self.active_reply.error = reason
+                self.completed_replies.append(self.active_reply)
+                self.active_reply = None
+                expired += 1
+            self.pending_report_text = None
+            self.callback_session_active = False
+
+        self.publish_reply_status()
+        self.clear_ai_alert(reason)
+        if expired:
+            self.add_action_log(f"回拨无人接听，已取消 {expired} 条回话。")
+        else:
+            self.add_action_log("回拨无人接听，当前没有待取消回话。")
+        return expired
+
     def start_reply_playback(self, reason: str = "manual") -> bool:
         with self.lock:
             if self.playback_thread is not None and self.playback_thread.is_alive():
@@ -2586,11 +2616,16 @@ class AppState:
             alert_thread.join(timeout=wait_seconds)
 
     def operator_alert_worker(self, stop_event: threading.Event) -> None:
-        self.add_action_log("接线员模式已启动：蜂鸣器和 LED 同步 1 秒响/亮、4 秒停/灭；摘机后停止，90 秒无人接听后切忙音。")
-        deadline = time.monotonic() + OPERATOR_RING_TIMEOUT_SECONDS
+        self.add_action_log(
+            "接线员模式已启动：蜂鸣器和 LED 同步 1 秒响/亮、4 秒停/灭；"
+            "摘机后停止，久叫无人接听后自动取消本次回话。"
+        )
+        started_at = time.monotonic()
+        expire_deadline = started_at + OPERATOR_CALLBACK_EXPIRE_SECONDS
+        ring_deadline = started_at + min(OPERATOR_RING_TIMEOUT_SECONDS, OPERATOR_CALLBACK_EXPIRE_SECONDS)
 
         while not stop_event.is_set():
-            remaining = deadline - time.monotonic()
+            remaining = min(ring_deadline, expire_deadline) - time.monotonic()
             if remaining <= 0:
                 break
 
@@ -2600,7 +2635,7 @@ class AppState:
                 break
 
             self.run_hardware_command("ring_off", log=False)
-            remaining = deadline - time.monotonic()
+            remaining = min(ring_deadline, expire_deadline) - time.monotonic()
             if remaining <= 0:
                 break
 
@@ -2613,20 +2648,30 @@ class AppState:
             self.run_hardware_command("led_off", log=False)
             return
 
+        if time.monotonic() >= expire_deadline:
+            self.run_hardware_command("ring_off", log=False)
+            self.run_hardware_command("led_off", log=False)
+            self.expire_unanswered_callback("回拨无人接听自动取消")
+            return
+
         self.run_hardware_command("ring_off", log=False)
         self.set_alert_phase("busy", alerting=True)
-        self.add_action_log("接线员模式久叫无人接听，已切换忙音；摘机或手动停止后关闭。")
+        self.add_action_log("接线员模式久叫无人接听，已切换忙音；若仍无人接听，将自动取消本次回话。")
 
         while not stop_event.is_set():
             self.run_hardware_command("ring_on", log=False)
-            if stop_event.wait(OPERATOR_BUSY_ON_SECONDS):
+            remaining = expire_deadline - time.monotonic()
+            if remaining <= 0 or stop_event.wait(min(OPERATOR_BUSY_ON_SECONDS, remaining)):
                 break
             self.run_hardware_command("ring_off", log=False)
-            if stop_event.wait(OPERATOR_BUSY_OFF_SECONDS):
+            remaining = expire_deadline - time.monotonic()
+            if remaining <= 0 or stop_event.wait(min(OPERATOR_BUSY_OFF_SECONDS, remaining)):
                 break
 
         self.run_hardware_command("ring_off", log=False)
         self.run_hardware_command("led_off", log=False)
+        if not stop_event.is_set() and time.monotonic() >= expire_deadline:
+            self.expire_unanswered_callback("回拨无人接听自动取消")
 
     def clear_ai_alert(self, reason: str = "manual") -> bool:
         with self.lock:

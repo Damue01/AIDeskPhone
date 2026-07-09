@@ -2,9 +2,11 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from tools.audio_recorder import RecordingResult
 from tools.ai_desk_phone_console import AppState, ConsoleConfig, ReplyTask
+import tools.ai_desk_phone_console as console
 
 
 class FakeRecorder:
@@ -177,6 +179,40 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(app.reply_status()["queue_size"], 1)
         self.assertEqual(app.reply_queue[0].source, "agent")
         self.assertEqual(alerts, ["agent"])
+
+    def test_unanswered_callback_expires_reply_queue(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
+        app.last_state = "PRESSED"
+        app.simulation_enabled = True
+        app.run_hardware_command = lambda command, log=True: True  # type: ignore[method-assign]
+        app.enqueue_reply("agent", "首长，任务已经完成。", title="通讯员回报")
+
+        with (
+            patch.object(console, "OPERATOR_RING_TIMEOUT_SECONDS", 0.02),
+            patch.object(console, "OPERATOR_CALLBACK_EXPIRE_SECONDS", 0.06),
+            patch.object(console, "OPERATOR_RING_ON_SECONDS", 0.01),
+            patch.object(console, "OPERATOR_RING_OFF_SECONDS", 0.01),
+            patch.object(console, "OPERATOR_BUSY_ON_SECONDS", 0.01),
+            patch.object(console, "OPERATOR_BUSY_OFF_SECONDS", 0.01),
+        ):
+            self.assertTrue(app.start_operator_alert("agent"))
+            assert app.alert_thread is not None
+            app.alert_thread.join(timeout=1)
+
+        self.assertEqual(app.reply_status()["queue_size"], 0)
+        self.assertFalse(app.alerting)
+        self.assertIsNone(app.pending_report_text)
+        self.assertEqual(app.completed_replies[-1].status, "expired")
+        self.assertEqual(app.completed_replies[-1].text, "首长，任务已经完成。")
+        logs = "\n".join(app.action_logs)
+        self.assertIn("回拨无人接听，已取消 1 条回话", logs)
+
+        app.start_reply_playback = lambda reason="": self.fail("expired reply should not play")  # type: ignore[method-assign]
+        calls: list[str] = []
+        app.start_agent_voice_session = lambda reason="", allow_on_hook=False: calls.append(reason) or {"ok": True}  # type: ignore[method-assign]
+        app.handle_hook_transition("PRESSED", "RELEASED")
+
+        self.assertEqual(calls, ["电话抬起"])
 
     def test_hangup_while_processing_keeps_current_voice_session(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao"))
