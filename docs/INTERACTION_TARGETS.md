@@ -53,14 +53,23 @@ be in front.
 
 ## Minimal Agent Runtime
 
-The first Agent runtime is intentionally small, but it must keep the same shape
-as a larger model-driven Agent:
+The first Agent runtime is intentionally small in surface area, but its internal
+shape follows a larger PI-style model-driven Agent:
 
 1. A user turn enters through phone ASR or `POST /api/agent/turn`.
-2. The Agent loop plans one or more tool calls.
-3. Tool calls are executed by registered skills.
-4. Skill results are summarized into an operator report.
-5. The report enters the existing reply queue and callback flow.
+2. The turn is appended to an append-only session tree as a `user` message.
+3. The prompt builder assembles `system`, `developer`, available tools, available
+   skills, loaded skill content, compaction summary, and recent session messages.
+4. The Agent loop plans one or more explicit tool calls.
+5. Planned calls are stored as an assistant `toolCall` message.
+6. Tool calls are executed by registered skills and stored as `toolResult`
+   messages.
+7. The phone-agent role model turns the user text, tool result summary, and
+   recent history into a spoken reply.
+8. The spoken reply is stored as an assistant message, then enters the existing
+   reply queue and callback flow.
+9. When context grows, older session entries are compacted into a structured
+   summary while recent messages remain in context.
 
 Current runtime file:
 
@@ -68,19 +77,50 @@ Current runtime file:
 tools/agent_runtime.py
 ```
 
-Current skill:
+Current skills:
 
 ```text
-command_center.earth
+command_center.earth   -> command-center map/globe control
+web.info               -> weather lookup, browser URL opening, browser search
+local.files            -> PI-style read-only file inspection
+system.app             -> allowlisted local app launching
+system.command         -> explicit, guarded shell command execution
 ```
 
-It supports these tool calls:
+They support these tool calls:
 
 ```text
-set_phase     -> command center status phase
-focus_city    -> command center city navigation
-fly_to        -> command center lng/lat navigation
-show_globe    -> return to globe standby view
+set_phase       -> command center status phase
+focus_city      -> command center city navigation
+fly_to          -> command center lng/lat navigation
+show_globe      -> return to globe standby view
+lookup_weather  -> query a compact weather summary for spoken reply
+search_web      -> open a browser search for an explicit search request
+open_url        -> open a URL in the browser
+read            -> read a project file with size limits
+grep            -> search project text with match limits
+find            -> find project paths by name or glob
+ls              -> list a project directory
+launch_app      -> launch an allowlisted local app
+run_command     -> run an explicit shell command with dangerous patterns blocked
+```
+
+The runtime also has a PI-inspired skill loader:
+
+```text
+~/.pi/agent/skills/
+~/.agents/skills/
+<project>/.pi/skills/
+<project>/.agents/skills/
+AI_DESK_PHONE_SKILL_PATHS
+```
+
+Skills follow progressive disclosure: the prompt always receives only the skill
+name and description; full `SKILL.md` content is loaded only for `/skill:name`
+or a matching task. Agent sessions are written as JSONL under:
+
+```text
+data/agent_sessions/
 ```
 
 Backend text entry:
@@ -111,14 +151,29 @@ agent systems:
    chatter to the user unless the user asks for diagnostics.
 2. Tool-call loop: a user turn should become explicit tool calls, the app should
    execute those tools, and the final spoken report should summarize the result.
-3. Skill ownership: each skill owns one bounded surface. The current Earth skill
-   owns command-center navigation only; it must not reach into renderer internals
-   or mutate unrelated phone state.
+3. Skill ownership: each skill owns one bounded surface. The Earth skill owns
+   command-center navigation only; web, local app, and shell skills must not
+   reach into renderer internals or mutate unrelated phone state.
 4. Traceability: each turn should keep enough metadata to debug later: input
    text, planned tool calls, tool results, final report, and timing.
-5. Minimal demo boundary: do not add a general-purpose task runner, shell access,
-   browser automation, or multi-agent handoff until this single Earth skill is
-   reliable from voice input through callback report.
+5. Pi-inspired minimal tooling: Pi defaults to read/bash/edit/write and can
+   enable grep/find/ls. The phone Agent adapts that shape more conservatively:
+   read-only `read/grep/find/ls`, browser/search, allowlisted app launch, and
+   guarded command execution are in the runtime; file mutation and multi-agent
+   handoff stay out until they have a permission model that fits voice control.
+6. Shell safety: shell execution only runs for explicit command phrases such as
+   "执行命令 ..."; dangerous patterns are blocked, execution is time-limited, and
+   output is truncated before entering the Agent result.
+7. File safety: local file tools only read inside the current project root. They
+   skip bulky/generated directories, limit file sizes, and truncate returned
+   content before it enters the Agent result.
+8. Conversation continuity: the local phone Agent keeps a PI-style append-only
+   session tree with `id`/`parentId` links. The console still exposes a compact
+   recent-turn view for the phone role model, while the runtime keeps full
+   message/tool metadata for debugging and future branching/resume work.
+9. Compaction: long sessions should summarize old messages using the structured
+   Goal / Constraints / Progress / Key Decisions / Critical Context format and
+   keep recent messages verbatim.
 
 ## Shortcut Profiles
 

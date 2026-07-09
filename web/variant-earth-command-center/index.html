@@ -1389,7 +1389,34 @@
 
     function replyText(reply = {}) {
       if (!reply || typeof reply !== "object") return "";
-      return reply.title || reply.text || reply.source || "";
+      return reply.text || reply.title || reply.source || "";
+    }
+
+    function appendActionLogToConsole(text = "") {
+      const line = String(text || "").trim();
+      if (!line) return;
+      const match = line.match(/^\d{2}:\d{2}:\d{2}\s+(.+)$/);
+      const body = match ? match[1] : line;
+      const visiblePatterns = [
+        ["豆包 ASR 识别结果：", "ASR"],
+        ["收到命令：", "USER"],
+        ["命令执行结果：", "TOOL"],
+        ["回话内容：", "REPLY"],
+        ["通讯员角色回复生成失败", "REPLY"],
+        ["通讯员角色回复不可用", "REPLY"],
+        ["Agent 执行失败：", "AGENT"]
+      ];
+      for (const [prefix, label] of visiblePatterns) {
+        if (body.includes(prefix)) {
+          appendConsoleLog(`[${label}] ${shortText(body.slice(body.indexOf(prefix) + prefix.length), 88)}`);
+          return;
+        }
+      }
+    }
+
+    function agentResultText(result = {}) {
+      if (!result || typeof result !== "object") return "";
+      return result.final_text || "";
     }
 
     function deriveTelemetryPhase() {
@@ -1453,6 +1480,11 @@
         if (text && text !== state.telemetry.lastReplyText) state.telemetry.lastReplyText = text;
       } else if (payload.type === "agent_status") {
         state.telemetry.agent = {...state.telemetry.agent, ...payload};
+        const finalText = shortText(agentResultText(payload.last_result || {}), 88);
+        if (finalText && finalText !== state.telemetry.lastReplyText) {
+          state.telemetry.lastReplyText = finalText;
+          appendConsoleLog(`[REPLY] ${finalText}`);
+        }
       } else if (payload.type === "command_center_command") {
         applyCommandCenterCommand(payload);
         return;
@@ -1461,6 +1493,7 @@
         state.telemetry.alertPhase = payload.alert_phase || "";
       } else if (payload.type === "action_log" && payload.text) {
         state.telemetry.actionLog = payload.text;
+        appendActionLogToConsole(payload.text);
       }
 
       applyTelemetryPhase();

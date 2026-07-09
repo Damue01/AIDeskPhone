@@ -136,12 +136,14 @@ class FakePhoneAgentSpeech:
         *,
         source: str = "voice",
         skill_context: str = "",
+        conversation_context: str = "",
     ) -> dict[str, object]:
         self.calls.append(
             {
                 "text": text,
                 "source": source,
                 "skill_context": skill_context,
+                "conversation_context": conversation_context,
             }
         )
         return {
@@ -261,11 +263,23 @@ class AgentHangupFlowTest(unittest.TestCase):
         app.voice_session_id = 3
         app.voice_processing = True
         app.cancel_agent_voice_session = lambda reason="": self.fail("processing session should not be cancelled")  # type: ignore[method-assign]
+        app.clear_ai_alert = lambda reason="": self.fail("processing hangup should preserve completion callback")  # type: ignore[method-assign]
 
         app.handle_hook_transition("RELEASED", "PRESSED")
 
         self.assertEqual(app.voice_session_id, 3)
         self.assertTrue(app.voice_processing)
+
+    def test_hangup_after_submitting_agent_turn_keeps_completion_callback_path(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao"))
+        app.last_state = "PRESSED"
+        calls: list[str] = []
+        app.submit_agent_voice_turn_after_hangup = lambda reason="": calls.append(reason) or True  # type: ignore[method-assign]
+        app.clear_ai_alert = lambda reason="": self.fail("submitted agent task should keep callback path")  # type: ignore[method-assign]
+
+        app.handle_hook_transition("RELEASED", "PRESSED")
+
+        self.assertEqual(calls, ["电话挂机停止录音"])
 
     def test_hangup_while_recording_submits_turn_and_callbacks(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
@@ -360,6 +374,22 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertIn("命令执行结果：已定位北京", logs)
         self.assertIn("回话内容：好了，已经定位到北京。", logs)
 
+    def test_agent_turn_history_is_passed_to_phone_agent_role_model(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
+        speech = FakePhoneAgentSpeech("首长，小叶记得。")
+        app.speech = speech  # type: ignore[assignment]
+
+        first = app.run_agent_turn("定位北京", reply_behavior="none", source="test")
+        second = app.run_agent_turn("你还记得上一句对话吗？", reply_behavior="none", source="test")
+
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(len(speech.calls), 2)
+        self.assertEqual(speech.calls[0]["conversation_context"], "")
+        self.assertIn("定位北京", speech.calls[1]["conversation_context"])
+        self.assertIn("已办好：已定位北京", speech.calls[1]["conversation_context"])
+        self.assertIn("首长，小叶记得。", speech.calls[1]["conversation_context"])
+
     def test_voice_stop_uses_streaming_asr_result_before_file_fallback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
         recorder = FakeRecorder(recording=False)
@@ -440,20 +470,25 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertIn("audio input failed", result["error"])
         self.assertFalse(app.voice_status()["recording"])
 
-    def test_hangup_during_agent_playback_stops_current_report_only(self) -> None:
-        app = make_app(self, ConsoleConfig(business_mode="doubao"))
+    def test_hangup_during_agent_playback_requeues_report_for_callback(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True))
         app.last_state = "PRESSED"
-        app.active_reply = ReplyTask(id="reply-test", source="voice-asr", title="语音识别回报", text="完成")
+        app.active_reply = ReplyTask(id="reply-test", source="agent", title="通讯员回报", text="完成")
         app.callback_session_active = True
         calls: list[str] = []
-        app.stop_reply_playback = lambda reason="", wait_seconds=0.0: calls.append("stop") or True  # type: ignore[method-assign]
-        app.clear_voice_replies = lambda reason="": calls.append("clear_voice")  # type: ignore[method-assign]
-        app.clear_ai_alert = lambda reason="": calls.append("clear_alert") or True  # type: ignore[method-assign]
+        app.start_operator_alert = lambda source="ai": calls.append(f"alert:{source}") or True  # type: ignore[method-assign]
+        app.clear_voice_replies = lambda reason="": self.fail("hangup should keep the report queued for callback")  # type: ignore[method-assign]
+        app.clear_ai_alert = lambda reason="": self.fail("hangup with a pending report should not clear callback alert")  # type: ignore[method-assign]
         app.submit_agent_voice_turn_after_hangup = lambda reason="": calls.append("submit") or False  # type: ignore[method-assign]
 
         app.handle_hook_transition("RELEASED", "PRESSED")
 
-        self.assertEqual(calls, ["stop", "clear_voice", "submit", "clear_alert"])
+        self.assertEqual(calls, ["alert:reply-queue", "submit"])
+        self.assertIsNone(app.active_reply)
+        self.assertEqual(app.reply_status()["queue_size"], 1)
+        self.assertEqual(app.reply_queue[0].text, "完成")
+        self.assertEqual(app.reply_queue[0].status, "queued")
+        self.assertTrue(app.callback_session_active)
 
 
 if __name__ == "__main__":

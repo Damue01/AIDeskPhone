@@ -78,6 +78,20 @@ OPERATOR_RING_TIMEOUT_SECONDS = 90.0
 OPERATOR_CALLBACK_EXPIRE_SECONDS = 120.0
 OPERATOR_BUSY_ON_SECONDS = 0.5
 OPERATOR_BUSY_OFF_SECONDS = 0.5
+
+
+def make_agent_session_path() -> Path:
+    return ROOT / "data" / "agent_sessions" / f"session-{int(time.time())}-{uuid.uuid4().hex[:8]}.jsonl"
+
+
+def agent_permission_profile_label(profile: str) -> str:
+    labels = {
+        "commander": "最高权限（指挥官）",
+        "trusted": "最高权限（受信任）",
+        "developer": "开发者权限",
+        "confirm_sensitive": "敏感动作确认",
+    }
+    return labels.get(str(profile or "").strip(), str(profile or "未设置"))
 SIM_SAMPLE_INTERVAL_SECONDS = 1.0
 SIM_AUTO_PULSE_INTERVAL_SECONDS = 8.0
 SIM_AUTO_PULSE_SECONDS = 0.9
@@ -274,6 +288,18 @@ class ReplyTask:
     started_at: float | None = None
     finished_at: float | None = None
     error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass
+class AgentConversationEntry:
+    turn_id: str
+    user_text: str
+    tool_context: str
+    reply_text: str
+    created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -766,11 +792,21 @@ class AppState:
         self.callback_session_active = False
         self.speech = VolcengineSpeech() if VolcengineSpeech is not None else None
         self.recorder = AudioRecorder() if AudioRecorder is not None else None
-        self.agent_loop = MinimalAgentLoop() if MinimalAgentLoop is not None else None
+        self.agent_loop = (
+            MinimalAgentLoop(
+                cwd=str(ROOT),
+                persist_path=make_agent_session_path(),
+            )
+            if MinimalAgentLoop is not None
+            else None
+        )
         self.agent_active = False
         self.agent_last_result: dict[str, Any] | None = None
         self.agent_last_error: str | None = None
         self.agent_last_input: str | None = None
+        runtime_session = getattr(getattr(self.agent_loop, "session", None), "session_id", None)
+        self.agent_conversation_id = str(runtime_session or f"agent-session-{int(time.time())}")
+        self.agent_conversation_turns: deque[AgentConversationEntry] = deque(maxlen=12)
         self.voice_recording = False
         self.voice_recording_path: str | None = None
         self.voice_last_result: dict[str, Any] | None = None
@@ -1198,17 +1234,62 @@ class AppState:
 
     def agent_status(self) -> dict[str, Any]:
         with self.lock:
+            runtime_status = self.agent_loop.status() if self.agent_loop is not None and hasattr(self.agent_loop, "status") else None
             return {
                 "agent_enabled": self.agent_loop is not None,
                 "active": self.agent_active,
                 "permission_profile": self.config.agent_permission_profile,
+                "permission_label": agent_permission_profile_label(self.config.agent_permission_profile),
                 "last_input": self.agent_last_input,
                 "last_result": self.agent_last_result,
                 "last_error": self.agent_last_error,
+                "conversation_id": self.agent_conversation_id,
+                "conversation_turns": len(self.agent_conversation_turns),
+                "conversation_recent": [entry.to_dict() for entry in self.agent_conversation_turns],
+                "runtime": runtime_status,
             }
 
     def publish_agent_status(self) -> None:
         self.publish({"type": "agent_status", **self.agent_status()})
+
+    def start_new_agent_session(self, reason: str = "manual") -> dict[str, Any]:
+        if self.agent_loop is None or not hasattr(self.agent_loop, "new_session"):
+            return {"ok": False, "error": "agent runtime is not available", **self.agent_status()}
+        with self.lock:
+            if self.agent_active:
+                return {"ok": False, "error": "agent is active", **self.agent_status()}
+            runtime_status = self.agent_loop.new_session(persist_path=make_agent_session_path())
+            runtime_session = runtime_status.get("session", {}).get("id") if isinstance(runtime_status, dict) else None
+            self.agent_conversation_id = str(runtime_session or f"agent-session-{int(time.time())}")
+            self.agent_conversation_turns.clear()
+            self.agent_last_result = None
+            self.agent_last_error = None
+            self.agent_last_input = None
+        self.add_action_log(f"Agent Session 已新建：{reason}")
+        self.publish_agent_status()
+        return {"ok": True, **self.agent_status()}
+
+    def delete_agent_session(self, reason: str = "manual") -> dict[str, Any]:
+        if self.agent_loop is None or not hasattr(self.agent_loop, "delete_current_session"):
+            return {"ok": False, "error": "agent runtime is not available", **self.agent_status()}
+        with self.lock:
+            if self.agent_active:
+                return {"ok": False, "error": "agent is active", **self.agent_status()}
+            delete_result = self.agent_loop.delete_current_session(next_persist_path=make_agent_session_path())
+            runtime = delete_result.get("runtime", {}) if isinstance(delete_result, dict) else {}
+            runtime_session = runtime.get("session", {}).get("id") if isinstance(runtime, dict) else None
+            self.agent_conversation_id = str(runtime_session or f"agent-session-{int(time.time())}")
+            self.agent_conversation_turns.clear()
+            self.agent_last_result = None
+            self.agent_last_error = None
+            self.agent_last_input = None
+        deleted_path = delete_result.get("deleted_path") if isinstance(delete_result, dict) else None
+        if isinstance(delete_result, dict) and delete_result.get("delete_error"):
+            self.add_action_log(f"Agent Session 删除失败，已新建空会话：{delete_result.get('delete_error')}")
+        else:
+            self.add_action_log(f"Agent Session 已删除并重建：{reason} {deleted_path or ''}".strip())
+        self.publish_agent_status()
+        return {"ok": True, "session_delete": delete_result, **self.agent_status()}
 
     def handle_streaming_asr_result(self, result: dict[str, Any]) -> None:
         text = str(result.get("text", "") or "").strip()
@@ -1506,7 +1587,7 @@ class AppState:
         self.publish_agent_status()
 
         try:
-            context = AgentContext(permission_profile=self.config.agent_permission_profile, source=source)
+            context = AgentContext(permission_profile=self.config.agent_permission_profile, source=source, cwd=str(ROOT))
             result = self.agent_loop.run(clean_text, context)
         except Exception as exc:
             error = str(exc)
@@ -1519,11 +1600,16 @@ class AppState:
 
         result_payload = result.to_dict()
         skill_context = self.format_agent_skill_context(result)
+        conversation_context = self.format_agent_conversation_context()
         final_text = self.prepare_phone_agent_reply_text(
             source,
             clean_text,
             skill_context=skill_context,
+            conversation_context=conversation_context,
         )
+        record_reply = getattr(self.agent_loop, "record_assistant_reply", None)
+        if callable(record_reply) and final_text:
+            record_reply(result.id, final_text, skill_context=skill_context, source="phone-agent")
         result_payload["final_text"] = final_text or ""
         for tool_result in result.tool_results:
             if tool_result.event:
@@ -1534,6 +1620,14 @@ class AppState:
             self.agent_active = False
             self.agent_last_result = result_payload
             self.agent_last_error = None
+            self.agent_conversation_turns.append(
+                AgentConversationEntry(
+                    turn_id=result.id,
+                    user_text=clean_text,
+                    tool_context=skill_context,
+                    reply_text=final_text or "",
+                )
+            )
         self.publish_agent_status()
 
         completion_behavior = self.resolve_voice_reply_behavior(reply_behavior, self.config.voice_reply_policy)
@@ -1740,6 +1834,7 @@ class AppState:
         text: str,
         *,
         skill_context: str = "",
+        conversation_context: str = "",
     ) -> str | None:
         clean_text = compact_hook_text(text)
         if not clean_text:
@@ -1757,6 +1852,7 @@ class AppState:
                 clean_text,
                 source=source,
                 skill_context=skill_context,
+                conversation_context=conversation_context,
             )
         except Exception as exc:
             self.add_action_log(f"通讯员角色回复生成失败，本轮不生成电话回话：{exc}")
@@ -1778,6 +1874,17 @@ class AppState:
             message = str(getattr(tool_result, "message", "") or "")
             rows.append(f"{status}：{message}")
         return "；".join(rows)
+
+    def format_agent_conversation_context(self, max_turns: int = 6) -> str:
+        with self.lock:
+            entries = list(self.agent_conversation_turns)[-max_turns:]
+        rows: list[str] = []
+        for index, entry in enumerate(entries, start=1):
+            user_text = compact_log_text(entry.user_text, limit=160)
+            tool_text = compact_log_text(entry.tool_context or "无", limit=180)
+            reply_text = compact_log_text(entry.reply_text or "（未生成回话）", limit=180)
+            rows.append(f"{index}. 首长：{user_text}；办理：{tool_text}；小叶：{reply_text}")
+        return "\n".join(rows)
 
     def clear_reply_queue(self, reason: str = "manual") -> None:
         self.stop_reply_playback(f"{reason} 清空回话队列", wait_seconds=0.8)
@@ -1867,6 +1974,52 @@ class AppState:
         if had_playback:
             self.add_action_log(f"回话播放已停止：{reason}")
         self.publish_reply_status()
+        return had_playback
+
+    def pause_reply_playback_for_callback(self, reason: str = "电话挂机暂停当前回报", wait_seconds: float = 0.0) -> bool:
+        with self.lock:
+            stop_event = self.playback_stop_event
+            thread = self.playback_thread
+            process = self.playback_process
+            reply = self.active_reply
+            had_playback = reply is not None or (thread is not None and thread.is_alive())
+            if reply is not None:
+                reply.status = "queued"
+                reply.started_at = None
+                reply.finished_at = None
+                reply.error = None
+                self.reply_queue.appendleft(reply)
+                self.active_reply = None
+            if self.reply_queue:
+                self.callback_session_active = True
+            self.pending_report_text = self.next_reply_text_locked()
+
+        stop_event.set()
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+        if (
+            wait_seconds > 0
+            and thread is not None
+            and thread.is_alive()
+            and thread is not threading.current_thread()
+        ):
+            thread.join(timeout=wait_seconds)
+        if had_playback:
+            self.add_action_log(f"回话已暂停：{reason}，等待回拨继续汇报。")
+        self.publish_reply_status()
+
+        with self.lock:
+            should_alert = (
+                self.config.enable_callback
+                and self.last_state == "PRESSED"
+                and bool(self.reply_queue)
+                and not self.alerting
+            )
+        if should_alert:
+            self.start_operator_alert("reply-queue")
         return had_playback
 
     def start_doubao_tts_process(self, text: str, speech_rate: int, loudness_rate: int, pitch: int) -> subprocess.Popen[bytes] | None:
@@ -2110,6 +2263,7 @@ class AppState:
                 ok, error = self.wait_for_reply_audio(reply, stop_event)
 
                 with self.lock:
+                    reply_detached = self.active_reply is not reply
                     if self.active_reply is reply:
                         reply.finished_at = time.time()
                         reply.status = "done" if ok else ("stopped" if error == "stopped" else "failed")
@@ -2125,8 +2279,12 @@ class AppState:
                 self.publish_reply_status()
                 if ok:
                     self.add_action_log(f"通讯员回报完成：{reply.title}")
+                elif reply_detached and error == "stopped":
+                    self.add_action_log(f"通讯员回报已暂停：{reply.title}")
                 else:
                     self.add_action_log(f"通讯员回报中止：{reply.title}（{error or 'unknown'}）")
+                    break
+                if reply_detached:
                     break
                 if not should_continue:
                     break
@@ -2335,16 +2493,20 @@ class AppState:
             with self.lock:
                 playing = self.active_reply is not None or (self.playback_thread is not None and self.playback_thread.is_alive())
                 callback_session_active = self.callback_session_active
-                self.callback_session_active = False
                 business_mode = normalize_business_mode(self.config.business_mode)
+                if business_mode != "doubao":
+                    self.callback_session_active = False
             if business_mode == "doubao":
+                paused_reply = False
                 if playing or callback_session_active:
-                    self.stop_reply_playback("电话挂机停止当前回报", wait_seconds=0.8)
-                    self.clear_voice_replies("电话挂机结束当前语音回话")
+                    paused_reply = self.pause_reply_playback_for_callback("电话挂机关闭听筒", wait_seconds=0.8)
                 submitted = self.submit_agent_voice_turn_after_hangup("电话挂机停止录音")
                 if submitted:
-                    self.clear_ai_alert("电话挂机")
                     return
+                if paused_reply:
+                    return
+                with self.lock:
+                    self.callback_session_active = False
                 self.clear_ai_alert("电话挂机")
                 return
             if playing or callback_session_active:
@@ -5671,6 +5833,50 @@ INDEX_HTML = r"""<!doctype html>
       overflow: hidden;
       background: var(--line-soft);
     }
+    .agent-maintenance-panel {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .agent-maintenance-head {
+      min-height: 48px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .agent-maintenance-head strong {
+      font-size: 15px;
+      line-height: 1.35;
+    }
+    .agent-status-grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      background: var(--line-soft);
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .agent-status-grid .hardware-status-item {
+      min-height: 72px;
+    }
+    .agent-runtime-log {
+      min-height: 170px;
+      max-height: 280px;
+      overflow: auto;
+      margin: 0;
+      padding: 12px 14px;
+      background: #fff;
+      color: #222;
+      font: 12px/1.55 Consolas, "Microsoft YaHei", monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .agent-prompt-log {
+      border-bottom: 1px solid var(--line-soft);
+      max-height: 340px;
+    }
     .debug-log-panel {
       border: 1px solid var(--line);
       border-radius: 6px;
@@ -5768,6 +5974,9 @@ INDEX_HTML = r"""<!doctype html>
         grid-column: 3;
         justify-content: flex-start;
       }
+      .agent-status-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
       .shortcut-row {
         grid-template-columns: 34px minmax(100px, 150px) minmax(0, 1fr);
         padding: 12px 0;
@@ -5821,6 +6030,7 @@ INDEX_HTML = r"""<!doctype html>
       .voice-config-block,
       .filter-control-grid,
       .hardware-status-grid,
+      .agent-status-grid,
       .debug-status-grid {
         grid-template-columns: 1fr;
       }
@@ -5918,10 +6128,12 @@ INDEX_HTML = r"""<!doctype html>
           <div id="agentModeSettings" class="mode-fields">
             <div class="settings-row">
               <span class="icon-cell"><i data-lucide="wrench"></i></span>
-              <div class="row-label"><strong>工具调用</strong></div>
+                <div class="row-label"><strong>工具调用</strong></div>
               <div class="row-control">
                 <select id="agentPermissionProfile">
-                  <option value="commander">允许</option>
+                  <option value="commander">最高权限（指挥官）</option>
+                  <option value="trusted">最高权限（受信任）</option>
+                  <option value="developer">开发者权限</option>
                   <option value="confirm_sensitive">敏感动作确认</option>
                 </select>
               </div>
@@ -6027,9 +6239,18 @@ INDEX_HTML = r"""<!doctype html>
 
           <div class="settings-row">
             <span class="icon-cell"><i data-lucide="key-round"></i></span>
-            <div class="row-label"><strong>API Key</strong><span>ASR / TTS / 通讯员共用</span></div>
+            <div class="row-label"><strong>语音服务 Key</strong><span>ASR / TTS 使用</span></div>
             <div class="row-control read-only-control">
               <input id="speechApiKey" class="secret-field" type="password" autocomplete="off" placeholder="保存后写入本机 .env">
+              <button class="small-action" type="button" onclick="saveConfig()">保存</button>
+            </div>
+          </div>
+
+          <div class="settings-row">
+            <span class="icon-cell"><i data-lucide="cpu"></i></span>
+            <div class="row-label"><strong>思考模型 Key</strong><span>通讯员 / Agent 回复使用</span></div>
+            <div class="row-control read-only-control">
+              <input id="thinkingApiKey" class="secret-field" type="password" autocomplete="off" placeholder="保存后写入 ARK_API_KEY">
               <button class="small-action" type="button" onclick="saveConfig()">保存</button>
             </div>
           </div>
@@ -6140,7 +6361,7 @@ INDEX_HTML = r"""<!doctype html>
 
           <div class="settings-row">
             <span class="icon-cell"><i data-lucide="key-round"></i></span>
-            <div class="row-label"><strong>密钥状态</strong></div>
+            <div class="row-label"><strong>服务状态</strong><span>语音与思考分开检查</span></div>
             <div class="row-control text-value" id="speechState">未就绪</div>
           </div>
 
@@ -6261,6 +6482,29 @@ INDEX_HTML = r"""<!doctype html>
               <div class="hardware-status-item"><span>模型返回</span><strong id="debugModelState">--</strong></div>
             </div>
 
+            <div class="agent-maintenance-panel" aria-label="Agent Runtime 维护">
+              <div class="agent-maintenance-head">
+                <strong>Agent Runtime</strong>
+                <div class="debug-log-actions">
+                  <button class="small-action" type="button" onclick="refreshAgentRuntimeStatus()">刷新 Agent</button>
+                  <button class="small-action" type="button" onclick="postAgentNewSession()">新建 Session</button>
+                  <button class="small-action danger" type="button" onclick="postAgentDeleteSession()">删除 Session</button>
+                  <button class="small-action" type="button" onclick="copyAgentSessionPath()">复制会话路径</button>
+                </div>
+              </div>
+              <div class="agent-status-grid">
+                <div class="hardware-status-item"><span>Session</span><strong id="agentSessionState">--</strong></div>
+                <div class="hardware-status-item"><span>权限</span><strong id="agentPermissionState">--</strong></div>
+                <div class="hardware-status-item"><span>消息</span><strong id="agentMessageState">--</strong></div>
+                <div class="hardware-status-item"><span>工具</span><strong id="agentToolState">--</strong></div>
+                <div class="hardware-status-item"><span>Skills</span><strong id="agentSkillState">--</strong></div>
+                <div class="hardware-status-item"><span>压缩</span><strong id="agentCompactionState">--</strong></div>
+                <div class="hardware-status-item"><span>会话文件</span><strong id="agentSessionFileState">--</strong></div>
+              </div>
+              <pre id="agentPromptLog" class="agent-runtime-log agent-prompt-log" data-title="Prompt / 权限 / Skills">等待 Agent Prompt...</pre>
+              <pre id="agentRuntimeLog" class="agent-runtime-log" data-title="Session / History">等待 Agent 状态...</pre>
+            </div>
+
             <div class="debug-log-panel">
               <div class="debug-log-head">
                 <strong>调试日志</strong>
@@ -6335,6 +6579,7 @@ INDEX_HTML = r"""<!doctype html>
     let latestSpeechStatus = {};
     let latestHardwareStatus = {};
     let latestFirmwareStatus = {};
+    let latestAgentStatus = {};
 
     const businessModeDescriptions = {
       codex: "输入法模式：手动切换快捷键方案；任务完成后可电话回拨。",
@@ -6440,12 +6685,29 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     function updateSpeechSecretState(status = {}) {
-      const input = $("speechApiKey");
-      const configured = status.credential_mode && status.credential_mode !== "missing";
-      if (input) {
-        input.classList.toggle("configured", Boolean(configured));
-        input.placeholder = configured ? "••••••••••••（已保存）" : "保存后写入本机 .env";
+      const speechInput = $("speechApiKey");
+      const speechConfigured = status.credential_mode && status.credential_mode !== "missing";
+      if (speechInput) {
+        speechInput.classList.toggle("configured", Boolean(speechConfigured));
+        speechInput.placeholder = speechConfigured ? "••••••••••••（已保存）" : "保存后写入本机 .env";
       }
+
+      const thinkingInput = $("thinkingApiKey");
+      const thinkingMode = status.operator_credential_mode || "missing";
+      const thinkingConfigured = thinkingMode && thinkingMode !== "missing";
+      if (thinkingInput) {
+        thinkingInput.classList.toggle("configured", Boolean(thinkingConfigured));
+        thinkingInput.placeholder = thinkingConfigured ? "••••••••••••（已保存）" : "保存后写入 ARK_API_KEY";
+      }
+    }
+
+    function formatSpeechState(status = {}) {
+      const voiceParts = [];
+      if (status.tts_ready) voiceParts.push("TTS");
+      if (status.asr_ready) voiceParts.push("ASR");
+      const speechReady = voiceParts.length ? `${voiceParts.join(" / ")} 可用` : "未就绪";
+      const thinkingReady = status.operator_ready ? "通讯员可用" : "未就绪";
+      return `语音：${speechReady}；思考：${thinkingReady}`;
     }
 
     async function fetchJson(url, options = {}, timeoutMs = 30000) {
@@ -6839,11 +7101,7 @@ INDEX_HTML = r"""<!doctype html>
         setValue("ttsExplicitDialect", status.tts_explicit_dialect || "");
         setChecked("ttsDisableMarkdownFilter", status.tts_disable_markdown_filter !== false);
         setChecked("ttsDisableEmojiFilter", status.tts_disable_emoji_filter !== false);
-        const readyParts = [];
-        if (status.tts_ready) readyParts.push("TTS");
-        if (status.asr_ready) readyParts.push("ASR");
-        if (status.operator_ready) readyParts.push("通讯员");
-        $("speechState").textContent = readyParts.length ? `${readyParts.join(" / ")} 可用` : "未就绪";
+        $("speechState").textContent = formatSpeechState(status);
         updateSpeechDebugStatus(status);
         updateSpeechSecretState(status);
         await refreshSpeechSpeakers(false);
@@ -7009,6 +7267,193 @@ INDEX_HTML = r"""<!doctype html>
       updateDebugTile("debugDeviceState", state);
     }
 
+    function shortPath(value) {
+      const text = String(value || "").trim();
+      if (!text) return "--";
+      const normalized = text.replaceAll("\\", "/");
+      const parts = normalized.split("/");
+      if (parts.length <= 3) return text;
+      return `.../${parts.slice(-3).join("/")}`;
+    }
+
+    function shortId(value) {
+      const text = String(value || "").trim();
+      if (!text) return "--";
+      return text.length > 10 ? `${text.slice(0, 6)}...${text.slice(-4)}` : text;
+    }
+
+    function agentPermissionLabel(status = {}) {
+      if (status.permission_label) return status.permission_label;
+      const profile = status.permission_profile || "";
+      const labels = {
+        commander: "最高权限（指挥官）",
+        trusted: "最高权限（受信任）",
+        developer: "开发者权限",
+        confirm_sensitive: "敏感动作确认"
+      };
+      return labels[profile] || profile || "--";
+    }
+
+    function agentMessageText(message = {}) {
+      const content = message.content;
+      if (typeof content === "string") return content;
+      if (!Array.isArray(content)) return "";
+      return content.map(item => {
+        if (!item || typeof item !== "object") return String(item || "");
+        if (item.type === "text") return item.text || "";
+        if (item.type === "toolCall") return `${item.name || "toolCall"} ${JSON.stringify(item.arguments || {})}`;
+        return item.text || item.content || item.type || "";
+      }).filter(Boolean).join(" ");
+    }
+
+    function promptContentFromLastPrompt(lastPrompt = {}, role) {
+      const messages = Array.isArray(lastPrompt.messages) ? lastPrompt.messages : [];
+      const message = messages.find(item => item && item.role === role);
+      return message ? String(message.content || "") : "";
+    }
+
+    function renderAgentRuntimeLog(status = {}) {
+      const node = $("agentRuntimeLog");
+      const promptNode = $("agentPromptLog");
+      const runtime = status.runtime || {};
+      const session = runtime.session || {};
+      const lastPrompt = runtime.last_prompt || {};
+      if (promptNode) {
+        const promptTemplate = runtime.prompt_template || {};
+        const loadedSkills = runtime.last_loaded_skills || lastPrompt.loaded_skills || runtime.skills?.loaded || [];
+        const availableSkills = Array.isArray(runtime.skills?.skills) ? runtime.skills.skills : [];
+        const skillRows = availableSkills.slice(0, 40).map(skill => {
+          const loaded = loadedSkills.includes(skill.name) ? "*" : " ";
+          const source = skill.source ? ` · ${skill.source}` : "";
+          return `${loaded} ${skill.name}${source}: ${skill.description || "--"}`;
+        });
+        const promptRows = [
+          `permission: ${agentPermissionLabel(status)} (${status.permission_profile || "--"})`,
+          `allowed profiles: ${(runtime.permission_profiles || []).join(", ") || "--"}`,
+          `last prompt tokens: ${lastPrompt.estimated_tokens || 0}`,
+          `loaded skills: ${loadedSkills.join(", ") || "无"}`,
+          "",
+          "system prompt:",
+          promptTemplate.system || promptContentFromLastPrompt(lastPrompt, "system") || "--",
+          "",
+          "developer prompt:",
+          promptTemplate.developer || "--",
+          "",
+          `available skills (${runtime.skills?.count || availableSkills.length || 0}):`,
+          ...(skillRows.length ? skillRows : ["  无"])
+        ];
+        promptNode.textContent = promptRows.join("\n");
+      }
+      if (!node) return;
+      const recentEntries = Array.isArray(session.recent_entries) ? session.recent_entries : [];
+      const rows = [
+        `session: ${session.id || status.conversation_id || "--"}`,
+        `file: ${session.session_file || "--"}`,
+        `permission: ${agentPermissionLabel(status)} (${status.permission_profile || "--"})`,
+        `last input: ${status.last_input || "--"}`,
+        `prompt tokens: ${lastPrompt.estimated_tokens || 0}`,
+        `loaded skills: ${(runtime.last_loaded_skills || lastPrompt.loaded_skills || runtime.skills?.loaded || []).join(", ") || "无"}`,
+        ""
+      ];
+      if (session.latest_compaction?.summary) {
+        rows.push("compaction:");
+        rows.push(String(session.latest_compaction.summary).slice(0, 520));
+        rows.push("");
+      }
+      rows.push("recent entries:");
+      if (!recentEntries.length) {
+        rows.push("  无");
+      } else {
+        for (const entry of recentEntries) {
+          const message = entry.message || {};
+          const role = message.role || entry.type;
+          const text = agentMessageText(message).replace(/\s+/g, " ").slice(0, 180);
+          const tool = message.tool_name ? ` ${message.tool_name}` : "";
+          rows.push(`  ${entry.id || "--"} <- ${entry.parentId || "root"} · ${role}${tool}: ${text || "--"}`);
+        }
+      }
+      node.textContent = rows.join("\n");
+    }
+
+    function updateAgentDebugStatus(payload = {}) {
+      latestAgentStatus = {...latestAgentStatus, ...payload};
+      const runtime = latestAgentStatus.runtime || {};
+      const session = runtime.session || {};
+      const toolCount = Array.isArray(runtime.tools) ? runtime.tools.length : 0;
+      const skillCount = Number(runtime.skills?.count || 0);
+      const entryCount = Number(session.entry_count || 0);
+      const messageCount = Number(session.message_count || 0);
+      const sessionLabel = latestAgentStatus.active ? `运行中 ${shortId(session.id)}` : (session.id ? shortId(session.id) : (latestAgentStatus.agent_enabled ? "就绪" : "未启用"));
+      updateDebugTile("agentSessionState", sessionLabel);
+      updateDebugTile("agentPermissionState", agentPermissionLabel(latestAgentStatus));
+      updateDebugTile("agentMessageState", `${messageCount} 条 / ${entryCount} entries`);
+      updateDebugTile("agentToolState", `${toolCount} 个`);
+      updateDebugTile("agentSkillState", `${skillCount} 个`);
+      updateDebugTile("agentCompactionState", session.latest_compaction ? "已有摘要" : "未压缩");
+      updateDebugTile("agentSessionFileState", shortPath(session.session_file));
+      renderAgentRuntimeLog(latestAgentStatus);
+    }
+
+    async function refreshAgentRuntimeStatus() {
+      appendDebugLog("请求", "GET /api/agent/status");
+      try {
+        const status = await fetchJson("/api/agent/status", {}, 10000);
+        updateAgentDebugStatus(status);
+        appendDebugLog("状态", "Agent Runtime 状态已刷新。");
+      } catch (error) {
+        appendDebugLog("错误", `Agent Runtime 状态刷新失败：${error.message}`);
+      }
+    }
+
+    async function postAgentNewSession() {
+      appendDebugLog("请求", "POST /api/agent/session/new");
+      try {
+        const status = await fetchJson("/api/agent/session/new", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "web"})
+        }, 10000);
+        updateAgentDebugStatus(status);
+        setSaveStatus("Agent Session 已新建。", "ok");
+        appendDebugLog("状态", "Agent Session 已新建。");
+      } catch (error) {
+        setSaveStatus(`新建 Session 失败：${error.message}`, "warn");
+        appendDebugLog("错误", `新建 Agent Session 失败：${error.message}`);
+      }
+    }
+
+    async function postAgentDeleteSession() {
+      if (!window.confirm("删除当前 Agent Session 文件并新建空会话？")) return;
+      appendDebugLog("请求", "POST /api/agent/session/delete");
+      try {
+        const status = await fetchJson("/api/agent/session/delete", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({reason: "web"})
+        }, 10000);
+        updateAgentDebugStatus(status);
+        setSaveStatus("Agent Session 已删除并重建。", "ok");
+        appendDebugLog("状态", "Agent Session 已删除并重建。");
+      } catch (error) {
+        setSaveStatus(`删除 Session 失败：${error.message}`, "warn");
+        appendDebugLog("错误", `删除 Agent Session 失败：${error.message}`);
+      }
+    }
+
+    async function copyAgentSessionPath() {
+      const path = latestAgentStatus.runtime?.session?.session_file || "";
+      if (!path) {
+        setSaveStatus("当前没有可复制的 Agent 会话路径。", "warn");
+        return;
+      }
+      try {
+        await navigator.clipboard.writeText(path);
+        setSaveStatus("Agent 会话路径已复制。", "ok");
+      } catch (error) {
+        setSaveStatus(`复制失败：${error.message}`, "warn");
+      }
+    }
+
     function updateFirmwareStatus(status = {}) {
       if (!status || !Object.keys(status).length) return;
       const previousMessage = latestFirmwareStatus.message || "";
@@ -7030,11 +7475,12 @@ INDEX_HTML = r"""<!doctype html>
     async function refreshDebugStatus() {
       appendDebugLog("请求", "刷新调试状态");
       try {
-        const [hardware, voice, replies, speech] = await Promise.all([
+        const [hardware, voice, replies, speech, agent] = await Promise.all([
           fetchJson("/api/hardware/status", {}, 10000),
           fetchJson("/api/voice/status", {}, 10000),
           fetchJson("/api/replies", {}, 10000),
-          fetchJson("/api/speech/status", {}, 10000)
+          fetchJson("/api/speech/status", {}, 10000),
+          fetchJson("/api/agent/status", {}, 10000)
         ]);
         updateHardwareDebugStatus(hardware);
         updateFirmwareStatus(hardware.firmware_upload);
@@ -7042,6 +7488,7 @@ INDEX_HTML = r"""<!doctype html>
         updateVoiceDebugStatus(voice);
         updateReplyStatus(replies);
         updateSpeechDebugStatus(speech);
+        updateAgentDebugStatus(agent);
         appendDebugLog("状态", "调试状态刷新完成");
       } catch (error) {
         appendDebugLog("错误", `调试状态刷新失败：${error.message}`);
@@ -7090,6 +7537,7 @@ INDEX_HTML = r"""<!doctype html>
 
     async function saveSpeechConfigIfNeeded() {
       const apiKey = $("speechApiKey")?.value?.trim() || "";
+      const thinkingApiKey = $("thinkingApiKey")?.value?.trim() || "";
       const speaker = $("speechSpeaker").value.trim();
       const payload = {
         tts_resource_id: $("ttsResourceId").value.trim(),
@@ -7109,6 +7557,7 @@ INDEX_HTML = r"""<!doctype html>
       };
       if (speaker) payload.tts_speaker = speaker;
       if (apiKey) payload.api_key = apiKey;
+      if (thinkingApiKey) payload.ark_api_key = thinkingApiKey;
       const result = await fetchJson("/api/speech/config", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -7117,6 +7566,7 @@ INDEX_HTML = r"""<!doctype html>
       if (!result.ok) throw new Error(result.error || "语音配置保存失败");
       lastSpeechSpeaker = result.tts_speaker || speaker;
       if (apiKey) $("speechApiKey").value = "";
+      if (thinkingApiKey) $("thinkingApiKey").value = "";
     }
 
     async function saveConfig() {
@@ -7254,6 +7704,7 @@ INDEX_HTML = r"""<!doctype html>
       updateFirmwareStatus(payload.firmware_upload);
       updateVoiceDebugStatus(payload);
       updateReplyStatus(payload);
+      if (payload.agent) updateAgentDebugStatus(payload.agent);
       setDebugLogsFromSnapshot(payload);
     }
 
@@ -7339,6 +7790,8 @@ INDEX_HTML = r"""<!doctype html>
           updateReplyStatus(payload);
         } else if (payload.type === "voice_status") {
           updateVoiceDebugStatus(payload);
+        } else if (payload.type === "agent_status") {
+          updateAgentDebugStatus(payload);
         } else if (payload.type === "udp_status" || payload.type === "serial_status" || payload.type === "simulation_status") {
           updateHardwareDebugStatus(payload);
         } else if (payload.type === "firmware_status") {
@@ -7474,6 +7927,10 @@ INDEX_HTML = r"""<!doctype html>
       copyCallbackEndpoint,
       showSettingsPage,
       refreshDebugStatus,
+      refreshAgentRuntimeStatus,
+      postAgentNewSession,
+      postAgentDeleteSession,
+      copyAgentSessionPath,
       clearDebugLog,
       refreshSpeechSpeakers
     });
@@ -7679,6 +8136,14 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             text = extract_reply_text_from_hook(data)
             reply_behavior = str(data.get("reply_behavior", data.get("reply_policy", "direct")))
             self.send_json(self.app.run_agent_turn(text, reply_behavior=reply_behavior, source=str(data.get("source", "api"))))
+        elif route == "/api/agent/session/new":
+            data = self.read_json()
+            reason = str(data.get("reason", "web"))
+            self.send_json(self.app.start_new_agent_session(reason))
+        elif route == "/api/agent/session/delete":
+            data = self.read_json()
+            reason = str(data.get("reason", "web"))
+            self.send_json(self.app.delete_agent_session(reason))
         elif route == "/api/voice/stop":
             data = self.read_json()
             reason = str(data.get("reason", "web"))
