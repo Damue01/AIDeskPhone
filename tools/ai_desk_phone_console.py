@@ -450,7 +450,7 @@ def compact_log_text(value: Any, limit: int = 800) -> str:
 
 
 def extract_reply_text_from_hook(data: dict[str, Any]) -> str:
-    for key in ("text", "reply", "summary", "message", "codex_payload"):
+    for key in ("text", "reply", "summary", "message"):
         text = compact_hook_text(data.get(key))
         if text:
             return text
@@ -1418,6 +1418,9 @@ class AppState:
             return
 
         if reply_behavior == "direct":
+            if not phone_off_hook and not callback_enabled:
+                self.add_action_log(f"回话已丢弃：完成后电话回拨已关闭（{source}）。")
+                return
             reply = self.enqueue_reply(source, text, title=title)
             if reply is None:
                 return
@@ -1428,16 +1431,17 @@ class AppState:
             elif callback_enabled:
                 self.add_action_log("电话已挂机：回话转入回拨提醒。")
                 self.start_operator_alert(source)
-            else:
-                self.add_action_log("回话已入队：电话已挂机且回拨开关关闭。")
             return
 
-        reply = self.enqueue_reply(source, text, title=title)
-        if reply is None:
-            return
         with self.lock:
             phone_off_hook = self.last_state == "RELEASED"
             should_alert = self.last_state == "PRESSED" and callback_enabled
+        if not phone_off_hook and not should_alert:
+            self.add_action_log(f"回话已丢弃：完成后电话回拨已关闭（{source}）。")
+            return
+        reply = self.enqueue_reply(source, text, title=title)
+        if reply is None:
+            return
         if phone_off_hook:
             with self.lock:
                 self.callback_session_active = True
@@ -2780,20 +2784,22 @@ class AppState:
 
     def run_ai_hook_signal(self, source: str = "ai", text: str | None = None) -> bool:
         source = (source or "ai").strip() or "ai"
+        with self.lock:
+            callback_enabled = self.config.enable_callback
+        if not callback_enabled:
+            self.add_action_log(f"接线员 hook 已丢弃：完成后电话回拨已关闭（{source}）。")
+            return False
+
         report_text = self.prepare_operator_report_text(source, text or "")
         reply = self.enqueue_reply(source, report_text, title=f"{source} 通讯员回报")
         if reply is None:
             return False
         with self.lock:
             already_off_hook = self.last_state == "RELEASED"
-            callback_enabled = self.config.enable_callback
         if already_off_hook:
             with self.lock:
                 self.callback_session_active = True
             return self.start_reply_playback(f"{source} hook")
-        if not callback_enabled:
-            self.add_action_log(f"回话已入队但未呼叫：回话开关已关闭（{source}）。")
-            return True
         return self.start_operator_alert(source)
 
     def set_test_pins(self, hook_pin: int, buzzer_pin: int, led_pin: int = 20) -> bool:

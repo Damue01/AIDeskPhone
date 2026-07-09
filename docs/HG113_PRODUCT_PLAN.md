@@ -222,14 +222,14 @@ POST /hook
 
 当前行为：
 
-- 将 hook 文本提取后优先交给 Ark 角色模型润色成通讯员回报，再加入队列；模型失败时回退原文。
+- 将 hook 文本提取后优先交给 Ark 角色模型润色成通讯员回报，再加入队列；模型失败时保留原文。
 - 如果回话开关开启，进入 `alerting = true`。
 - 蜂鸣器和 LED 同步按 `1 秒响/亮 -> 4 秒停/灭` 循环。
 - 灯光是低频慢闪，不是高频快速频闪。
 - 约 90 秒无人接听后切换忙音节奏。
 - 电话摘机后，蜂鸣器和 LED 全部关闭，并开始播放队列里的回话。
 
-Codex notify 配置和脚本见 [Codex 接线员 hook 配置](CODEX_OPERATOR_HOOK.md)。
+Codex hooks 配置和脚本见 [Codex 接线员 hook 配置](CODEX_OPERATOR_HOOK.md)。
 
 ## 状态模型
 

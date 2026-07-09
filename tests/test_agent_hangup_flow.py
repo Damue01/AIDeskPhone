@@ -185,10 +185,22 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(app.reply_queue[0].text, "任务完成")
         self.assertEqual(alerts, ["codex"])
 
-    def test_ai_hook_uses_operator_role_model_when_configured(self) -> None:
+    def test_ai_hook_is_discarded_when_callback_is_disabled(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="codex", enable_callback=False))
+        app.last_state = "PRESSED"
+        app.start_operator_alert = lambda source="ai": self.fail("disabled callback should not ring")  # type: ignore[method-assign]
+
+        ok = app.run_ai_hook_signal("codex", "任务完成")
+
+        self.assertFalse(ok)
+        self.assertEqual(app.reply_status()["queue_size"], 0)
+        self.assertIn("接线员 hook 已丢弃：完成后电话回拨已关闭（codex）。", "\n".join(app.action_logs))
+
+    def test_ai_hook_uses_operator_role_model_when_configured(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="codex", enable_callback=True))
         app.speech = FakeOperatorSpeech()  # type: ignore[assignment]
         app.last_state = "PRESSED"
+        app.start_operator_alert = lambda source="ai": True  # type: ignore[method-assign]
 
         ok = app.run_ai_hook_signal("codex", "改好了 config 页面")
 
@@ -307,7 +319,7 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertIn("本轮没有生成电话回话；不播放、不回拨。", logs)
 
     def test_non_tool_voice_turn_uses_phone_agent_role_model_when_available(self) -> None:
-        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
         speech = FakePhoneAgentSpeech("收到，我来处理。您稍等。")
         app.speech = speech  # type: ignore[assignment]
         app.last_state = "PRESSED"
@@ -321,8 +333,20 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertIn("通讯员角色回复生成完成", logs)
         self.assertIn("回话内容：收到，我来处理。您稍等。", logs)
 
-    def test_tool_voice_turn_still_uses_phone_agent_role_model_after_execution(self) -> None:
+    def test_on_hook_agent_reply_is_discarded_when_callback_is_disabled(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
+        speech = FakePhoneAgentSpeech("收到，我来处理。您稍等。")
+        app.speech = speech  # type: ignore[assignment]
+        app.last_state = "PRESSED"
+        app.voice_session_id = 8
+
+        app.handle_voice_reply_text("帮我整理一下文件", "direct", 8)
+
+        self.assertEqual(app.reply_status()["queue_size"], 0)
+        self.assertIn("回话已丢弃：完成后电话回拨已关闭（agent）。", "\n".join(app.action_logs))
+
+    def test_tool_voice_turn_still_uses_phone_agent_role_model_after_execution(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=True, voice_reply_policy="direct"))
         speech = FakePhoneAgentSpeech("好了，已经定位到北京。")
         app.speech = speech  # type: ignore[assignment]
         app.last_state = "PRESSED"

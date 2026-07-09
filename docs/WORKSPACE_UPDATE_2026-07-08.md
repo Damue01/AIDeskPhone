@@ -55,7 +55,7 @@ POST /api/voice/start
 POST /api/voice/stop
 ```
 
-`POST /api/ai/hook` 和 `POST /hook` 继续保留，并会从 `text`、`reply`、`summary`、`message`、`codex_payload` 等字段提取回话文本。
+`POST /api/ai/hook` 和 `POST /hook` 继续保留，并会从 `text`、`reply`、`summary`、`message` 等字段提取回话文本。
 
 ## 语音链路
 

@@ -78,8 +78,7 @@ DOUBAO_TTS_SPEAKER=zh_female_tianmeitaozi_uranus_bigtts
 
 Codex hook 文本可以先交给 Ark 角色模型润色成“通讯员回报”再入队。默认复用
 `VOLCENGINE_API_KEY`；如果角色模型要走独立凭据，再额外填写 `ARK_API_KEY`。配置后，`/api/ai/hook`
-和 `/hook` 会把 Codex 原始回复整理成更适合电话播报的口吻；如果模型未配置或请求失败，会直接回退原文，
-不会影响回拨提醒。
+和 `/hook` 会把 Codex 原始回复整理成更适合电话播报的口吻；如果模型未配置或请求失败，会保留原文。
 
 ```text
 ARK_API_KEY=...  # optional
@@ -140,25 +139,27 @@ PRESSED  = 按下
 
 接听、停止播放、快捷键触发都由这两个已有信号派生。页面可以显示“抬起 / 按下”，但不改变底层通信协议。
 
-## 在 Codex 里配置 notify
+## 在 Codex 里配置 hooks
 
-编辑：
+本仓库已经提供 repo-local hooks 配置：
 
 ```text
-%USERPROFILE%\.codex\config.toml
+.codex/hooks.json
+.codex/hooks/ai_desk_phone_stop_hook.py
 ```
 
-加入或修改这一行：
+Codex 的 `Stop` 事件会在当前回合停止时调用 hook。首次启用或修改 hook 后，需要在 Codex 中使用
+`/hooks` 查看并信任这条项目 hook。信任后，Codex 完成当前回合时会调用
+`tools/codex_operator_hook.py`，把完成消息发送到本地控制台。
 
-```toml
-notify = [
-  "C:\\Users\\Damue\\Documents\\AiLandLine\\.venv\\Scripts\\python.exe",
-  "C:\\Users\\Damue\\Documents\\AiLandLine\\tools\\codex_operator_hook.py"
-]
+这个 hook 会先读取：
+
+```text
+GET http://127.0.0.1:8765/api/replies
 ```
 
-注意：如果 `config.toml` 里已经有 `notify = [...]`，先备份原来的那一行。Codex 通常只会使用
-一条 notify 命令；直接覆盖会让原来的通知命令失效。
+如果 `callback_enabled` 为 `false`，脚本会直接跳过，不会发送完成消息。控制台接收端也会再次检查
+“完成后电话回拨”开关；如果开关关闭，即使外部误发了 `/api/ai/hook`，也会丢弃，不入队、不响铃。
 
 ## 可选环境变量
 
@@ -196,5 +197,4 @@ $env:AI_DESK_PHONE_SOURCE="codex"
 }
 ```
 
-控制台会依次尝试读取 `text`、`reply`、`summary`、`message`、`codex_payload` 字段。没有文本时，
-会生成一条默认回话。
+控制台会依次尝试读取 `text`、`reply`、`summary`、`message` 字段。没有文本时不会入队。
