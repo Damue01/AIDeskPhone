@@ -72,6 +72,9 @@ ARK_API_KEY=               # 思考模型、通讯员回话润色、Agent 角色
 | --- | --- |
 | `Start_AI_Desk_Phone.bat` | 一键启动本地控制台、模拟端和指挥中心页面。 |
 | `Connect_Real_Device.bat` | 连接真实硬件时使用的辅助启动脚本。 |
+| `scripts/Connect-RealDevice.ps1` | 真实 ESP32-C3 联机 SOP：检查端口、启动控制台、等待 UDP 遥测、可选测试 LED。 |
+| `requirements.txt` | Python 依赖列表，启动脚本会自动安装缺失依赖。 |
+| `.env.example` | 本机语音和角色模型密钥模板，复制成 `.env` 后填写，不提交真实密钥。 |
 | `tools/ai_desk_phone_console.py` | 本地后端和网页控制台，端口默认 `8765`。管理配置、事件流、录音、回拨、Agent session 和硬件命令。 |
 | `tools/agent_runtime.py` | 最小 PI 风格 Agent runtime，包含会话、消息、工具调用、自动压缩、本地技能加载和工具执行。 |
 | `tools/volcengine_speech.py` | 豆包 / 火山引擎 ASR、TTS、Ark 角色模型调用。 |
@@ -84,6 +87,8 @@ ARK_API_KEY=               # 思考模型、通讯员回话润色、Agent 角色
 | `firmware/esp32c3_wifi_minimal_test/` | Wi-Fi 排查用最小工程。 |
 | `firmware/esp32c3_wifi_pioarduino_test/` | pioarduino Wi-Fi 排查工程。 |
 | `docs/` | 制作、接线、交互、Hook 和硬件资料。 |
+| `docs/electronics/` | 原始硬件照片、照片索引和抽象接线参考图。 |
+| `tests/` | 单元测试，覆盖 Agent runtime、挂机流程、配置、硬件状态和语音服务封装。 |
 | `data/agent_sessions/` | 运行时生成的 Agent session JSONL。 |
 | `config/ai_desk_phone_console.json` | 本机运行配置。这里会记录你的调试状态，不建议随手提交。 |
 
@@ -191,6 +196,14 @@ POST http://127.0.0.1:8765/api/hardware/beep
 5. 接蜂鸣器和 LED，确认回拨提醒节奏。
 6. 接 CSR8645 或其他音频模块，把听筒接成 Windows 麦克风和扬声器。
 7. 根据你的地球页面继续扩展 `.pi/skills`，让 Agent 学会新的本地能力。
+
+真实设备联机时也可以直接用：
+
+```powershell
+.\Connect_Real_Device.bat
+```
+
+这个脚本会在 `8768` 端口启动控制台、关闭模拟模式、等待 ESP32-C3 的 UDP 遥测，并把排查日志写到 `logs/`。
 
 ## 验证
 
