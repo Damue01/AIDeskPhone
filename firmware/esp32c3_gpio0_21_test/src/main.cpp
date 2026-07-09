@@ -22,17 +22,17 @@ static constexpr int DEFAULT_LED_PIN = 20;
 
 static constexpr uint16_t TELEMETRY_PORT = 8766;
 static constexpr uint16_t COMMAND_PORT = 8767;
-static constexpr unsigned long SAMPLE_INTERVAL_MS = 50;
+static constexpr unsigned long DEFAULT_SAMPLE_INTERVAL_MS = 50;
 static constexpr unsigned long HEARTBEAT_INTERVAL_MS = 1000;
 static constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 30000;
-static constexpr unsigned long DEBOUNCE_MS = 35;
+static constexpr unsigned long DEFAULT_DEBOUNCE_MS = 35;
 static constexpr unsigned long STARTUP_SETTLE_MS = 300;
+static constexpr int WIFI_TX_POWER_QUARTER_DBM = 40;
 static constexpr int BUZZER_FREQ_HZ = 3000;
 static constexpr int BUZZER_PWM_CHANNEL = 0;
 static constexpr int BUZZER_PWM_RESOLUTION_BITS = 8;
 static constexpr int BUZZER_PWM_DUTY_50_PERCENT = 128;
 static constexpr int LED_ACTIVE_LEVEL = HIGH;
-static constexpr int WIFI_TX_POWER_QUARTER_DBM = 40;
 
 static int hookPin = DEFAULT_HOOK_PIN;
 static int buzzerPin = DEFAULT_BUZZER_PIN;
@@ -51,9 +51,12 @@ static unsigned long lastSampleMs = 0;
 static unsigned long lastHeartbeatMs = 0;
 static unsigned long lastWifiAttemptMs = 0;
 static unsigned long beepUntilMs = 0;
+static unsigned long sampleIntervalMs = DEFAULT_SAMPLE_INTERVAL_MS;
+static unsigned long debounceMs = DEFAULT_DEBOUNCE_MS;
 static unsigned long seq = 0;
 static String serialBuffer;
-static WiFiUDP udp;
+static WiFiUDP telemetryUdp;
+static WiFiUDP commandUdp;
 
 static bool hasStaCredentials() {
   return strlen(WIFI_STA_SSID) > 0;
@@ -118,7 +121,6 @@ static void setBuzzer(bool enabled) {
     writeBuzzerPwm(BUZZER_PWM_DUTY_50_PERCENT);
   } else {
     writeBuzzerPwm(0);
-    digitalWrite(buzzerPin, LOW);
   }
 }
 
@@ -148,6 +150,7 @@ static String stateJson(const char *type, unsigned long now) {
   json += ",\"wifi_rssi\":" + String(wifiRssi());
   json += ",\"wifi_status\":" + String(static_cast<int>(WiFi.status()));
   json += ",\"wifi_disconnect_reason\":" + String(lastStaDisconnectReason);
+  json += ",\"wifi_tx_power\":" + String(static_cast<int>(WiFi.getTxPower()));
   json += ",\"free_heap\":" + String(ESP.getFreeHeap());
   json += "}";
   return json;
@@ -158,9 +161,9 @@ static void sendUdp(const String &payload) {
     return;
   }
 
-  udp.beginPacket(IPAddress(255, 255, 255, 255), TELEMETRY_PORT);
-  udp.write(reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length());
-  udp.endPacket();
+  telemetryUdp.beginPacket(IPAddress(255, 255, 255, 255), TELEMETRY_PORT);
+  telemetryUdp.write(reinterpret_cast<const uint8_t *>(payload.c_str()), payload.length());
+  telemetryUdp.endPacket();
 }
 
 static void publish(const String &payload) {
@@ -293,7 +296,6 @@ static int intField(const String &command, const char *key, int fallback) {
 
 static void configurePins(int nextHookPin, int nextBuzzerPin, int nextLedPin) {
   setBuzzer(false);
-  digitalWrite(buzzerPin, LOW);
   digitalWrite(ledPin, !LED_ACTIVE_LEVEL);
   if (nextBuzzerPin != buzzerPin) {
     detachBuzzerPwm(buzzerPin);
@@ -306,13 +308,28 @@ static void configurePins(int nextHookPin, int nextBuzzerPin, int nextLedPin) {
   pinMode(buzzerPin, OUTPUT);
   pinMode(ledPin, OUTPUT);
   attachBuzzerPwm();
-  digitalWrite(buzzerPin, LOW);
   setLed(false);
 
   lastRaw = digitalRead(hookPin);
   stableRaw = lastRaw;
   lastRawChangeMs = millis();
   publishState("pins", millis());
+}
+
+static void configureRuntime(const String &command) {
+  sampleIntervalMs = constrain(
+      intField(command, "sample_interval_ms", static_cast<int>(sampleIntervalMs)),
+      20,
+      1000);
+  debounceMs = constrain(
+      intField(command, "debounce_ms", static_cast<int>(debounceMs)),
+      5,
+      1000);
+
+  publish(
+      String("{\"type\":\"config_saved\",\"sample_interval_ms\":") + String(sampleIntervalMs) +
+      ",\"debounce_ms\":" + String(debounceMs) +
+      "}");
 }
 
 static void startBeep(unsigned long durationMs) {
@@ -337,6 +354,8 @@ static void handleCommand(String command) {
 
   if (commandHasType(command, "ping")) {
     publishState("hello", millis());
+  } else if (commandHasType(command, "config")) {
+    configureRuntime(command);
   } else if (commandHasType(command, "set_pins") || command.startsWith("set_pins")) {
     configurePins(
         intField(command, "hook_pin", hookPin),
@@ -380,18 +399,27 @@ static void pollUdpCommands() {
     return;
   }
 
-  const int packetSize = udp.parsePacket();
+  const int packetSize = commandUdp.parsePacket();
   if (packetSize <= 0) {
     return;
   }
 
   char buffer[401];
-  const int bytesRead = udp.read(buffer, sizeof(buffer) - 1);
+  const int bytesRead = commandUdp.read(buffer, sizeof(buffer) - 1);
   if (bytesRead <= 0) {
     return;
   }
   buffer[bytesRead] = '\0';
+  publish(
+      String("{\"type\":\"command_received\",\"bytes\":") + String(bytesRead) +
+      ",\"port\":" + String(COMMAND_PORT) +
+      "}");
   handleCommand(String(buffer));
+}
+
+static void startUdpCommandListener() {
+  commandUdp.stop();
+  udpReady = commandUdp.begin(COMMAND_PORT) == 1;
 }
 
 static void beginWifiConnect() {
@@ -406,32 +434,22 @@ static void beginWifiConnect() {
   applyWifiCompatibilitySettings();
   WiFi.setAutoReconnect(true);
 
-  const bool foundConfiguredWifi = scanForConfiguredWifi();
-  if (foundConfiguredWifi) {
-    WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD, lastTargetChannel, lastTargetBssid, true);
-    publish(
-        String("{\"type\":\"wifi_event\",\"event\":\"connect_start\",\"mode\":\"bssid_channel\",\"ssid\":\"") + WIFI_STA_SSID +
-        "\",\"bssid\":\"" + macString(lastTargetBssid) +
-        "\",\"channel\":" + String(lastTargetChannel) +
-        "}");
-  } else {
-    WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
-    publish(String("{\"type\":\"wifi_event\",\"event\":\"connect_start\",\"mode\":\"ssid_only\",\"ssid\":\"") + WIFI_STA_SSID + "\"}");
-  }
+  scanForConfiguredWifi();
+  WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
+  publish(String("{\"type\":\"wifi_event\",\"event\":\"connect_start\",\"mode\":\"ssid_only\",\"ssid\":\"") + WIFI_STA_SSID + "\"}");
 }
 
 static void handleWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     lastStaDisconnectReason = 0;
-    udp.begin(COMMAND_PORT);
-    udpReady = true;
+    startUdpCommandListener();
     publishState("wifi_connected", millis());
   } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
     publish("{\"type\":\"wifi_event\",\"event\":\"sta_connected\"}");
   } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
     lastStaDisconnectReason = info.wifi_sta_disconnected.reason;
     udpReady = false;
-    udp.stop();
+    commandUdp.stop();
     publishState("wifi_disconnected", millis());
   }
 }
@@ -443,8 +461,7 @@ static void maintainWifi(unsigned long now) {
 
   if (WiFi.status() == WL_CONNECTED) {
     if (!udpReady) {
-      udp.begin(COMMAND_PORT);
-      udpReady = true;
+      startUdpCommandListener();
     }
     return;
   }
@@ -464,7 +481,7 @@ static void pollHook(unsigned long now) {
     lastRawChangeMs = now;
   }
 
-  if (raw != stableRaw && (now - lastRawChangeMs) >= DEBOUNCE_MS) {
+  if (raw != stableRaw && (now - lastRawChangeMs) >= debounceMs) {
     stableRaw = raw;
     publishState("hook_change", now);
   }
@@ -478,7 +495,7 @@ void setup() {
   pinMode(buzzerPin, OUTPUT);
   pinMode(ledPin, OUTPUT);
   attachBuzzerPwm();
-  digitalWrite(buzzerPin, LOW);
+  writeBuzzerPwm(0);
   setLed(false);
 
   WiFi.persistent(false);
@@ -510,7 +527,7 @@ void loop() {
     publishState("buzzer", now);
   }
 
-  if ((now - lastSampleMs) >= SAMPLE_INTERVAL_MS) {
+  if (WiFi.status() == WL_CONNECTED && (now - lastSampleMs) >= sampleIntervalMs) {
     lastSampleMs = now;
     publishState("sample", now);
   }
