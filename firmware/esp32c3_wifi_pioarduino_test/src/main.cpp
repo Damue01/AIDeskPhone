@@ -79,6 +79,23 @@ void setup() {
   WiFi.disconnect(false, false);
   delay(300);
 
+  const int networkCount = WiFi.scanNetworks(false, true);
+  Serial.print("{\"event\":\"scan_done\",\"count\":");
+  Serial.print(networkCount);
+  Serial.println("}");
+  for (int i = 0; i < networkCount; ++i) {
+    Serial.print("{\"event\":\"scan_network\",\"ssid\":\"");
+    Serial.print(WiFi.SSID(i));
+    Serial.print("\",\"channel\":");
+    Serial.print(WiFi.channel(i));
+    Serial.print(",\"rssi\":");
+    Serial.print(WiFi.RSSI(i));
+    Serial.print(",\"encryption\":");
+    Serial.print(static_cast<int>(WiFi.encryptionType(i)));
+    Serial.println("}");
+  }
+  WiFi.scanDelete();
+
   printState("connect_start");
   WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
 }

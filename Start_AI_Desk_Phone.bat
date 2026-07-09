@@ -22,6 +22,9 @@ if not "%ARG1%"=="" (
   )
 )
 
+echo Cleaning old AI Desk Phone console processes...
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='SilentlyContinue'; $webPort=[int]'%WEB_PORT%'; $consolePattern='tools[\\/]+ai_desk_phone_console\.py'; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match $consolePattern } | ForEach-Object { $proc=$_; try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop; Write-Host ('Stopped old console PID ' + $proc.ProcessId) } catch { Write-Host ('Could not stop old console PID ' + $proc.ProcessId + ': ' + $_.Exception.Message) } }; Get-NetTCPConnection -LocalPort $webPort -State Listen | ForEach-Object { $owner=$_.OwningProcess; if ($owner -and $owner -ne $PID) { try { Stop-Process -Id $owner -Force -ErrorAction Stop; Write-Host ('Stopped old listener PID ' + $owner + ' on port ' + $webPort) } catch { Write-Host ('Could not stop listener PID ' + $owner + ': ' + $_.Exception.Message) } } }"
+
 if exist ".venv\Scripts\python.exe" (
   ".venv\Scripts\python.exe" -c "import sys" >nul 2>nul
   if errorlevel 1 (
@@ -82,9 +85,9 @@ if not "%AI_DESK_PHONE_NO_BROWSER%"=="1" (
 )
 
 if "%SERIAL_PORT%"=="" (
-  "%PYTHON%" tools\ai_desk_phone_console.py --web-port "%WEB_PORT%"
+  "%PYTHON%" tools\ai_desk_phone_console.py --host 0.0.0.0 --web-port "%WEB_PORT%" --no-simulation
 ) else (
-  "%PYTHON%" tools\ai_desk_phone_console.py --port "%SERIAL_PORT%" --web-port "%WEB_PORT%"
+  "%PYTHON%" tools\ai_desk_phone_console.py --host 0.0.0.0 --port "%SERIAL_PORT%" --web-port "%WEB_PORT%" --no-simulation
 )
 
 popd

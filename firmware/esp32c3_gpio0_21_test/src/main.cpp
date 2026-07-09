@@ -1,5 +1,9 @@
 #include <Arduino.h>
+#include <DNSServer.h>
+#include <Preferences.h>
+#include <WebServer.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiUdp.h>
 #include "esp_arduino_version.h"
 #include "esp_wifi.h"
@@ -16,23 +20,54 @@
 #define WIFI_STA_PASSWORD ""
 #endif
 
-static constexpr int DEFAULT_HOOK_PIN = 0;
-static constexpr int DEFAULT_BUZZER_PIN = 21;
-static constexpr int DEFAULT_LED_PIN = 20;
+#ifndef AILANDLINE_DEFAULT_HOOK_PIN
+#define AILANDLINE_DEFAULT_HOOK_PIN 0
+#endif
+
+#ifndef AILANDLINE_DEFAULT_BUZZER_PIN
+#define AILANDLINE_DEFAULT_BUZZER_PIN 21
+#endif
+
+#ifndef AILANDLINE_DEFAULT_LED_PIN
+#define AILANDLINE_DEFAULT_LED_PIN 20
+#endif
+
+static constexpr int DEFAULT_HOOK_PIN = AILANDLINE_DEFAULT_HOOK_PIN;
+static constexpr int DEFAULT_BUZZER_PIN = AILANDLINE_DEFAULT_BUZZER_PIN;
+static constexpr int DEFAULT_LED_PIN = AILANDLINE_DEFAULT_LED_PIN;
 
 static constexpr uint16_t TELEMETRY_PORT = 8766;
 static constexpr uint16_t COMMAND_PORT = 8767;
-static constexpr unsigned long DEFAULT_SAMPLE_INTERVAL_MS = 50;
+static constexpr uint16_t COMMAND_TCP_PORT = 8768;
+static constexpr unsigned long DEFAULT_SAMPLE_INTERVAL_MS = 250;
 static constexpr unsigned long HEARTBEAT_INTERVAL_MS = 1000;
+static constexpr unsigned long COMMAND_TCP_RECONNECT_INTERVAL_MS = 3000;
 static constexpr unsigned long WIFI_RETRY_INTERVAL_MS = 30000;
+static constexpr unsigned long WIFI_CONNECT_TIMEOUT_MS = 15000;
 static constexpr unsigned long DEFAULT_DEBOUNCE_MS = 35;
 static constexpr unsigned long STARTUP_SETTLE_MS = 300;
-static constexpr int WIFI_TX_POWER_QUARTER_DBM = 40;
+static constexpr int WIFI_TX_POWER_QUARTER_DBM = 78;
+static constexpr bool WIFI_USE_ALTERNATE_STA_MAC = false;
+static constexpr bool WIFI_RELAX_PMF = true;
 static constexpr int BUZZER_FREQ_HZ = 3000;
 static constexpr int BUZZER_PWM_CHANNEL = 0;
 static constexpr int BUZZER_PWM_RESOLUTION_BITS = 8;
 static constexpr int BUZZER_PWM_DUTY_50_PERCENT = 128;
 static constexpr int LED_ACTIVE_LEVEL = HIGH;
+
+#ifndef COMMAND_SERVER_HOST_OCTETS
+#define COMMAND_SERVER_HOST_OCTETS 0, 0, 0, 0
+#endif
+
+#ifndef COMMAND_SERVER_HOST_TEXT
+#define COMMAND_SERVER_HOST_TEXT ""
+#endif
+
+static constexpr const char *PROVISIONING_AP_SSID = "AiLandLine-Setup";
+static constexpr const char *PROVISIONING_AP_PASSWORD = "ailandline";
+static constexpr int PROVISIONING_AP_CHANNEL = 6;
+static constexpr unsigned long PROVISIONING_RECONNECT_DELAY_MS = 1000;
+static constexpr unsigned int WIFI_FAILURES_BEFORE_PROVISIONING = 3;
 
 static int hookPin = DEFAULT_HOOK_PIN;
 static int buzzerPin = DEFAULT_BUZZER_PIN;
@@ -42,7 +77,14 @@ static int stableRaw = HIGH;
 static bool buzzerOn = false;
 static bool ledOn = false;
 static bool udpReady = false;
+static bool wifiConnectInProgress = false;
+static bool preferencesReady = false;
+static bool provisioningActive = false;
+static bool provisioningStartPending = false;
+static bool provisioningStartInProgress = false;
+static bool provisioningReconnectPending = false;
 static int lastStaDisconnectReason = 0;
+static unsigned int wifiFailureCount = 0;
 static int lastTargetChannel = 0;
 static uint8_t lastTargetBssid[6] = {0};
 static bool hasTargetBssid = false;
@@ -50,16 +92,31 @@ static unsigned long lastRawChangeMs = 0;
 static unsigned long lastSampleMs = 0;
 static unsigned long lastHeartbeatMs = 0;
 static unsigned long lastWifiAttemptMs = 0;
+static unsigned long lastCommandTcpConnectMs = 0;
+static unsigned long provisioningReconnectAtMs = 0;
 static unsigned long beepUntilMs = 0;
 static unsigned long sampleIntervalMs = DEFAULT_SAMPLE_INTERVAL_MS;
 static unsigned long debounceMs = DEFAULT_DEBOUNCE_MS;
 static unsigned long seq = 0;
 static String serialBuffer;
+static String tcpCommandBuffer;
+static String runtimeWifiSsid;
+static String runtimeWifiPassword;
+static String commandServerHostText = COMMAND_SERVER_HOST_TEXT;
+static const char *provisioningStartReason = "requested";
 static WiFiUDP telemetryUdp;
 static WiFiUDP commandUdp;
+static WiFiClient commandClient;
+static DNSServer provisioningDns;
+static Preferences preferences;
+static WebServer provisioningServer(80);
+static IPAddress commandServerHost;
+
+static String macString(const uint8_t *mac);
+static void beginWifiConnect();
 
 static bool hasStaCredentials() {
-  return strlen(WIFI_STA_SSID) > 0;
+  return runtimeWifiSsid.length() > 0;
 }
 
 static const char *levelName(int value) {
@@ -82,6 +139,27 @@ static int wifiRssi() {
     return WiFi.RSSI();
   }
   return 0;
+}
+
+static String wifiMac() {
+  return WiFi.macAddress();
+}
+
+static const char *activeWifiSsid() {
+  return runtimeWifiSsid.c_str();
+}
+
+static const char *activeWifiPassword() {
+  return runtimeWifiPassword.c_str();
+}
+
+static String htmlEscape(const String &value) {
+  String escaped = value;
+  escaped.replace("&", "&amp;");
+  escaped.replace("\"", "&quot;");
+  escaped.replace("<", "&lt;");
+  escaped.replace(">", "&gt;");
+  return escaped;
 }
 
 static void setLed(bool enabled) {
@@ -145,12 +223,15 @@ static String stateJson(const char *type, unsigned long now) {
   json += ",\"buzzer\":\"" + String(buzzerOn ? "ON" : "OFF") + "\"";
   json += ",\"led\":\"" + String(ledOn ? "ON" : "OFF") + "\"";
   json += ",\"wifi_connected\":" + String(WiFi.status() == WL_CONNECTED ? "true" : "false");
-  json += ",\"wifi_ssid\":\"" + String(WIFI_STA_SSID) + "\"";
+  json += ",\"wifi_ssid\":\"" + runtimeWifiSsid + "\"";
+  json += ",\"wifi_mac\":\"" + wifiMac() + "\"";
   json += ",\"wifi_ip\":\"" + wifiIp() + "\"";
   json += ",\"wifi_rssi\":" + String(wifiRssi());
   json += ",\"wifi_status\":" + String(static_cast<int>(WiFi.status()));
   json += ",\"wifi_disconnect_reason\":" + String(lastStaDisconnectReason);
   json += ",\"wifi_tx_power\":" + String(static_cast<int>(WiFi.getTxPower()));
+  json += ",\"command_host\":\"" + commandServerHostText + "\"";
+  json += ",\"provisioning_active\":" + String(provisioningActive ? "true" : "false");
   json += ",\"free_heap\":" + String(ESP.getFreeHeap());
   json += "}";
   return json;
@@ -167,7 +248,9 @@ static void sendUdp(const String &payload) {
 }
 
 static void publish(const String &payload) {
-  Serial.println(payload);
+  if (Serial && payload.indexOf("\"type\":\"sample\"") < 0) {
+    Serial.println(payload);
+  }
   sendUdp(payload);
 }
 
@@ -175,20 +258,231 @@ static void publishState(const char *type, unsigned long now) {
   publish(stateJson(type, now));
 }
 
+static bool resolveCommandServerHost() {
+  String host = commandServerHostText;
+  host.trim();
+  if (host.length() == 0 || host.equalsIgnoreCase("auto")) {
+    if (WiFi.status() != WL_CONNECTED) {
+      commandServerHost = IPAddress(0, 0, 0, 0);
+      return false;
+    }
+    const IPAddress gateway = WiFi.gatewayIP();
+    if (gateway.toString() == "0.0.0.0") {
+      commandServerHost = IPAddress(0, 0, 0, 0);
+      return false;
+    }
+    commandServerHost = gateway;
+    return true;
+  }
+  if (commandServerHost.fromString(host)) {
+    return true;
+  }
+  commandServerHost = IPAddress(COMMAND_SERVER_HOST_OCTETS);
+  return commandServerHost.toString() != "0.0.0.0";
+}
+
+static void loadWifiSettings() {
+  if (!preferencesReady) {
+    preferencesReady = preferences.begin("ailandline", false);
+  }
+  if (preferencesReady) {
+    runtimeWifiSsid = preferences.getString("wifi_ssid", WIFI_STA_SSID);
+    runtimeWifiPassword = preferences.getString("wifi_pass", WIFI_STA_PASSWORD);
+    commandServerHostText = preferences.getString("cmd_host", COMMAND_SERVER_HOST_TEXT);
+  } else {
+    runtimeWifiSsid = WIFI_STA_SSID;
+    runtimeWifiPassword = WIFI_STA_PASSWORD;
+    commandServerHostText = COMMAND_SERVER_HOST_TEXT;
+  }
+  commandServerHostText.trim();
+  publish(
+      String("{\"type\":\"wifi_event\",\"event\":\"settings_loaded\",\"ssid\":\"") + runtimeWifiSsid +
+      "\",\"command_host\":\"" + commandServerHostText +
+      "\",\"preferences\":" + String(preferencesReady ? "true" : "false") +
+      "}");
+}
+
+static bool saveWifiSettings(const String &ssid, const String &password, const String &host) {
+  if (!preferencesReady) {
+    preferencesReady = preferences.begin("ailandline", false);
+  }
+  if (!preferencesReady || ssid.length() == 0) {
+    return false;
+  }
+  const String nextHost = host.length() > 0 ? host : "auto";
+  preferences.putString("wifi_ssid", ssid);
+  preferences.putString("wifi_pass", password);
+  preferences.putString("cmd_host", nextHost);
+  runtimeWifiSsid = ssid;
+  runtimeWifiPassword = password;
+  commandServerHostText = nextHost;
+  publish(
+      String("{\"type\":\"wifi_event\",\"event\":\"settings_saved\",\"ssid\":\"") + runtimeWifiSsid +
+      "\",\"command_host\":\"" + commandServerHostText +
+      "\"}");
+  return true;
+}
+
+static void handleProvisioningRoot() {
+  String page;
+  page.reserve(2400);
+  page += F("<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">");
+  page += F("<title>AiLandLine Wi-Fi Setup</title><style>body{font-family:system-ui,sans-serif;margin:24px;max-width:520px}label{display:block;margin:14px 0 6px}input{box-sizing:border-box;width:100%;padding:10px;font-size:16px}button{margin-top:18px;padding:10px 14px;font-size:16px}</style></head><body>");
+  page += F("<h1>AiLandLine Wi-Fi Setup</h1><form method=\"post\" action=\"/save\">");
+  page += F("<label>Wi-Fi SSID</label><input name=\"ssid\" value=\"");
+  page += htmlEscape(runtimeWifiSsid);
+  page += F("\" required>");
+  page += F("<label>Wi-Fi Password</label><input name=\"password\" type=\"password\" value=\"");
+  page += htmlEscape(runtimeWifiPassword);
+  page += F("\">");
+  page += F("<label>Computer command host (optional)</label><input name=\"host\" value=\"");
+  page += htmlEscape(commandServerHostText);
+  page += F("\" placeholder=\"auto\">");
+  page += F("<button type=\"submit\">Save and reconnect</button></form>");
+  page += F("<p>Leave host blank for auto. Auto uses the Wi-Fi gateway, which works for Windows Mobile Hotspot. On a normal router, the desktop app can still discover this device through UDP broadcast.</p>");
+  page += F("<p>If this page does not open automatically, visit http://192.168.4.1/ after joining the setup Wi-Fi.</p>");
+  page += F("</body></html>");
+  provisioningServer.send(200, "text/html; charset=utf-8", page);
+}
+
+static void handleProvisioningSave() {
+  String ssid = provisioningServer.arg("ssid");
+  String password = provisioningServer.arg("password");
+  String host = provisioningServer.arg("host");
+  ssid.trim();
+  host.trim();
+  if (!saveWifiSettings(ssid, password, host)) {
+    provisioningServer.send(400, "text/plain; charset=utf-8", "Missing SSID or NVS unavailable.");
+    return;
+  }
+  provisioningReconnectPending = true;
+  provisioningReconnectAtMs = millis() + PROVISIONING_RECONNECT_DELAY_MS;
+  provisioningServer.send(200, "text/html; charset=utf-8", "<!doctype html><meta charset=\"utf-8\"><p>Saved. ESP32 is reconnecting.</p>");
+}
+
+static void startProvisioningPortal(const char *reason) {
+  if (provisioningActive) {
+    return;
+  }
+  provisioningStartPending = false;
+  WiFi.setAutoReconnect(false);
+  WiFi.mode(WIFI_AP);
+  delay(100);
+  const bool apStarted = WiFi.softAP(PROVISIONING_AP_SSID, PROVISIONING_AP_PASSWORD, PROVISIONING_AP_CHANNEL, false, 4);
+  provisioningDns.start(53, "*", WiFi.softAPIP());
+  provisioningServer.on("/", HTTP_GET, handleProvisioningRoot);
+  provisioningServer.on("/save", HTTP_POST, handleProvisioningSave);
+  provisioningServer.onNotFound(handleProvisioningRoot);
+  provisioningServer.begin();
+  provisioningActive = true;
+  publish(
+      String("{\"type\":\"provisioning\",\"event\":\"started\",\"reason\":\"") + reason +
+      "\",\"ok\":" + String(apStarted ? "true" : "false") +
+      ",\"ap_ssid\":\"" + PROVISIONING_AP_SSID +
+      "\",\"ap_channel\":" + String(PROVISIONING_AP_CHANNEL) +
+      ",\"ap_ip\":\"" + WiFi.softAPIP().toString() +
+      "\"}");
+}
+
+static void requestProvisioningPortal(const char *reason) {
+  if (provisioningActive || provisioningStartPending || provisioningStartInProgress) {
+    return;
+  }
+  provisioningStartReason = reason;
+  provisioningStartPending = true;
+  publish(String("{\"type\":\"provisioning\",\"event\":\"requested\",\"reason\":\"") + reason + "\"}");
+}
+
+static void stopProvisioningPortal(const char *reason) {
+  if (!provisioningActive) {
+    return;
+  }
+  provisioningServer.stop();
+  provisioningDns.stop();
+  WiFi.softAPdisconnect(true);
+  provisioningActive = false;
+  provisioningStartPending = false;
+  provisioningStartInProgress = false;
+  provisioningReconnectPending = false;
+  publish(String("{\"type\":\"provisioning\",\"event\":\"stopped\",\"reason\":\"") + reason + "\"}");
+}
+
+static void pollProvisioningPortal() {
+  if (provisioningStartPending && !provisioningActive) {
+    const char *reason = provisioningStartReason;
+    provisioningStartPending = false;
+    provisioningStartInProgress = true;
+    WiFi.disconnect(false, false);
+    delay(50);
+    startProvisioningPortal(reason);
+    provisioningStartInProgress = false;
+  }
+  if (provisioningActive) {
+    provisioningDns.processNextRequest();
+    provisioningServer.handleClient();
+  }
+  if (provisioningReconnectPending && static_cast<long>(millis() - provisioningReconnectAtMs) >= 0) {
+    stopProvisioningPortal("saved");
+    wifiFailureCount = 0;
+    WiFi.disconnect(false, false);
+    delay(100);
+    beginWifiConnect();
+  }
+}
+
 static void applyWifiCompatibilitySettings() {
   WiFi.setSleep(false);
   WiFi.setTxPower(static_cast<wifi_power_t>(WIFI_TX_POWER_QUARTER_DBM));
-  WiFi.setMinSecurity(WIFI_AUTH_WPA2_PSK);
-
-  const esp_err_t protocolErr = esp_wifi_set_protocol(
-      WIFI_IF_STA,
-      WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N);
-  const esp_err_t bandwidthErr = esp_wifi_set_bandwidth(WIFI_IF_STA, WIFI_BW_HT20);
 
   publish(
-      String("{\"type\":\"wifi_event\",\"event\":\"compat_settings\",\"protocol_err\":") + String(static_cast<int>(protocolErr)) +
-      ",\"bandwidth_err\":" + String(static_cast<int>(bandwidthErr)) +
+      String("{\"type\":\"wifi_event\",\"event\":\"compat_settings\",\"mode\":\"minimal\"") +
       ",\"tx_power\":" + String(static_cast<int>(WiFi.getTxPower())) +
+      "}");
+}
+
+static void applyWifiStationIdentity() {
+  uint8_t mac[6] = {0};
+  const esp_err_t readErr = esp_wifi_get_mac(WIFI_IF_STA, mac);
+  if (readErr != ESP_OK) {
+    publish(String("{\"type\":\"wifi_event\",\"event\":\"sta_mac_read_failed\",\"err\":") + String(static_cast<int>(readErr)) + "}");
+    return;
+  }
+
+  const String factoryMac = macString(mac);
+  esp_err_t setErr = ESP_OK;
+  if (WIFI_USE_ALTERNATE_STA_MAC) {
+    mac[0] = (mac[0] | 0x02) & 0xFE;
+    mac[5] ^= 0x5A;
+    setErr = esp_wifi_set_mac(WIFI_IF_STA, mac);
+  }
+
+  publish(
+      String("{\"type\":\"wifi_event\",\"event\":\"sta_mac\",\"alternate\":") +
+      String(WIFI_USE_ALTERNATE_STA_MAC ? "true" : "false") +
+      ",\"factory\":\"" + factoryMac +
+      "\",\"active\":\"" + macString(mac) +
+      "\",\"err\":" + String(static_cast<int>(setErr)) +
+      "}");
+}
+
+static void connectWifiWithRelaxedPmf() {
+  const wl_status_t beginStatus = WiFi.begin(activeWifiSsid(), activeWifiPassword(), 0, nullptr, false);
+  wifi_config_t config;
+  memset(&config, 0, sizeof(config));
+  esp_err_t getErr = esp_wifi_get_config(WIFI_IF_STA, &config);
+  esp_err_t setErr = ESP_OK;
+  if (getErr == ESP_OK && WIFI_RELAX_PMF) {
+    config.sta.pmf_cfg.capable = false;
+    config.sta.pmf_cfg.required = false;
+    setErr = esp_wifi_set_config(WIFI_IF_STA, &config);
+  }
+  const esp_err_t connectErr = esp_wifi_connect();
+  publish(
+      String("{\"type\":\"wifi_event\",\"event\":\"connect_config\",\"begin_status\":") + String(static_cast<int>(beginStatus)) +
+      ",\"relax_pmf\":" + String(WIFI_RELAX_PMF ? "true" : "false") +
+      ",\"get_err\":" + String(static_cast<int>(getErr)) +
+      ",\"set_err\":" + String(static_cast<int>(setErr)) +
+      ",\"connect_err\":" + String(static_cast<int>(connectErr)) +
       "}");
 }
 
@@ -211,7 +505,7 @@ static bool scanForConfiguredWifi() {
   hasTargetBssid = false;
   lastTargetChannel = 0;
 
-  publish(String("{\"type\":\"wifi_event\",\"event\":\"scan_start\",\"ssid\":\"") + WIFI_STA_SSID + "\"}");
+  publish(String("{\"type\":\"wifi_event\",\"event\":\"scan_start\",\"ssid\":\"") + runtimeWifiSsid + "\"}");
   const int networkCount = WiFi.scanNetworks(false, true);
   publish(String("{\"type\":\"wifi_event\",\"event\":\"scan_done\",\"count\":") + String(networkCount) + "}");
 
@@ -220,7 +514,7 @@ static bool scanForConfiguredWifi() {
 
   for (int i = 0; i < networkCount; ++i) {
     const String ssid = WiFi.SSID(i);
-    if (ssid != String(WIFI_STA_SSID)) {
+    if (ssid != runtimeWifiSsid) {
       continue;
     }
 
@@ -250,13 +544,13 @@ static bool scanForConfiguredWifi() {
     hasTargetBssid = true;
 
     publish(
-        String("{\"type\":\"wifi_event\",\"event\":\"scan_selected\",\"ssid\":\"") + WIFI_STA_SSID +
+        String("{\"type\":\"wifi_event\",\"event\":\"scan_selected\",\"ssid\":\"") + runtimeWifiSsid +
         "\",\"bssid\":\"" + macString(lastTargetBssid) +
         "\",\"channel\":" + String(lastTargetChannel) +
         ",\"rssi\":" + String(bestRssi) +
         "}");
   } else {
-    publish(String("{\"type\":\"wifi_event\",\"event\":\"scan_no_match\",\"ssid\":\"") + WIFI_STA_SSID + "\"}");
+    publish(String("{\"type\":\"wifi_event\",\"event\":\"scan_no_match\",\"ssid\":\"") + runtimeWifiSsid + "\"}");
   }
 
   WiFi.scanDelete();
@@ -317,6 +611,9 @@ static void configurePins(int nextHookPin, int nextBuzzerPin, int nextLedPin) {
 }
 
 static void configureRuntime(const String &command) {
+  configurePins(intField(command, "hook_pin", hookPin),
+                intField(command, "buzzer_pin", buzzerPin),
+                intField(command, "led_pin", ledPin));
   sampleIntervalMs = constrain(
       intField(command, "sample_interval_ms", static_cast<int>(sampleIntervalMs)),
       20,
@@ -356,6 +653,9 @@ static void handleCommand(String command) {
     publishState("hello", millis());
   } else if (commandHasType(command, "config")) {
     configureRuntime(command);
+  } else if (commandHasType(command, "provision") || commandHasType(command, "wifi_setup") || commandHasType(command, "setup_portal")) {
+    setBuzzer(false);
+    requestProvisioningPortal("command");
   } else if (commandHasType(command, "set_pins") || command.startsWith("set_pins")) {
     configurePins(
         intField(command, "hook_pin", hookPin),
@@ -417,6 +717,44 @@ static void pollUdpCommands() {
   handleCommand(String(buffer));
 }
 
+static void maintainTcpCommandClient(unsigned long now) {
+  if (WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+
+  if (!resolveCommandServerHost()) {
+    return;
+  }
+
+  if (!commandClient.connected()) {
+    if ((now - lastCommandTcpConnectMs) < COMMAND_TCP_RECONNECT_INTERVAL_MS) {
+      return;
+    }
+    lastCommandTcpConnectMs = now;
+    tcpCommandBuffer = "";
+    if (commandClient.connect(commandServerHost, COMMAND_TCP_PORT, 250)) {
+      commandClient.setNoDelay(true);
+      commandClient.print(String("{\"type\":\"hello\",\"device\":\"ailandline-c3\",\"ms\":") + String(now) + "}\n");
+      publish(String("{\"type\":\"tcp_command\",\"event\":\"connected\",\"host\":\"") + commandServerHostText + "\",\"port\":" + String(COMMAND_TCP_PORT) + "}");
+    }
+    return;
+  }
+
+  while (commandClient.available() > 0) {
+    const char c = static_cast<char>(commandClient.read());
+    if (c == '\n') {
+      publish(
+          String("{\"type\":\"command_received\",\"transport\":\"tcp\",\"bytes\":") + String(tcpCommandBuffer.length()) +
+          ",\"port\":" + String(COMMAND_TCP_PORT) +
+          "}");
+      handleCommand(tcpCommandBuffer);
+      tcpCommandBuffer = "";
+    } else if (c != '\r' && tcpCommandBuffer.length() < 400) {
+      tcpCommandBuffer += c;
+    }
+  }
+}
+
 static void startUdpCommandListener() {
   commandUdp.stop();
   udpReady = commandUdp.begin(COMMAND_PORT) == 1;
@@ -425,37 +763,61 @@ static void startUdpCommandListener() {
 static void beginWifiConnect() {
   if (!hasStaCredentials()) {
     publish("{\"type\":\"wifi_event\",\"event\":\"missing_credentials\"}");
+    requestProvisioningPortal("missing_credentials");
     return;
   }
 
-  lastWifiAttemptMs = millis();
+  const unsigned long now = millis();
+  if (wifiConnectInProgress && (now - lastWifiAttemptMs) < WIFI_CONNECT_TIMEOUT_MS) {
+    return;
+  }
+
+  lastWifiAttemptMs = now;
   udpReady = false;
   WiFi.mode(WIFI_STA);
+  applyWifiStationIdentity();
   applyWifiCompatibilitySettings();
   WiFi.setAutoReconnect(true);
 
   scanForConfiguredWifi();
-  WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD);
-  publish(String("{\"type\":\"wifi_event\",\"event\":\"connect_start\",\"mode\":\"ssid_only\",\"ssid\":\"") + WIFI_STA_SSID + "\"}");
+  connectWifiWithRelaxedPmf();
+  wifiConnectInProgress = true;
+  publish(String("{\"type\":\"wifi_event\",\"event\":\"connect_start\",\"mode\":\"ssid_only\",\"ssid\":\"") + runtimeWifiSsid + "\"}");
 }
 
 static void handleWifiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
     lastStaDisconnectReason = 0;
+    wifiFailureCount = 0;
+    wifiConnectInProgress = false;
+    stopProvisioningPortal("wifi_connected");
     startUdpCommandListener();
     publishState("wifi_connected", millis());
   } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
     publish("{\"type\":\"wifi_event\",\"event\":\"sta_connected\"}");
   } else if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
     lastStaDisconnectReason = info.wifi_sta_disconnected.reason;
+    wifiConnectInProgress = false;
     udpReady = false;
     commandUdp.stop();
     publishState("wifi_disconnected", millis());
+    if (provisioningActive || provisioningStartInProgress) {
+      return;
+    }
+    ++wifiFailureCount;
+    if (wifiFailureCount >= WIFI_FAILURES_BEFORE_PROVISIONING) {
+      requestProvisioningPortal("auth_failures");
+    }
   }
 }
 
 static void maintainWifi(unsigned long now) {
   if (!hasStaCredentials()) {
+    requestProvisioningPortal("missing_credentials");
+    return;
+  }
+
+  if (provisioningActive || provisioningStartPending) {
     return;
   }
 
@@ -466,7 +828,12 @@ static void maintainWifi(unsigned long now) {
     return;
   }
 
+  if (wifiConnectInProgress && (now - lastWifiAttemptMs) < WIFI_CONNECT_TIMEOUT_MS) {
+    return;
+  }
+
   if ((now - lastWifiAttemptMs) >= WIFI_RETRY_INTERVAL_MS) {
+    wifiConnectInProgress = false;
     WiFi.disconnect(false, false);
     delay(50);
     beginWifiConnect();
@@ -490,6 +857,7 @@ static void pollHook(unsigned long now) {
 void setup() {
   Serial.begin(115200);
   serialBuffer.reserve(400);
+  loadWifiSettings();
 
   pinMode(hookPin, INPUT_PULLUP);
   pinMode(buzzerPin, OUTPUT);
@@ -518,6 +886,7 @@ void loop() {
 
   pollSerial();
   pollUdpCommands();
+  pollProvisioningPortal();
   maintainWifi(now);
   pollHook(now);
 
@@ -536,6 +905,8 @@ void loop() {
     lastHeartbeatMs = now;
     publishState("heartbeat", now);
   }
+
+  maintainTcpCommandClient(now);
 
   delay(2);
 }

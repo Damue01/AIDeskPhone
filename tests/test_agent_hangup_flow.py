@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -277,6 +278,20 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertEqual(app.reply_status()["queue_size"], 0)
         self.assertIn("接线员 hook 已丢弃：完成后电话回拨已关闭（codex）。", "\n".join(app.action_logs))
 
+    def test_duplicate_ai_hook_from_same_source_is_not_queued_twice(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="codex", enable_callback=True))
+        app.last_state = "PRESSED"
+        alerts: list[str] = []
+        app.start_operator_alert = lambda source="ai": alerts.append(source) or True  # type: ignore[method-assign]
+
+        first_ok = app.run_ai_hook_signal("codex", "任务完成")
+        second_ok = app.run_ai_hook_signal("codex", "Codex 当前任务已完成，请查看对话结果。")
+
+        self.assertTrue(first_ok)
+        self.assertTrue(second_ok)
+        self.assertEqual(app.reply_status()["queue_size"], 1)
+        self.assertEqual(alerts, ["codex"])
+
     def test_ai_hook_uses_operator_role_model_when_configured(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="codex", enable_callback=True))
         app.speech = FakeOperatorSpeech()  # type: ignore[assignment]
@@ -335,6 +350,52 @@ class AgentHangupFlowTest(unittest.TestCase):
         app.handle_hook_transition("PRESSED", "RELEASED")
 
         self.assertEqual(calls, ["电话抬起"])
+
+    def test_operator_alert_turns_led_on_and_off_explicitly(self) -> None:
+        app = make_app(self, ConsoleConfig(enable_callback=True))
+        app.last_state = "PRESSED"
+        app.simulation_enabled = True
+        commands: list[str] = []
+        app.run_hardware_command = lambda command, log=True: commands.append(command) or True  # type: ignore[method-assign]
+
+        with (
+            patch.object(console, "OPERATOR_RING_TIMEOUT_SECONDS", 0.03),
+            patch.object(console, "OPERATOR_CALLBACK_EXPIRE_SECONDS", 0.04),
+            patch.object(console, "OPERATOR_RING_ON_SECONDS", 0.01),
+            patch.object(console, "OPERATOR_RING_OFF_SECONDS", 0.01),
+        ):
+            self.assertTrue(app.start_operator_alert("codex"))
+            assert app.alert_thread is not None
+            app.alert_thread.join(timeout=1)
+
+        pairs = list(zip(commands, commands[1:]))
+        self.assertIn(("ring_on", "led_on"), pairs)
+        self.assertIn(("ring_off", "led_off"), pairs)
+
+    def test_clear_ai_alert_waits_for_alert_thread_before_final_off_commands(self) -> None:
+        app = make_app(self, ConsoleConfig(enable_callback=True))
+        commands: list[str] = []
+        app.run_hardware_command = lambda command, log=True: commands.append(command) or True  # type: ignore[method-assign]
+        stop_event = threading.Event()
+
+        def late_alert_command() -> None:
+            stop_event.wait()
+            time.sleep(0.05)
+            app.run_hardware_command("ring_on", log=False)
+
+        alert_thread = threading.Thread(target=late_alert_command)
+        with app.lock:
+            app.alerting = True
+            app.alert_phase = "ring"
+            app.alert_stop_event = stop_event
+            app.alert_thread = alert_thread
+        alert_thread.start()
+        self.addCleanup(lambda: (stop_event.set(), alert_thread.join(timeout=1)))
+
+        app.clear_ai_alert("test clear")
+
+        self.assertFalse(alert_thread.is_alive())
+        self.assertEqual(commands[-2:], ["ring_off", "led_off"])
 
     def test_hangup_while_processing_keeps_current_voice_session(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao"))

@@ -1,6 +1,9 @@
 import io
 import json
+import os
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from tools import codex_operator_hook
@@ -30,6 +33,64 @@ class CodexOperatorHookTest(unittest.TestCase):
         self.assertEqual(payload["text"], "改好了配置页面。")
         self.assertEqual(payload["event"], "turn-ended")
         self.assertIn("codex_event", payload)
+
+    def test_build_payload_uses_task_complete_last_agent_message(self) -> None:
+        raw = json.dumps(
+            {
+                "type": "event_msg",
+                "payload": {
+                    "type": "task_complete",
+                    "turn_id": "turn-1",
+                    "last_agent_message": "上海今晚多云到阴，气温约 26 到 27 度。",
+                },
+            },
+            ensure_ascii=False,
+        )
+
+        payload = codex_operator_hook.build_hook_payload(["Codex 当前任务已完成。"], raw)
+
+        self.assertEqual(payload["text"], "上海今晚多云到阴，气温约 26 到 27 度。")
+        self.assertIn("codex_event", payload)
+
+    def test_build_payload_falls_back_to_recent_matching_codex_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            session_dir = Path(directory) / "sessions" / "2026" / "07" / "09"
+            session_dir.mkdir(parents=True)
+            session_path = session_dir / "rollout-test.jsonl"
+            session_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "type": "session_meta",
+                                "payload": {"cwd": "C:\\Work\\AIDeskPhone"},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": "2026-07-09T13:51:29.013Z",
+                                "type": "event_msg",
+                                "payload": {
+                                    "type": "task_complete",
+                                    "last_agent_message": "我已经把 Codex 的最终回复整理好了。",
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {"CODEX_HOME": directory}):
+                payload = codex_operator_hook.build_hook_payload(
+                    ["Codex 当前任务已完成，请查看对话结果。"],
+                    "",
+                    cwd="C:\\Work\\AIDeskPhone",
+                )
+
+        self.assertEqual(payload["text"], "我已经把 Codex 的最终回复整理好了。")
 
     def test_build_payload_does_not_turn_unknown_json_into_spoken_text(self) -> None:
         raw = json.dumps({"hook_event_name": "Stop", "cwd": "E:\\Ai2Work\\AIDeskPhone"}, ensure_ascii=False)

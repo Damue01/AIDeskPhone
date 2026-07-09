@@ -1,5 +1,5 @@
 {
-  "business_mode": "doubao",
+  "business_mode": "codex",
   "hook_scheme": "scheme1",
   "adc_low_means_pressed": true,
   "press_threshold": 80,
@@ -14,24 +14,29 @@
   "score_max": 8,
   "score_trigger": 5,
   "peak_hold_ms": 350,
-  "sample_interval_ms": 50,
-  "press_action_text": "ctrl+alt+i",
-  "release_action_text": "ctrl+alt+u",
+  "sample_interval_ms": 250,
+  "hook_pin": 4,
+  "buzzer_pin": 2,
+  "led_pin": 1,
+  "udp_device_host": "",
+  "udp_command_port": 8767,
+  "press_action_text": "enter, 延迟1000毫秒, enter",
+  "release_action_text": "ctrl+win+shift",
   "input_action_profiles": [
     {
       "id": "default",
-      "name": "输入法",
-      "press_action_text": "ctrl+win+shift, 延迟1000毫秒, enter",
+      "name": "输入法模式",
+      "press_action_text": "enter, 延迟1000毫秒, enter",
       "release_action_text": "ctrl+win+shift"
     },
     {
       "id": "profile-mrd1x063",
-      "name": "豆包语音",
+      "name": "豆包聊天模式",
       "press_action_text": "ctrl+alt+i",
       "release_action_text": "ctrl+alt+u"
     }
   ],
-  "active_input_profile_id": "profile-mrd1x063",
+  "active_input_profile_id": "default",
   "enable_actions": true,
   "enable_callback": true,
   "enable_tts_playback": true,

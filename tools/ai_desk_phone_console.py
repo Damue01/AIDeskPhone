@@ -66,6 +66,7 @@ DEFAULT_WEB_PORT = 8765
 DEFAULT_BAUD = 115200
 DEFAULT_UDP_TELEMETRY_PORT = 8766
 DEFAULT_UDP_COMMAND_PORT = 8767
+DEFAULT_TCP_COMMAND_PORT = 8768
 SERIAL_SCAN_INTERVAL_SECONDS = 2.0
 SERIAL_LOG_INTERVAL_SECONDS = 15.0
 FIRMWARE_DATA_WAIT_SECONDS = 3.0
@@ -73,6 +74,12 @@ RAW_LOG_PUBLISH_INTERVAL_SECONDS = 0.25
 SAMPLE_PUBLISH_INTERVAL_SECONDS = 0.12
 REAL_SAMPLE_SUPPRESS_SIMULATION_SECONDS = 4.0
 UDP_DEVICE_STALE_SECONDS = 8.0
+UDP_COMMAND_REPEAT_COUNT = 3
+UDP_COMMAND_REPEAT_DELAY_SECONDS = 0.04
+UDP_POLL_REPLY_REPEAT_COUNT = 5
+UDP_POLL_REPLY_REPEAT_DELAY_SECONDS = 0.02
+HARDWARE_COMMAND_CONFIRM_TIMEOUT_SECONDS = 2.5
+HARDWARE_COMMAND_CONFIRM_POLL_SECONDS = 0.05
 FIRMWARE_UPLOAD_TIMEOUT_SECONDS = 180.0
 OPERATOR_RING_ON_SECONDS = 1.0
 OPERATOR_RING_OFF_SECONDS = 4.0
@@ -80,6 +87,20 @@ OPERATOR_RING_TIMEOUT_SECONDS = 90.0
 OPERATOR_CALLBACK_EXPIRE_SECONDS = 120.0
 OPERATOR_BUSY_ON_SECONDS = 0.5
 OPERATOR_BUSY_OFF_SECONDS = 0.5
+AI_HOOK_DEDUPE_SECONDS = 20.0
+
+
+def is_generic_ai_hook_text(text: str) -> bool:
+    clean = compact_hook_text(text)
+    if not clean:
+        return False
+    lower = clean.lower()
+    return (
+        "turn-ended" in lower
+        or ("codex" in lower and ("complete" in lower or "done" in lower))
+        or ("codex" in lower and "完成" in clean and "查看" in clean)
+        or (len(clean) <= 16 and "完成" in clean)
+    )
 
 
 def make_agent_session_path() -> Path:
@@ -193,7 +214,12 @@ class ConsoleConfig:
     score_max: int = 8
     score_trigger: int = 5
     peak_hold_ms: int = 350
-    sample_interval_ms: int = 50
+    sample_interval_ms: int = 250
+    hook_pin: int = 0
+    buzzer_pin: int = 21
+    led_pin: int = 20
+    udp_device_host: str = ""
+    udp_command_port: int = DEFAULT_UDP_COMMAND_PORT
     press_action_text: str = "控制键+Windows键+Shift键"
     release_action_text: str = "控制键+Windows键+Shift键, 延迟1000毫秒, 回车"
     input_action_profiles: list[dict[str, str]] = field(default_factory=list)
@@ -573,6 +599,9 @@ def build_device_config_command(config: ConsoleConfig) -> str:
             "score_trigger": config.score_trigger,
             "peak_hold_ms": config.peak_hold_ms,
             "sample_interval_ms": config.sample_interval_ms,
+            "hook_pin": int(config.hook_pin),
+            "buzzer_pin": int(config.buzzer_pin),
+            "led_pin": int(config.led_pin),
             "enable_actions": config.enable_actions,
             "press_action": canonical_action_text(config.action_text_for_state("PRESSED")),
             "release_action": canonical_action_text(config.action_text_for_state("RELEASED")),
@@ -643,10 +672,10 @@ class HookStateMachine:
         self.last_press_trigger_ms = timestamp_ms if normalized == "PRESSED" else None
         self.initialized = True
 
-    def update_config(self, config: ConsoleConfig) -> None:
+    def update_config(self, config: ConsoleConfig, ms: int | None = None) -> None:
         current_state = self.stable_state if self.initialized else "RELEASED"
         self.config = config
-        self.reset_to_state(current_state)
+        self.reset_to_state(current_state, ms)
 
     def is_press_evidence(self, adc: int) -> bool:
         if self.config.adc_low_means_pressed:
@@ -707,6 +736,10 @@ class HookStateMachine:
             self.score = self.config.score_trigger if next_raw_state == "PRESSED" else 0
             return []
 
+        if sample.ms + 1000 < self.last_change_ms or sample.ms + 1000 < self.last_stable_change_ms:
+            self.reset_to_state(next_raw_state, sample.ms)
+            return []
+
         self.update_score(sample)
 
         if next_raw_state != self.raw_state:
@@ -756,6 +789,14 @@ class AppState:
         self.action_logs: deque[str] = deque(maxlen=300)
         self.samples: deque[dict[str, Any]] = deque(maxlen=240)
         self.current_sample: dict[str, Any] | None = None
+        self.last_hardware_command: dict[str, Any] | None = None
+        self.device_command_queue: deque[dict[str, Any]] = deque(maxlen=80)
+        self.device_command_counter = 0
+        self.last_device_poll: dict[str, Any] | None = None
+        self.last_device_poll_reply: dict[str, Any] | None = None
+        self.tcp_command_client: str | None = None
+        self.tcp_command_last_seen: float | None = None
+        self.last_tcp_command_sent: dict[str, Any] | None = None
         self.last_state = "RELEASED"
         self.serial_handle: Any = None
         self.serial_port: str | None = None
@@ -764,6 +805,9 @@ class AppState:
         self.udp_device_address: tuple[str, int] | None = None
         self.udp_last_seen: float | None = None
         self.udp_lock = threading.Lock()
+        persisted_udp_host = str(config.udp_device_host or "").strip()
+        if persisted_udp_host:
+            self.udp_device_address = (persisted_udp_host, int(config.udp_command_port or DEFAULT_UDP_COMMAND_PORT))
         self.serial_debug_lock = threading.Lock()
         self.serial_debug_allowed = True
         self.serial_scan_thread: threading.Thread | None = None
@@ -786,6 +830,7 @@ class AppState:
         self.alert_stop_event = threading.Event()
         self.alert_thread: threading.Thread | None = None
         self.alert_last_hook_state: str | None = None
+        self.ai_hook_recent_by_source: dict[str, tuple[float, str]] = {}
         self.pending_report_text: str | None = None
         self.reply_queue: deque[ReplyTask] = deque()
         self.active_reply: ReplyTask | None = None
@@ -1035,7 +1080,16 @@ class AppState:
             self.udp_device_address = (host, command_port)
             self.udp_last_seen = time.monotonic()
             device = f"{host}:{command_port}"
+        config_payload = None
+        with self.lock:
+            if self.config.udp_device_host != host or self.config.udp_command_port != command_port:
+                self.config.udp_device_host = host
+                self.config.udp_command_port = command_port
+                save_config(self.config_path, self.config)
+                config_payload = self.config.to_dict()
         self.publish({"type": "udp_status", "udp_listening": True, "device": device})
+        if config_payload is not None:
+            self.publish({"type": "config", "config": config_payload})
 
     def current_udp_device(self) -> str | None:
         with self.udp_lock:
@@ -1062,6 +1116,198 @@ class AppState:
             if self.udp_socket is None or self.udp_device_address is None or self.udp_last_seen is None:
                 return False
             return time.monotonic() - self.udp_last_seen <= UDP_DEVICE_STALE_SECONDS
+
+    def has_udp_command_target(self) -> bool:
+        with self.udp_lock:
+            return self.udp_device_address is not None
+
+    def create_udp_command_socket(self) -> socket.socket:
+        return socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def udp_command_payload(self, command: str) -> bytes:
+        normalized = command.strip()
+        if normalized.startswith("{") or normalized.startswith("["):
+            return (normalized + "\n").encode("utf-8")
+        return (json.dumps({"type": normalized}, separators=(",", ":")) + "\n").encode("utf-8")
+
+    def hardware_command_type(self, command: str) -> str:
+        normalized = command.strip().lower()
+        if normalized.startswith("{"):
+            try:
+                payload = json.loads(normalized)
+                normalized = str(payload.get("type", normalized)).strip().lower()
+            except json.JSONDecodeError:
+                pass
+        return normalized
+
+    def hardware_command_group(self, command: str) -> str:
+        command_type = self.hardware_command_type(command)
+        if command_type in {"led_on", "led_off"}:
+            return "led"
+        if command_type in {"ring_on", "ring_off", "buzzer_on", "buzzer_off", "beep", "ring", "ring_once"}:
+            return "buzzer"
+        return command_type
+
+    def expected_hardware_state_for_command(self, command: str) -> dict[str, str] | None:
+        command_type = self.hardware_command_type(command)
+        if command_type == "led_on":
+            return {"led": "ON"}
+        if command_type == "led_off":
+            return {"led": "OFF"}
+        if command_type in {"ring_on", "buzzer_on"}:
+            return {"buzzer": "ON"}
+        if command_type in {"ring_off", "buzzer_off"}:
+            return {"buzzer": "OFF"}
+        if command_type in {"beep", "ring", "ring_once"}:
+            return {"buzzer": "ON"}
+        return None
+
+    def current_device_sample_matches(self, expected: dict[str, str], since: float | None) -> bool:
+        with self.lock:
+            sample = dict(self.current_sample) if isinstance(self.current_sample, dict) else None
+            last_seen = self.real_sample_last_seen
+        if sample is None or sample.get("sample_source") != "device":
+            return False
+        if last_seen is None:
+            return False
+        if since is None:
+            if time.monotonic() - last_seen > UDP_DEVICE_STALE_SECONDS:
+                return False
+        elif last_seen < since:
+            return False
+        return all(str(sample.get(key, "")).upper() == value for key, value in expected.items())
+
+    def wait_for_hardware_confirmation(self, expected: dict[str, str], since: float) -> bool:
+        deadline = time.monotonic() + HARDWARE_COMMAND_CONFIRM_TIMEOUT_SECONDS
+        while time.monotonic() <= deadline:
+            if self.current_device_sample_matches(expected, since):
+                return True
+            time.sleep(HARDWARE_COMMAND_CONFIRM_POLL_SECONDS)
+        return False
+
+    def record_hardware_command_result(
+        self,
+        command: str,
+        *,
+        sent: bool,
+        ok: bool,
+        confirmed: bool | None,
+        expected: dict[str, str] | None,
+        error: str | None = None,
+    ) -> None:
+        with self.lock:
+            sample = dict(self.current_sample) if isinstance(self.current_sample, dict) else None
+            self.last_hardware_command = {
+                "command": self.hardware_command_type(command),
+                "sent": sent,
+                "ok": ok,
+                "confirmed": confirmed,
+                "expected": expected,
+                "error": error,
+                "sample": sample,
+                "at": time.time(),
+            }
+
+    def queue_device_command(self, command: str) -> dict[str, Any]:
+        command_type = self.hardware_command_type(command)
+        command_group = self.hardware_command_group(command_type)
+        payload: dict[str, Any]
+        normalized = command.strip()
+        if normalized.startswith("{"):
+            try:
+                parsed = json.loads(normalized)
+                payload = dict(parsed) if isinstance(parsed, dict) else {"type": command_type}
+            except json.JSONDecodeError:
+                payload = {"type": command_type}
+        else:
+            payload = {"type": command_type}
+        payload["type"] = str(payload.get("type", command_type)).strip().lower()
+        with self.lock:
+            if command_group:
+                maxlen = self.device_command_queue.maxlen
+                self.device_command_queue = deque(
+                    (entry for entry in self.device_command_queue if entry.get("group") != command_group),
+                    maxlen=maxlen,
+                )
+            self.device_command_counter += 1
+            entry = {
+                "id": self.device_command_counter,
+                "command": command_type,
+                "group": command_group,
+                "payload": payload,
+                "queued_at": time.time(),
+            }
+            self.device_command_queue.append(entry)
+        self.publish({"type": "device_command_queued", "command": command_type, "id": entry["id"]})
+        return entry
+
+    def pop_next_device_command(self) -> dict[str, Any] | None:
+        with self.lock:
+            if not self.device_command_queue:
+                return None
+            entry = self.device_command_queue.popleft()
+        self.add_raw_log(f">poll {entry['command']}")
+        return entry
+
+    def next_device_poll_response(self) -> dict[str, Any] | None:
+        entry = self.pop_next_device_command()
+        if entry is None:
+            return None
+        payload = dict(entry.get("payload") or {"type": entry["command"]})
+        return {
+            **payload,
+            "id": entry["id"],
+            "queued_at": entry["queued_at"],
+        }
+
+    def record_device_poll(
+        self,
+        address: tuple[str, int],
+        payload: dict[str, Any],
+        response: dict[str, Any] | None,
+    ) -> None:
+        now = time.monotonic()
+        with self.lock:
+            self.last_device_poll = {
+                "address": f"{address[0]}:{address[1]}",
+                "seq": payload.get("seq"),
+                "ms": payload.get("ms"),
+                "at": now,
+            }
+            self.last_device_poll_reply = dict(response) if response is not None else None
+
+    def update_tcp_command_client(self, address: tuple[str, int] | None) -> None:
+        with self.lock:
+            self.tcp_command_client = f"{address[0]}:{address[1]}" if address is not None else None
+            self.tcp_command_last_seen = time.monotonic() if address is not None else None
+
+    def has_fresh_tcp_command_client(self) -> bool:
+        with self.lock:
+            if self.tcp_command_client is None or self.tcp_command_last_seen is None:
+                return False
+            return time.monotonic() - self.tcp_command_last_seen <= UDP_DEVICE_STALE_SECONDS
+
+    def record_tcp_command_sent(self, command: dict[str, Any]) -> None:
+        with self.lock:
+            self.last_tcp_command_sent = {
+                **command,
+                "at": time.monotonic(),
+            }
+
+    def udp_command_targets(self, target: tuple[str, int]) -> list[tuple[str, int]]:
+        targets = [target]
+        try:
+            parts = target[0].split(".")
+            if len(parts) == 4 and all(0 <= int(part) <= 255 for part in parts):
+                subnet_broadcast = (".".join(parts[:3] + ["255"]), target[1])
+                if subnet_broadcast not in targets:
+                    targets.append(subnet_broadcast)
+        except ValueError:
+            pass
+        broadcast_target = ("255.255.255.255", target[1])
+        if target != broadcast_target:
+            targets.append(broadcast_target)
+        return targets
 
     def simulation_label(self) -> str | None:
         with self.lock:
@@ -1102,6 +1348,26 @@ class AppState:
             sample_count = len(self.samples)
             simulation_enabled = self.simulation_enabled
             real_sample_last_seen = self.real_sample_last_seen
+            last_hardware_command = dict(self.last_hardware_command) if isinstance(self.last_hardware_command, dict) else None
+            device_command_queue_length = len(self.device_command_queue)
+            last_device_poll = dict(self.last_device_poll) if isinstance(self.last_device_poll, dict) else None
+            last_device_poll_reply = (
+                dict(self.last_device_poll_reply) if isinstance(self.last_device_poll_reply, dict) else None
+            )
+            tcp_command_client = self.tcp_command_client
+            tcp_command_last_seen = self.tcp_command_last_seen
+            last_tcp_command_sent = (
+                dict(self.last_tcp_command_sent) if isinstance(self.last_tcp_command_sent, dict) else None
+            )
+        if last_device_poll is not None and isinstance(last_device_poll.get("at"), (int, float)):
+            last_device_poll["age_seconds"] = max(0.0, time.monotonic() - float(last_device_poll["at"]))
+        tcp_command_last_seen_seconds = (
+            max(0.0, time.monotonic() - tcp_command_last_seen) if tcp_command_last_seen is not None else None
+        )
+        if last_tcp_command_sent is not None and isinstance(last_tcp_command_sent.get("at"), (int, float)):
+            last_tcp_command_sent["age_seconds"] = max(0.0, time.monotonic() - float(last_tcp_command_sent["at"]))
+        if not simulation_enabled and current_sample is not None and current_sample.get("sample_source") == "simulation":
+            current_sample = None
         udp = self.udp_status()
         udp_fresh = (
             udp["udp_device"] is not None
@@ -1117,6 +1383,10 @@ class AppState:
             real_sample_last_seen_seconds is not None
             and real_sample_last_seen_seconds <= UDP_DEVICE_STALE_SECONDS
         )
+        tcp_command_fresh = (
+            tcp_command_last_seen_seconds is not None
+            and tcp_command_last_seen_seconds <= UDP_DEVICE_STALE_SECONDS
+        )
         serial_connected = self.is_serial_connected()
         return {
             "ok": True,
@@ -1124,11 +1394,19 @@ class AppState:
             **self.serial_debug_status(),
             "serial_connected": serial_connected,
             "serial_port": self.current_serial_port(),
-            "real_device_connected": udp_fresh or serial_connected or real_sample_fresh,
+            "real_device_connected": udp_fresh or serial_connected or real_sample_fresh or tcp_command_fresh,
             "real_sample_last_seen_seconds": real_sample_last_seen_seconds,
             "simulation_enabled": simulation_enabled,
             "sample_count": sample_count,
             "current_sample": current_sample,
+            "last_hardware_command": last_hardware_command,
+            "device_command_queue_length": device_command_queue_length,
+            "last_device_poll": last_device_poll,
+            "last_device_poll_reply": last_device_poll_reply,
+            "tcp_command_client": tcp_command_client,
+            "tcp_command_connected": tcp_command_fresh,
+            "tcp_command_last_seen_seconds": tcp_command_last_seen_seconds,
+            "last_tcp_command_sent": last_tcp_command_sent,
             "firmware_upload": self.firmware_status(),
         }
 
@@ -2607,6 +2885,12 @@ class AppState:
                 self.sim_last_pulse_at = time.monotonic()
             if not enabled:
                 self.sim_started_at = None
+                if isinstance(self.current_sample, dict) and self.current_sample.get("sample_source") == "simulation":
+                    self.current_sample = None
+                    self.samples = deque(
+                        (sample for sample in self.samples if sample.get("sample_source") != "simulation"),
+                        maxlen=self.samples.maxlen,
+                    )
             hook_state = self.sim_hook_state
 
         if changed:
@@ -2684,23 +2968,48 @@ class AppState:
             return self.current_sample
 
     def send_udp_command(self, command: str) -> bool:
-        payload = (command.strip() + "\n").encode("utf-8")
+        payload = self.udp_command_payload(command)
         with self.udp_lock:
-            sock = self.udp_socket
             target = self.udp_device_address
-        if sock is None or target is None:
+        if target is None:
             return False
 
+        command_sock = self.create_udp_command_socket()
         try:
-            sock.sendto(payload, target)
-        except OSError as exc:
-            self.add_state_log(f"UDP command failed: {exc}")
-            return False
+            set_broadcast = getattr(command_sock, "setsockopt", None)
+            if callable(set_broadcast):
+                set_broadcast(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+
+            sent_targets: list[tuple[str, int]] = []
+            errors: list[str] = []
+            targets = self.udp_command_targets(target)
+            for repeat_index in range(UDP_COMMAND_REPEAT_COUNT):
+                for command_target in targets:
+                    try:
+                        command_sock.sendto(payload, command_target)
+                        sent_targets.append(command_target)
+                    except OSError as exc:
+                        errors.append(f"{command_target[0]}:{command_target[1]} {exc}")
+                if repeat_index + 1 < UDP_COMMAND_REPEAT_COUNT:
+                    time.sleep(UDP_COMMAND_REPEAT_DELAY_SECONDS)
+
+            if not sent_targets:
+                self.add_state_log(f"UDP command failed: {'; '.join(errors)}")
+                return False
+        finally:
+            close = getattr(command_sock, "close", None)
+            if callable(close):
+                close()
 
         self.add_raw_log(f">udp {target[0]}:{target[1]} {command.strip()}")
         return True
 
-    def send_device_command(self, command: str) -> bool:
+    def send_device_command(self, command: str, *, queued_for_tcp: bool = False) -> bool:
+        if self.has_fresh_tcp_command_client():
+            if not queued_for_tcp:
+                self.queue_device_command(command)
+            self.add_raw_log(f">tcp_queue {self.hardware_command_type(command)}")
+            return True
         if self.send_udp_command(command):
             return True
         return self.send_serial_command(command)
@@ -2883,14 +3192,31 @@ class AppState:
         save_config(self.config_path, config)
         with self.lock:
             self.config = config
-            self.machine.update_config(config)
+            current_sample = self.current_sample
+            current_sample_ms = (
+                int(current_sample.get("ms"))
+                if isinstance(current_sample, dict) and current_sample.get("ms") is not None
+                else None
+            )
+            if isinstance(current_sample, dict) and current_sample.get("digital") is not None:
+                current_state = interpret_hook_state(current_sample["digital"], config)
+                current_sample["python_state"] = current_state
+                current_sample["observed_state"] = current_state
+                current_sample["hook_scheme"] = config.hook_scheme
+                current_sample["hook_scheme_label"] = HOOK_SCHEMES[config.hook_scheme]["label"]
+                current_sample["hook_scheme_description"] = HOOK_SCHEMES[config.hook_scheme]["description"]
+                current_sample["pressed_level"] = hook_pressed_level(config)
+                current_sample["hook_label"] = hook_state_label(current_state)
+                self.machine.reset_to_state(current_state, current_sample_ms)
+            else:
+                self.machine.update_config(config, current_sample_ms)
             self.last_state = self.machine.stable_state
             simulation_enabled = self.simulation_enabled
             sim_state = self.sim_hook_state
         command = build_device_config_command(config)
         if self.is_serial_connected() and self.send_serial_command(command):
             self.add_state_log("配置已保存到电脑，并已发送给 ESP32 写入板子。")
-        elif self.has_fresh_udp_device() and self.send_udp_command(command):
+        elif self.send_udp_command(command):
             self.add_state_log("配置已保存到电脑，并已通过 Wi-Fi 发送给 ESP32。")
         elif simulation_enabled:
             self.add_state_log("配置已保存到电脑，模拟发送端已按当前配置刷新样本。")
@@ -2949,10 +3275,45 @@ class AppState:
         return False
 
     def has_hardware_link(self) -> bool:
-        return self.has_fresh_udp_device() or self.is_serial_connected()
+        return self.has_fresh_udp_device() or self.has_fresh_tcp_command_client() or self.is_serial_connected()
+
+    def has_hardware_command_target(self) -> bool:
+        return self.has_udp_command_target() or self.has_fresh_tcp_command_client() or self.is_serial_connected()
 
     def run_hardware_command(self, command: str, *, log: bool = True) -> bool:
-        if self.has_hardware_link() and self.send_device_command(command):
+        expected_state = self.expected_hardware_state_for_command(command)
+        already_confirmed = (
+            expected_state is not None
+            and self.current_device_sample_matches(expected_state, since=None)
+        )
+        sent_at = time.monotonic()
+        queued_for_tcp = False
+        if expected_state is not None:
+            self.queue_device_command(command)
+            queued_for_tcp = True
+        if self.send_device_command(command, queued_for_tcp=queued_for_tcp):
+            if (
+                expected_state is not None
+                and not already_confirmed
+                and not self.wait_for_hardware_confirmation(expected_state, sent_at)
+            ):
+                self.add_state_log(f"Hardware command was sent but not confirmed by ESP32: {command}")
+                self.record_hardware_command_result(
+                    command,
+                    sent=True,
+                    ok=False,
+                    confirmed=False,
+                    expected=expected_state,
+                    error="not_confirmed",
+                )
+                return False
+            self.record_hardware_command_result(
+                command,
+                sent=True,
+                ok=True,
+                confirmed=True if expected_state is not None else None,
+                expected=expected_state,
+            )
             if log:
                 self.add_action_log(f"硬件测试命令：{command}")
             return True
@@ -2960,6 +3321,14 @@ class AppState:
             simulation_enabled = self.simulation_enabled
         if simulation_enabled:
             return self.apply_simulated_hardware_command(command, log=log)
+        self.record_hardware_command_result(
+            command,
+            sent=False,
+            ok=False,
+            confirmed=False if expected_state is not None else None,
+            expected=expected_state,
+            error="not_sent",
+        )
         return False
 
     def apply_simulated_hardware_command(self, command: str, *, log: bool = True) -> bool:
@@ -3047,6 +3416,15 @@ class AppState:
         restart_serial = self.config.enable_serial_debug and self.is_serial_debug_running()
         self.stop_serial_debug("烧录固件前释放串口", wait_seconds=2.0)
         command = self.platformio_command() + ["run", "-d", str(FIRMWARE_PROJECT_DIR), "-t", "upload"]
+        upload_env = os.environ.copy()
+        upload_env.update(
+            {
+                "PYTHONIOENCODING": "utf-8",
+                "PYTHONUTF8": "1",
+                "NO_COLOR": "1",
+                "PLATFORMIO_SETTING_ENABLE_COLOR": "0",
+            }
+        )
         self.add_action_log(f"开始烧录固件：{' '.join(command)}")
         ok = False
         message = ""
@@ -3063,6 +3441,7 @@ class AppState:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
+                env=upload_env,
                 timeout=FIRMWARE_UPLOAD_TIMEOUT_SECONDS,
                 startupinfo=startupinfo,
             )
@@ -3139,10 +3518,12 @@ class AppState:
 
             self.set_alert_phase("ring", alerting=True)
             self.run_hardware_command("ring_on", log=False)
+            self.run_hardware_command("led_on", log=False)
             if stop_event.wait(min(OPERATOR_RING_ON_SECONDS, remaining)):
                 break
 
             self.run_hardware_command("ring_off", log=False)
+            self.run_hardware_command("led_off", log=False)
             remaining = min(ring_deadline, expire_deadline) - time.monotonic()
             if remaining <= 0:
                 break
@@ -3163,15 +3544,18 @@ class AppState:
             return
 
         self.run_hardware_command("ring_off", log=False)
+        self.run_hardware_command("led_off", log=False)
         self.set_alert_phase("busy", alerting=True)
         self.add_action_log("接线员模式久叫无人接听，已切换忙音；若仍无人接听，将自动取消本次回话。")
 
         while not stop_event.is_set():
             self.run_hardware_command("ring_on", log=False)
+            self.run_hardware_command("led_on", log=False)
             remaining = expire_deadline - time.monotonic()
             if remaining <= 0 or stop_event.wait(min(OPERATOR_BUSY_ON_SECONDS, remaining)):
                 break
             self.run_hardware_command("ring_off", log=False)
+            self.run_hardware_command("led_off", log=False)
             remaining = expire_deadline - time.monotonic()
             if remaining <= 0 or stop_event.wait(min(OPERATOR_BUSY_OFF_SECONDS, remaining)):
                 break
@@ -3192,6 +3576,7 @@ class AppState:
             stop_event = self.alert_stop_event
         stop_event.set()
         self.publish_alert_status()
+        self.stop_alert_thread(wait_seconds=1.0)
         buzzer_ok = self.run_hardware_command("ring_off")
         led_ok = self.run_hardware_command("led_off")
         self.add_action_log(f"接线员提醒已停止：{reason}")
@@ -3201,7 +3586,7 @@ class AppState:
         source = (source or "ai").strip() or "ai"
         with self.lock:
             simulation_enabled = self.simulation_enabled
-        if not self.has_hardware_link() and not simulation_enabled:
+        if not self.has_hardware_command_target() and not simulation_enabled:
             self.add_action_log(f"接线员 hook 触发失败：没有可用的 ESP32 Wi-Fi、串口或模拟链路（{source}）。")
             return False
 
@@ -3229,7 +3614,27 @@ class AppState:
             self.add_action_log(f"接线员 hook 已丢弃：完成后电话回拨已关闭（{source}）。")
             return False
 
-        report_text = self.prepare_operator_report_text(source, text or "")
+        clean_text = compact_hook_text(text or "")
+        if clean_text:
+            now = time.monotonic()
+            with self.lock:
+                recent = self.ai_hook_recent_by_source.get(source)
+                has_pending_reply = (
+                    self.alerting
+                    or self.active_reply is not None
+                    or bool(self.reply_queue)
+                    or self.pending_report_text is not None
+                )
+                if recent is not None:
+                    recent_at, recent_text = recent
+                    same_text = recent_text == clean_text
+                    generic_completion = is_generic_ai_hook_text(recent_text) or is_generic_ai_hook_text(clean_text)
+                    if now - recent_at <= AI_HOOK_DEDUPE_SECONDS and (same_text or (has_pending_reply and generic_completion)):
+                        self.add_action_log(f"接线员 hook 已忽略重复信号：{source}。")
+                        return True
+                self.ai_hook_recent_by_source[source] = (now, clean_text)
+
+        report_text = self.prepare_operator_report_text(source, clean_text)
         reply = self.enqueue_reply(source, report_text, title=f"{source} 通讯员回报")
         if reply is None:
             return False
@@ -3246,7 +3651,14 @@ class AppState:
             {"type": "set_pins", "hook_pin": hook_pin, "buzzer_pin": buzzer_pin, "led_pin": led_pin},
             separators=(",", ":"),
         )
-        if self.has_hardware_link() and self.send_device_command(command):
+        if self.send_device_command(command):
+            with self.lock:
+                self.config.hook_pin = hook_pin
+                self.config.buzzer_pin = buzzer_pin
+                self.config.led_pin = led_pin
+                save_config(self.config_path, self.config)
+                config_payload = self.config.to_dict()
+            self.publish({"type": "config", "config": config_payload})
             self.add_action_log(f"测试引脚已发送：开关 GPIO{hook_pin}，蜂鸣器 GPIO{buzzer_pin}，LED GPIO{led_pin}")
             return True
         with self.lock:
@@ -3255,6 +3667,11 @@ class AppState:
                 self.sim_hook_pin = hook_pin
                 self.sim_buzzer_pin = buzzer_pin
                 self.sim_led_pin = led_pin
+                self.config.hook_pin = hook_pin
+                self.config.buzzer_pin = buzzer_pin
+                self.config.led_pin = led_pin
+                save_config(self.config_path, self.config)
+                config_payload = self.config.to_dict()
         if simulation_enabled:
             self.add_action_log(f"模拟测试引脚已应用：开关 GPIO{hook_pin}，蜂鸣器 GPIO{buzzer_pin}，LED GPIO{led_pin}")
             self.emit_simulated_sample(reason="模拟引脚配置")
@@ -3524,10 +3941,123 @@ def udp_worker(app: AppState, telemetry_port: int, command_port: int, stop: thre
 
             app.update_udp_device(address[0], command_port)
             app.add_raw_log(f"<udp {address[0]}:{address[1]}> {line}")
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict) and payload.get("type") == "command_poll":
+                response = app.next_device_poll_response()
+                app.record_device_poll(address, payload, response)
+                if response is not None:
+                    response_bytes = (json.dumps(response, separators=(",", ":")) + "\n").encode("utf-8")
+                    try:
+                        for repeat_index in range(UDP_POLL_REPLY_REPEAT_COUNT):
+                            sock.sendto(response_bytes, address)
+                            if repeat_index + 1 < UDP_POLL_REPLY_REPEAT_COUNT:
+                                time.sleep(UDP_POLL_REPLY_REPEAT_DELAY_SECONDS)
+                        app.add_raw_log(f">poll-reply {address[0]}:{address[1]} {response['type']}")
+                    except OSError as exc:
+                        app.add_state_log(f"UDP poll reply failed: {exc}")
             handle_board_line(app, line)
     finally:
         app.detach_udp_socket(sock)
         sock.close()
+
+
+def tcp_command_worker(app: AppState, command_port: int, stop: threading.Event) -> None:
+    server_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_sock.settimeout(0.5)
+    clients: list[tuple[socket.socket, tuple[str, int]]] = []
+
+    try:
+        server_sock.bind(("", command_port))
+        server_sock.listen(2)
+    except OSError as exc:
+        app.add_state_log(f"TCP command listen failed on port {command_port}: {exc}")
+        server_sock.close()
+        return
+
+    app.add_state_log(f"TCP command listening on 0.0.0.0:{command_port}; ESP32 will connect over Wi-Fi.")
+
+    def close_client(client: socket.socket, address: tuple[str, int]) -> None:
+        try:
+            client.close()
+        except OSError:
+            pass
+        app.add_state_log(f"ESP32 TCP command disconnected: {address[0]}:{address[1]}")
+
+    try:
+        while not stop.is_set():
+            try:
+                client, address = server_sock.accept()
+                client.setblocking(False)
+                clients.append((client, address))
+                app.update_tcp_command_client(address)
+                app.add_state_log(f"ESP32 TCP command connected: {address[0]}:{address[1]}")
+            except socket.timeout:
+                pass
+            except OSError as exc:
+                if not stop.is_set():
+                    app.add_state_log(f"TCP command accept failed: {exc}")
+                break
+
+            live_clients: list[tuple[socket.socket, tuple[str, int]]] = []
+            for client, address in clients:
+                try:
+                    data = client.recv(4096)
+                    if data == b"":
+                        close_client(client, address)
+                        continue
+                    if data:
+                        app.update_tcp_command_client(address)
+                        for line in data.decode("utf-8", errors="replace").splitlines():
+                            if line.strip():
+                                app.add_raw_log(f"<tcp {address[0]}:{address[1]}> {line.strip()}")
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    close_client(client, address)
+                    continue
+                live_clients.append((client, address))
+            clients = live_clients
+            if not clients:
+                app.update_tcp_command_client(None)
+                stop.wait(0.05)
+                continue
+            app.update_tcp_command_client(clients[-1][1])
+
+            response = app.next_device_poll_response()
+            if response is None:
+                stop.wait(0.05)
+                continue
+
+            payload = (json.dumps(response, separators=(",", ":")) + "\n").encode("utf-8")
+            sent = False
+            live_clients = []
+            for client, address in clients:
+                try:
+                    client.sendall(payload)
+                    app.add_raw_log(f">tcp {address[0]}:{address[1]} {response['type']}")
+                    sent = True
+                    live_clients.append((client, address))
+                except OSError:
+                    close_client(client, address)
+            clients = live_clients
+            if sent:
+                app.record_tcp_command_sent(response)
+            else:
+                retry_payload = {
+                    key: value
+                    for key, value in response.items()
+                    if key not in {"id", "queued_at"}
+                }
+                app.queue_device_command(json.dumps(retry_payload, separators=(",", ":")))
+    finally:
+        for client, address in clients:
+            close_client(client, address)
+        app.update_tcp_command_client(None)
+        server_sock.close()
 
 
 def simulation_worker(app: AppState, stop: threading.Event) -> None:
@@ -4541,7 +5071,9 @@ INDEX_HTML = r"""<!doctype html>
     async function postHardwareCommand(command) {
       try {
         const result = await fetchJson(`/api/hardware/${command}`, {method: "POST"}, 10000);
-        setSaveStatus(result.ok ? `硬件命令已发送：${command}` : `硬件命令发送失败：${command}`, result.ok ? "ok" : "warn");
+        const error = result.hardware_command?.error;
+        const failedText = error === "not_confirmed" ? `ESP32 未确认执行：${command}` : `硬件命令失败：${command}`;
+        setSaveStatus(result.ok ? `硬件命令已确认：${command}` : failedText, result.ok ? "ok" : "warn");
       } catch (error) {
         setSaveStatus(`硬件命令失败：${error.message}`, "warn");
       }
@@ -8091,8 +8623,10 @@ INDEX_HTML = r"""<!doctype html>
       try {
         const result = await fetchJson(`/api/hardware/${command}`, {method: "POST"}, 10000);
         const label = hardwareCommandLabels[command] || `硬件命令已发送：${command}`;
-        setSaveStatus(result.ok ? label : `硬件命令发送失败：${command}`, result.ok ? "ok" : "warn");
-        appendDebugLog(result.ok ? "状态" : "错误", result.ok ? label : `硬件命令发送失败：${command}`);
+        const error = result.hardware_command?.error;
+        const failedText = error === "not_confirmed" ? `ESP32 未确认执行：${command}` : `硬件命令失败：${command}`;
+        setSaveStatus(result.ok ? label : failedText, result.ok ? "ok" : "warn");
+        appendDebugLog(result.ok ? "状态" : "错误", result.ok ? label : failedText);
       } catch (error) {
         setSaveStatus(`硬件命令失败：${error.message}`, "warn");
         appendDebugLog("错误", `硬件命令失败：${error.message}`);
@@ -8276,6 +8810,16 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self.send_json(self.app.simulation_status())
         elif route == "/api/hardware/status":
             self.send_json(self.app.hardware_status())
+        elif route == "/api/device/next-command":
+            command_entry = self.app.pop_next_device_command()
+            self.send_json(
+                {
+                    "ok": True,
+                    "command": command_entry["command"] if command_entry else None,
+                    "id": command_entry["id"] if command_entry else None,
+                    "queued_at": command_entry["queued_at"] if command_entry else None,
+                }
+            )
         elif route == "/api/firmware/status":
             self.send_json({"ok": True, "firmware_upload": self.app.firmware_status()})
         elif route == "/api/replies":
@@ -8456,24 +9000,28 @@ class ConsoleHandler(BaseHTTPRequestHandler):
             self.send_json({"ok": ok, **self.app.simulation_status()})
         elif route == "/api/hardware/beep":
             ok = self.app.run_hardware_command("beep")
-            self.send_json({"ok": ok})
+            self.send_json({"ok": ok, "hardware_command": self.app.last_hardware_command})
         elif route == "/api/hardware/ring_on":
             ok = self.app.run_hardware_command("ring_on")
-            self.send_json({"ok": ok})
+            self.send_json({"ok": ok, "hardware_command": self.app.last_hardware_command})
         elif route == "/api/hardware/ring_off":
             ok = self.app.run_hardware_command("ring_off")
-            self.send_json({"ok": ok})
+            self.send_json({"ok": ok, "hardware_command": self.app.last_hardware_command})
         elif route == "/api/hardware/led_on":
             ok = self.app.run_hardware_command("led_on")
-            self.send_json({"ok": ok})
+            self.send_json({"ok": ok, "hardware_command": self.app.last_hardware_command})
         elif route == "/api/hardware/led_off":
             ok = self.app.run_hardware_command("led_off")
-            self.send_json({"ok": ok})
+            self.send_json({"ok": ok, "hardware_command": self.app.last_hardware_command})
         elif route == "/api/hardware/pins":
             data = self.read_json()
-            hook_pin = int(data.get("hook_pin", 0))
-            buzzer_pin = int(data.get("buzzer_pin", 21))
-            led_pin = int(data.get("led_pin", 20))
+            with self.app.lock:
+                default_hook_pin = self.app.config.hook_pin
+                default_buzzer_pin = self.app.config.buzzer_pin
+                default_led_pin = self.app.config.led_pin
+            hook_pin = int(data.get("hook_pin", default_hook_pin))
+            buzzer_pin = int(data.get("buzzer_pin", default_buzzer_pin))
+            led_pin = int(data.get("led_pin", default_led_pin))
             ok = self.app.set_test_pins(hook_pin, buzzer_pin, led_pin)
             self.send_json({"ok": ok, "hook_pin": hook_pin, "buzzer_pin": buzzer_pin, "led_pin": led_pin})
         elif route == "/api/firmware/upload":
@@ -8584,6 +9132,7 @@ def main() -> int:
     parser.add_argument("--web-port", type=int, default=DEFAULT_WEB_PORT)
     parser.add_argument("--udp-port", type=int, default=DEFAULT_UDP_TELEMETRY_PORT)
     parser.add_argument("--device-command-port", type=int, default=DEFAULT_UDP_COMMAND_PORT)
+    parser.add_argument("--tcp-command-port", type=int, default=DEFAULT_TCP_COMMAND_PORT)
     parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--no-serial", action="store_true", help="只启动网页，不打开串口。")
     parser.add_argument("--no-actions", action="store_true", help="只记录动作，不发送 Windows 快捷键。")
@@ -8614,6 +9163,13 @@ def main() -> int:
         daemon=True,
     )
     udp_thread.start()
+
+    tcp_command_thread = threading.Thread(
+        target=tcp_command_worker,
+        args=(app, args.tcp_command_port, stop),
+        daemon=True,
+    )
+    tcp_command_thread.start()
 
     if args.no_serial:
         app.add_state_log("已按 --no-serial 启动，串口调试不可用，页面只使用 Wi-Fi / 模拟链路。")

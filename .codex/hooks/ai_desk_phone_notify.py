@@ -28,14 +28,6 @@ def read_stdin_payload() -> str:
     return ""
 
 
-def path_is_inside(path: Path, root: Path) -> bool:
-    try:
-        path.resolve().relative_to(root.resolve())
-    except ValueError:
-        return False
-    return True
-
-
 def parse_upstream_notify_command() -> tuple[str, ...]:
     override = os.getenv("CODEX_AI_DESK_PHONE_UPSTREAM_NOTIFY", "").strip()
     if override:
@@ -48,6 +40,7 @@ def run_command(
     command: Sequence[str],
     stdin_payload: str,
     *,
+    env: dict[str, str] | None = None,
     timeout: float = 8.0,
 ) -> None:
     if not command:
@@ -59,6 +52,7 @@ def run_command(
             text=True,
             timeout=timeout,
             check=False,
+            env=env,
         )
     except Exception as exc:
         print(f"[ai-desk-phone] notify step skipped: {exc}", file=sys.stderr)
@@ -72,12 +66,8 @@ def run_notifications(
     upstream_command: Sequence[str] | None = None,
     python_executable: str | None = None,
 ) -> int:
-    current_dir = Path(cwd or os.getcwd()).resolve()
     upstream = tuple(upstream_command) if upstream_command is not None else parse_upstream_notify_command()
     run_command(runner, upstream, stdin_payload)
-
-    if not path_is_inside(current_dir, REPO_ROOT):
-        return 0
 
     hook_script = REPO_ROOT / "tools" / "codex_operator_hook.py"
     if not hook_script.exists():
@@ -85,7 +75,9 @@ def run_notifications(
         return 0
 
     python = python_executable or sys.executable
-    run_command(runner, (python, "-X", "utf8", str(hook_script), DEFAULT_MESSAGE), stdin_payload)
+    hook_env = os.environ.copy()
+    hook_env["AI_DESK_PHONE_NOTIFY_CWD"] = str(cwd or Path.cwd())
+    run_command(runner, (python, "-X", "utf8", str(hook_script), DEFAULT_MESSAGE), stdin_payload, env=hook_env)
     return 0
 
 
