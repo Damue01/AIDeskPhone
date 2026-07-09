@@ -126,10 +126,29 @@ class FakeOperatorSpeech:
 
 
 class FakePhoneAgentSpeech:
-    def format_phone_agent_reply(self, text: str, *, source: str = "voice") -> dict[str, object]:
+    def __init__(self, reply: str = "收到，我来处理。您稍等。") -> None:
+        self.reply = reply
+        self.calls: list[dict[str, str]] = []
+
+    def format_phone_agent_reply(
+        self,
+        text: str,
+        *,
+        source: str = "voice",
+        skill_context: str = "",
+        fallback_text: str = "",
+    ) -> dict[str, object]:
+        self.calls.append(
+            {
+                "text": text,
+                "source": source,
+                "skill_context": skill_context,
+                "fallback_text": fallback_text,
+            }
+        )
         return {
             "success": True,
-            "text": "收到，我来处理。您稍等。",
+            "text": self.reply,
             "source": source,
             "raw_text": text,
             "inference_latency": 0.1,
@@ -289,16 +308,35 @@ class AgentHangupFlowTest(unittest.TestCase):
 
     def test_non_tool_voice_turn_uses_phone_agent_role_model_when_available(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
-        app.speech = FakePhoneAgentSpeech()  # type: ignore[assignment]
+        speech = FakePhoneAgentSpeech("收到，我来处理。您稍等。")
+        app.speech = speech  # type: ignore[assignment]
         app.last_state = "PRESSED"
         app.voice_session_id = 5
 
         app.handle_voice_reply_text("帮我整理一下文件", "direct", 5)
 
         self.assertEqual(app.reply_queue[0].text, "收到，我来处理。您稍等。")
+        self.assertEqual(speech.calls[0]["skill_context"], "")
+        self.assertEqual(speech.calls[0]["fallback_text"], "我在，您说。")
         logs = "\n".join(app.action_logs)
         self.assertIn("通讯员角色回复生成完成", logs)
         self.assertIn("回话内容：收到，我来处理。您稍等。", logs)
+
+    def test_tool_voice_turn_still_uses_phone_agent_role_model_after_execution(self) -> None:
+        app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
+        speech = FakePhoneAgentSpeech("好了，已经定位到北京。")
+        app.speech = speech  # type: ignore[assignment]
+        app.last_state = "PRESSED"
+        app.voice_session_id = 6
+
+        app.handle_voice_reply_text("定位北京", "direct", 6)
+
+        self.assertEqual(app.reply_queue[0].text, "好了，已经定位到北京。")
+        self.assertIn("已定位北京", speech.calls[0]["skill_context"])
+        self.assertEqual(speech.calls[0]["fallback_text"], "已定位北京。")
+        logs = "\n".join(app.action_logs)
+        self.assertIn("命令执行结果：已定位北京", logs)
+        self.assertIn("回话内容：好了，已经定位到北京。", logs)
 
     def test_voice_stop_uses_streaming_asr_result_before_file_fallback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))

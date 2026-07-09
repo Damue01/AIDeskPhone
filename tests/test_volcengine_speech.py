@@ -195,13 +195,22 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
     def test_phone_agent_reply_payload_uses_style_prompt_not_fixed_reply(self) -> None:
         config = make_config(operator_model="doubao-seed-character-260628")
 
-        payload = build_phone_agent_reply_payload(config, "帮我整理一下文件", source="voice-asr")
+        payload = build_phone_agent_reply_payload(
+            config,
+            "定位北京",
+            source="voice-asr",
+            skill_context="focus_city：成功，已定位北京",
+            fallback_text="已定位北京。",
+        )
 
         self.assertEqual(payload["model"], "doubao-seed-character-260628")
         self.assertEqual(payload["messages"][0]["content"], DEFAULT_PHONE_AGENT_SYSTEM_PROMPT)
         self.assertIn("小叶", payload["messages"][0]["content"])
         self.assertIn("不要固定套话", payload["messages"][0]["content"])
-        self.assertIn("帮我整理一下文件", payload["messages"][1]["content"])
+        self.assertIn("可用技能：command_center.earth", payload["messages"][1]["content"])
+        self.assertIn("focus_city：成功，已定位北京", payload["messages"][1]["content"])
+        self.assertIn("已定位北京。", payload["messages"][1]["content"])
+        self.assertIn("定位北京", payload["messages"][1]["content"])
         self.assertNotIn("收到首长", payload["messages"][0]["content"])
         self.assertLessEqual(payload["max_tokens"], 220)
 

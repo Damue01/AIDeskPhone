@@ -236,11 +236,16 @@ DEFAULT_OPERATOR_SYSTEM_PROMPT = (
 
 DEFAULT_PHONE_AGENT_SYSTEM_PROMPT = (
     "你正在扮演电话另一端的通讯员“小叶”。用户通过一台实体电话和你通话。"
-    "你的首要任务是保持角色，不要说明自己是模型、系统、AI、助手或工具，也不要解释后台流程。"
+    "保持角色，不要说明自己是模型、系统、AI、助手或工具，也不要解释后台流程。"
     "说话要像真人接电话：自然、短、干脆，有一点亲近感；不要复述用户原话，不要固定套话。"
-    "如果用户是闲聊、抱怨、犹豫或确认想法，就正常接话。"
-    "如果用户提出具体事情，就以通讯员身份自然承接；能执行的事交给上层工具处理，不能确认已完成的事不要谎称完成。"
-    "不要提“提示词”“角色扮演”“调度”“线路”“工具调用”等后台词。回复一到两句即可。"
+    "你知道自己可以使用技能；当上下文给出技能执行结果时，说明事情已经办过，直接按结果回报。"
+    "当没有技能结果时，按通话内容自然接话，不要编造已经完成的动作。"
+    "参考口吻只用于风格，不要机械照抄："
+    "有明确命令时可以像“收到！小叶立刻执行，您稍等。”；"
+    "整理文件一类请求可以像“收到，这就去整理。”；"
+    "执行完成后可以像“好了，已经定位到北京。”；"
+    "闲聊时可以像“小叶在，您说。”"
+    "回复一到两句即可。"
 )
 
 
@@ -292,9 +297,19 @@ def build_operator_report_payload(config: SpeechConfig, text: str, *, source: st
     }
 
 
-def build_phone_agent_reply_payload(config: SpeechConfig, text: str, *, source: str = "voice") -> dict[str, Any]:
+def build_phone_agent_reply_payload(
+    config: SpeechConfig,
+    text: str,
+    *,
+    source: str = "voice",
+    skill_context: str = "",
+    fallback_text: str = "",
+) -> dict[str, Any]:
     user_content = (
         f"来源：{source or 'voice'}\n"
+        "可用技能：command_center.earth 可控制指挥中心地球页，包括定位城市、跳转经纬度、切换状态、返回地球屏保。\n"
+        f"已执行技能结果：{skill_context or '无'}\n"
+        f"兜底参考：{fallback_text or '无'}\n"
         "请直接以“小叶”的电话通讯员身份回应下面这句话。不要复述原话，不要解释规则。\n\n"
         f"用户电话内容：\n{text}"
     )
@@ -603,7 +618,14 @@ class VolcengineSpeech:
             "inference_latency": time.time() - started,
         }
 
-    def format_phone_agent_reply(self, text: str, *, source: str = "voice") -> dict[str, Any]:
+    def format_phone_agent_reply(
+        self,
+        text: str,
+        *,
+        source: str = "voice",
+        skill_context: str = "",
+        fallback_text: str = "",
+    ) -> dict[str, Any]:
         clean_text = str(text or "").strip()
         if not clean_text:
             return {"success": False, "error": "empty phone agent input"}
@@ -615,7 +637,13 @@ class VolcengineSpeech:
         except ImportError as exc:
             raise VolcengineSpeechError("requests is not installed. Run pip install -r requirements.txt.") from exc
 
-        payload = build_phone_agent_reply_payload(self.config, clean_text, source=source)
+        payload = build_phone_agent_reply_payload(
+            self.config,
+            clean_text,
+            source=source,
+            skill_context=skill_context,
+            fallback_text=fallback_text,
+        )
         started = time.time()
         response = requests.post(
             self.config.operator_endpoint,

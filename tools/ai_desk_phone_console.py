@@ -1500,9 +1500,14 @@ class AppState:
 
         result_payload = result.to_dict()
         final_text = str(result.final_text or "")
-        if not result.tool_calls:
-            final_text = self.prepare_phone_agent_reply_text(source, clean_text, final_text)
-            result_payload["final_text"] = final_text
+        skill_context = self.format_agent_skill_context(result)
+        final_text = self.prepare_phone_agent_reply_text(
+            source,
+            clean_text,
+            final_text,
+            skill_context=skill_context,
+        )
+        result_payload["final_text"] = final_text
         for tool_result in result.tool_results:
             if tool_result.event:
                 self.publish(tool_result.event)
@@ -1691,7 +1696,14 @@ class AppState:
         self.add_action_log(f"通讯员润色不可用，回退原文：{error}")
         return clean_text
 
-    def prepare_phone_agent_reply_text(self, source: str, text: str, fallback: str) -> str:
+    def prepare_phone_agent_reply_text(
+        self,
+        source: str,
+        text: str,
+        fallback: str,
+        *,
+        skill_context: str = "",
+    ) -> str:
         clean_text = compact_hook_text(text)
         fallback_text = compact_hook_text(fallback) or "我在，您说。"
         if not clean_text or self.speech is None:
@@ -1700,6 +1712,13 @@ class AppState:
         if not callable(format_reply):
             return fallback_text
         try:
+            result = format_reply(
+                clean_text,
+                source=source,
+                skill_context=skill_context,
+                fallback_text=fallback_text,
+            )
+        except TypeError:
             result = format_reply(clean_text, source=source)
         except Exception as exc:
             self.add_action_log(f"通讯员角色回复生成失败，使用兜底：{exc}")
@@ -1713,6 +1732,15 @@ class AppState:
         error = result.get("error") if isinstance(result, dict) else "unknown"
         self.add_action_log(f"通讯员角色回复不可用，使用兜底：{error}")
         return fallback_text
+
+    def format_agent_skill_context(self, result: Any) -> str:
+        rows: list[str] = []
+        for tool_result in getattr(result, "tool_results", []) or []:
+            status = "成功" if getattr(tool_result, "ok", False) else "失败"
+            name = str(getattr(tool_result, "name", "") or "")
+            message = str(getattr(tool_result, "message", "") or "")
+            rows.append(f"{name}：{status}，{message}")
+        return "；".join(rows)
 
     def clear_reply_queue(self, reason: str = "manual") -> None:
         self.stop_reply_playback(f"{reason} 清空回话队列", wait_seconds=0.8)
