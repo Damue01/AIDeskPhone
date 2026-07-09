@@ -221,10 +221,9 @@ GET http://127.0.0.1:8765/api/replies
 ```
 
 它会先调用 Codex 原来的 `codex-computer-use.exe turn-ended` 通知，再在当前工作目录属于
-`AiLandLine` 仓库时调用 `tools/codex_operator_hook.py`。这样 Codex 桌面端结束一轮任务时，
-即使没有手动进入 `/hooks` 信任 repo-local Stop hook，也会触发本地电话回拨；其他项目不会误触发电话。
-本机全局配置改在 `C:\Users\Damue\.codex\config.toml`，原配置备份为
-`C:\Users\Damue\.codex\config.toml.ai_desk_phone_hook_backup_20260709`。
+`AIDeskPhone` 仓库时调用 `tools/codex_operator_hook.py`。这样 Codex 桌面端结束一轮任务时，
+即使没有手动进入 `/hooks` 信任 repo-local Stop hook，也能触发本地电话回拨；其他项目不会误触发电话。
+如果原始通知程序不在 `PATH` 中，可以通过 `CODEX_AI_DESK_PHONE_UPSTREAM_NOTIFY` 指定完整命令。
 
 ## 可选环境变量
 

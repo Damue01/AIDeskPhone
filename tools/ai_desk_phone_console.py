@@ -2008,7 +2008,7 @@ class AppState:
         self.add_action_log(f"收到命令：{compact_log_text(clean_text)}")
         self.publish_agent_status()
 
-        context = AgentContext(permission_profile=self.config.agent_permission_profile, source=source)
+        context = AgentContext(permission_profile=self.config.agent_permission_profile, source=source, cwd=str(ROOT))
         model_agent = getattr(self.speech, "run_phone_agent_turn", None) if self.speech is not None else None
         if callable(model_agent):
             try:

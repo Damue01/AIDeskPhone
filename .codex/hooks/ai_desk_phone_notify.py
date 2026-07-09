@@ -11,7 +11,7 @@ from typing import Callable, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_MESSAGE = "Codex 当前任务已完成，请查看对话结果。"
 DEFAULT_UPSTREAM_NOTIFY_COMMAND = (
-    r"C:\Users\Damue\AppData\Local\OpenAI\Codex\runtimes\cua_node\1b23c930bdf84ed6\bin\node_modules\@oai\sky\bin\windows\codex-computer-use.exe",
+    "codex-computer-use.exe",
     "turn-ended",
 )
 
