@@ -198,7 +198,22 @@ Wi-Fi 发射功率: 40
 命令 UDP 端口: 8767
 ```
 
-`40` 表示约 `10 dBm`。这次 Wi-Fi 稳定连接的关键之一就是把发射功率从高功率降到 `40`。
+`40` 表示约 `10 dBm`。当前稳定方案保留这个发射功率。
+
+2026-07-09 复测确认的稳定连接方法：
+
+```text
+保留扫描: scanForConfiguredWifi()
+扫描用途: 只做诊断日志，记录 SSID/BSSID/channel/RSSI
+实际连接: WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD)
+不要使用: WiFi.begin(..., lastTargetChannel, lastTargetBssid, true)
+```
+
+本轮串口实测中，固定 BSSID/channel 连接会反复在认证阶段失败，典型日志是
+`wifi_disconnect_reason=2`，含义是 authentication expired。改回 SSID-only
+连接后，同一块 ESP32-C3 能拿到 `192.168.71.11`，并持续向电脑端 `8766`
+上报真实设备样本。扫描选中的 AP 曾观察到 BSSID `38:F1:8F:58:9B:BE`、
+channel `3`、RSSI 约 `-45` 到 `-57 dBm`，这些值只作为排查参考，不写死。
 
 固件配置文件：
 

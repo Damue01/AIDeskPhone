@@ -245,9 +245,11 @@ DEFAULT_OPERATOR_SYSTEM_PROMPT = (
 DEFAULT_PHONE_AGENT_SYSTEM_PROMPT = (
     "你就是电话另一端的通讯员“小叶”，用户是电话另一端的首长，通过一台实体电话和你通话。"
     "你的首要任务是稳定保持这个人设：不要说明自己是模型、系统、AI、助手、Agent、工具或 skill，也不要解释后台流程。"
+    "用户是首长，这是你和用户之间的生活背景；是否使用这个称谓由当前对话自然决定。"
     "说话要像真人接电话：自然、短、干脆，有一点亲近感；默认称呼用户为“首长”，但不要每句话机械重复；不要复述用户原话，不要固定套话。"
     "你知道自己能办理一些事情；当上下文给出已经办完或没办成的事项时，把它当成你自己刚处理完的结果，用角色口吻直接回报。"
     "当上下文显示“已经办完或没办成的事项：无”时，绝对不要声称已经定位、已经打开、已经查询或已经执行；如果用户是在要求执行，就简短应下或追问缺失信息。"
+    "涉及地球页定位、地图切换、经纬度跳转、状态切换或返回地球屏保时，必须先通过工具完成或拿到上下文里的办理结果，再说已经完成。"
     "不要说“根据结果”“调用了技能”“执行接口”“已接入”“开始调度”“我识别到”这类出戏表达。"
     "当没有已办理事项时，按通话内容自然接话；能办就应下并去办，不能办也正常聊天式回应，不要讲能力限制清单。"
     "参考口吻只用于风格，不要机械照抄："
@@ -320,8 +322,9 @@ def build_phone_agent_reply_payload(
         "小叶当前能办理的事：控制指挥中心地球页；查询天气和打开浏览器搜索；读取、查找、列出、搜索当前项目文件；打开白名单程序；执行显式安全命令。\n"
         f"最近通话历史（旧到新，没有则写无）：\n{conversation_context or '无'}\n"
         f"已经办完或没办成的事项：{skill_context or '无'}\n"
-        "请直接以“小叶”的电话通讯员身份回应下面这句话。执行类也必须走角色对话，不要复述原话，不要解释规则。"
         "如果已经办完或没办成的事项是“无”，不要假装已经完成任何动作。\n\n"
+        "如果用户要求定位城市、切换地图、跳转坐标、返回地球或切换状态，必须先通过可用工具执行；没有工具结果前不要说已经完成或正在执行。\n"
+        "请直接以“小叶”的电话通讯员身份回应下面这句话。执行类也必须走角色对话，不要复述原话，不要解释规则。\n\n"
         f"用户电话内容：\n{text}"
     )
     return {
@@ -379,6 +382,34 @@ def compact_json(value: Any, limit: int = 500) -> str:
     except TypeError:
         text = str(value)
     return text[:limit]
+
+
+def tts_stream_error(payload: Any) -> str | None:
+    if not isinstance(payload, dict):
+        return None
+    code = payload.get("code")
+    if code is None:
+        code = payload.get("Code")
+    if code is None:
+        return None
+    code_text = str(code).strip()
+    if code_text in {"", "0", "20000000"}:
+        return None
+
+    message = (
+        payload.get("message")
+        or payload.get("msg")
+        or payload.get("Message")
+        or payload.get("error")
+        or payload.get("error_msg")
+    )
+    if isinstance(message, (dict, list)):
+        message_text = compact_json(message, 300)
+    elif message is None:
+        message_text = compact_json(payload, 300)
+    else:
+        message_text = str(message)
+    return f"Doubao TTS stream error {code_text}: {message_text}"
 
 
 def auth_headers(config: SpeechConfig) -> dict[str, str]:
@@ -682,6 +713,149 @@ class VolcengineSpeech:
             "inference_latency": time.time() - started,
         }
 
+    def run_phone_agent_turn(
+        self,
+        text: str,
+        *,
+        source: str = "voice",
+        tools: list[dict[str, Any]] | None = None,
+        execute_tool: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+        max_steps: int = 4,
+    ) -> dict[str, Any]:
+        clean_text = str(text or "").strip()
+        if not clean_text:
+            return {"success": False, "error": "empty phone agent input"}
+        if not self.is_operator_ready():
+            return {"success": False, "error": "phone agent role model is not configured. Fill ARK_API_KEY in .env."}
+        if tools and execute_tool is None:
+            return {"success": False, "error": "execute_tool callback is required when tools are provided"}
+
+        try:
+            import requests
+        except ImportError as exc:
+            raise VolcengineSpeechError("requests is not installed. Run pip install -r requirements.txt.") from exc
+
+        tool_specs = tools or []
+        tool_lookup: dict[str, dict[str, Any]] = {}
+        payload_tools: list[dict[str, Any]] = []
+        for spec in tool_specs:
+            function = spec.get("function") if isinstance(spec, dict) else None
+            if not isinstance(function, dict):
+                continue
+            function_name = str(function.get("name") or "").strip()
+            if not function_name:
+                continue
+            tool_lookup[function_name] = spec
+            payload_tools.append({"type": "function", "function": function})
+
+        base_payload = build_phone_agent_reply_payload(self.config, clean_text, source=source)
+        messages: list[dict[str, Any]] = list(base_payload["messages"])
+        tool_calls: list[dict[str, Any]] = []
+        tool_results: list[dict[str, Any]] = []
+        started = time.time()
+
+        for _step in range(max(1, max_steps)):
+            payload = {
+                **base_payload,
+                "messages": messages,
+            }
+            if payload_tools:
+                payload["tools"] = payload_tools
+                payload["tool_choice"] = "auto"
+
+            response = requests.post(
+                self.config.operator_endpoint,
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.config.operator_api_key}",
+                },
+                data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                timeout=30,
+            )
+            try:
+                body = response.json()
+            except ValueError as exc:
+                raise VolcengineSpeechError(f"Phone agent model returned non-JSON HTTP {response.status_code}.") from exc
+            if response.status_code >= 400:
+                return {"success": False, "error": f"HTTP {response.status_code}: {compact_json(body, 500)}", "raw": body}
+
+            choices = body.get("choices") if isinstance(body, dict) else None
+            message: dict[str, Any] = {}
+            if isinstance(choices, list) and choices:
+                first = choices[0]
+                if isinstance(first, dict) and isinstance(first.get("message"), dict):
+                    message = dict(first["message"])
+
+            raw_tool_calls = message.get("tool_calls")
+            if not isinstance(raw_tool_calls, list) or not raw_tool_calls:
+                final_text = extract_chat_completion_text(body).strip()
+                return {
+                    "success": True,
+                    "final_text": final_text,
+                    "raw_text": final_text,
+                    "tool_calls": tool_calls,
+                    "tool_results": tool_results,
+                    "model": self.config.operator_model,
+                    "inference_latency": time.time() - started,
+                }
+
+            assistant_message: dict[str, Any] = {
+                "role": "assistant",
+                "content": message.get("content") or "",
+                "tool_calls": raw_tool_calls,
+            }
+            messages.append(assistant_message)
+
+            for raw_call in raw_tool_calls:
+                if not isinstance(raw_call, dict):
+                    continue
+                function = raw_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+                function_name = str(function.get("name") or "").strip()
+                arguments_raw = function.get("arguments") or {}
+                if isinstance(arguments_raw, str):
+                    try:
+                        arguments = json.loads(arguments_raw or "{}")
+                    except json.JSONDecodeError:
+                        arguments = {}
+                elif isinstance(arguments_raw, dict):
+                    arguments = arguments_raw
+                else:
+                    arguments = {}
+                spec = tool_lookup.get(function_name, {})
+                mapped_call = {
+                    "id": str(raw_call.get("id") or f"call-{uuid.uuid4().hex[:12]}"),
+                    "function_name": function_name,
+                    "skill": spec.get("skill") or "",
+                    "name": spec.get("name") or function_name,
+                    "arguments": arguments,
+                }
+                tool_calls.append(mapped_call)
+                assert execute_tool is not None
+                result = execute_tool(mapped_call)
+                if hasattr(result, "to_dict"):
+                    result = result.to_dict()
+                if not isinstance(result, dict):
+                    result = {"ok": False, "message": str(result)}
+                tool_results.append(result)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": mapped_call["id"],
+                        "content": compact_json(result, 2000),
+                    }
+                )
+
+        return {
+            "success": False,
+            "error": "phone agent model did not produce a final response after tool calls",
+            "tool_calls": tool_calls,
+            "tool_results": tool_results,
+            "model": self.config.operator_model,
+            "inference_latency": time.time() - started,
+        }
+
     def synthesize_to_file(
         self,
         text: str,
@@ -824,6 +998,10 @@ class VolcengineSpeech:
             chunk = find_base64_audio(payload)
             if chunk:
                 yield chunk
+                continue
+            error = tts_stream_error(payload)
+            if error:
+                raise VolcengineSpeechError(error)
 
     def synthesize_tts_pcm_chunks(
         self,

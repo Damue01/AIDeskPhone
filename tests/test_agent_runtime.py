@@ -18,6 +18,7 @@ from tools.agent_runtime import (
 
 
 ROLE_LEAK_TERMS = ("Agent", "AI", "人工智能", "模型", "技能", "tool", "JSON")
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class MinimalAgentRuntimeTest(unittest.TestCase):
@@ -132,7 +133,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
     def test_local_file_ls_uses_pi_style_tool(self) -> None:
         result = MinimalAgentLoop(skills=[LocalFileSkill()]).run(
             "ls tools",
-            AgentContext(cwd="E:\\Ai2Work\\AIDeskPhone"),
+            AgentContext(cwd=str(PROJECT_ROOT)),
         )
 
         self.assertEqual(result.tool_calls[0].skill, "local.files")
@@ -144,7 +145,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
     def test_local_file_read_is_limited_to_project_root(self) -> None:
         result = MinimalAgentLoop(skills=[LocalFileSkill()]).run(
             "读取文件 ..\\outside.txt",
-            AgentContext(cwd="E:\\Ai2Work\\AIDeskPhone"),
+            AgentContext(cwd=str(PROJECT_ROOT)),
         )
 
         self.assertEqual(result.tool_calls[0].name, "read")
@@ -154,7 +155,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
     def test_local_file_grep_requires_file_context(self) -> None:
         result = MinimalAgentLoop(skills=[LocalFileSkill()]).run(
             "搜索 PI coding agent",
-            AgentContext(cwd="E:\\Ai2Work\\AIDeskPhone"),
+            AgentContext(cwd=str(PROJECT_ROOT)),
         )
 
         self.assertEqual(result.tool_calls, [])
@@ -162,7 +163,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
     def test_local_file_grep_searches_project_text(self) -> None:
         result = MinimalAgentLoop(skills=[LocalFileSkill()]).run(
             "在代码里搜索 AgentContext",
-            AgentContext(cwd="E:\\Ai2Work\\AIDeskPhone"),
+            AgentContext(cwd=str(PROJECT_ROOT)),
         )
 
         self.assertEqual(result.tool_calls[0].name, "grep")
@@ -173,7 +174,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
     def test_local_file_find_searches_project_paths(self) -> None:
         result = MinimalAgentLoop(skills=[LocalFileSkill()]).run(
             "查找文件 agent_runtime.py",
-            AgentContext(cwd="E:\\Ai2Work\\AIDeskPhone"),
+            AgentContext(cwd=str(PROJECT_ROOT)),
         )
 
         self.assertEqual(result.tool_calls[0].name, "find")
@@ -202,12 +203,12 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         skill = ShellCommandSkill(runner=fake_runner, timeout_seconds=3)
         result = MinimalAgentLoop(skills=[skill]).run(
             "执行命令 echo hello",
-            AgentContext(cwd="E:\\Ai2Work\\AIDeskPhone"),
+            AgentContext(cwd=str(PROJECT_ROOT)),
         )
 
         self.assertEqual(result.tool_calls[0].skill, "system.command")
         self.assertEqual(result.tool_calls[0].arguments["command"], "echo hello")
-        self.assertEqual(calls, [("echo hello", "E:\\Ai2Work\\AIDeskPhone", 3)])
+        self.assertEqual(calls, [("echo hello", str(PROJECT_ROOT), 3)])
         self.assertIn("命令已执行", result.final_text)
         self.assertIn("hello", result.final_text)
 

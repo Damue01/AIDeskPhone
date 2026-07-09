@@ -15,25 +15,31 @@
   "score_trigger": 5,
   "peak_hold_ms": 350,
   "sample_interval_ms": 50,
-  "press_action_text": "ctrl+win+shift, 延迟1000毫秒, enter",
-  "release_action_text": "ctrl+win+shift",
+  "press_action_text": "ctrl+alt+i",
+  "release_action_text": "ctrl+alt+u",
   "input_action_profiles": [
     {
       "id": "default",
-      "name": "默认输入方案",
+      "name": "输入法",
       "press_action_text": "ctrl+win+shift, 延迟1000毫秒, enter",
       "release_action_text": "ctrl+win+shift"
+    },
+    {
+      "id": "profile-mrd1x063",
+      "name": "豆包语音",
+      "press_action_text": "ctrl+alt+i",
+      "release_action_text": "ctrl+alt+u"
     }
   ],
-  "active_input_profile_id": "default",
+  "active_input_profile_id": "profile-mrd1x063",
   "enable_actions": true,
   "enable_callback": true,
   "enable_tts_playback": true,
-  "tts_speech_rate": 0,
+  "tts_speech_rate": 13,
   "tts_loudness_rate": 0,
   "tts_rate": 0,
   "tts_volume": 100,
-  "tts_pitch": 0,
+  "tts_pitch": 2,
   "audio_output_device": "default",
   "enable_voice_asr": true,
   "voice_record_sample_rate": 16000,

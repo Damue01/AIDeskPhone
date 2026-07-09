@@ -146,7 +146,20 @@ ESP32-C3 GND   -> 开关 2 脚
 
 ## ESP32-C3 固件
 
-本地创建 Wi-Fi 凭据文件，不要提交真实 SSID 和密码：
+当前稳定固件基于 pioarduino / Arduino-ESP32 3.3.9，并降低了 Wi-Fi 发射功率：
+
+```text
+WIFI_TX_POWER_QUARTER_DBM = 40
+状态上报 UDP 端口       = 8766
+命令接收 UDP 端口       = 8767
+```
+
+2026-07-09 实测稳定连接方式：固件可以先扫描并记录 SSID/BSSID/channel/RSSI，
+但实际连接必须使用 `WiFi.begin(WIFI_STA_SSID, WIFI_STA_PASSWORD)`，不要锁定
+BSSID/channel。锁定连接在当前路由器上会出现认证超时，SSID-only 能稳定拿到
+`192.168.71.11` 并向电脑端上报真实设备样本。
+
+不要提交真实 Wi-Fi 密码。本地新建这个被忽略的文件即可：
 
 ```cpp
 // firmware/esp32c3_gpio0_21_test/include/wifi_credentials.h
