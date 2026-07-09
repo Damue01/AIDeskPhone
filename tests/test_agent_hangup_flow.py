@@ -332,7 +332,7 @@ class AgentHangupFlowTest(unittest.TestCase):
         app.handle_voice_reply_text("定位北京", "direct", 6)
 
         self.assertEqual(app.reply_queue[0].text, "好了，已经定位到北京。")
-        self.assertIn("已定位北京", speech.calls[0]["skill_context"])
+        self.assertEqual(speech.calls[0]["skill_context"], "已办好：已定位北京")
         self.assertEqual(speech.calls[0]["fallback_text"], "已定位北京。")
         logs = "\n".join(app.action_logs)
         self.assertIn("命令执行结果：已定位北京", logs)

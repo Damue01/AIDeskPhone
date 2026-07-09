@@ -199,7 +199,7 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
             config,
             "定位北京",
             source="voice-asr",
-            skill_context="focus_city：成功，已定位北京",
+            skill_context="已办好：已定位北京",
             fallback_text="已定位北京。",
         )
 
@@ -207,11 +207,15 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["content"], DEFAULT_PHONE_AGENT_SYSTEM_PROMPT)
         self.assertIn("小叶", payload["messages"][0]["content"])
         self.assertIn("不要固定套话", payload["messages"][0]["content"])
-        self.assertIn("可用技能：command_center.earth", payload["messages"][1]["content"])
-        self.assertIn("focus_city：成功，已定位北京", payload["messages"][1]["content"])
+        self.assertIn("执行类也必须走角色对话", payload["messages"][1]["content"])
+        self.assertIn("小叶当前能办理的事", payload["messages"][1]["content"])
+        self.assertIn("已办好：已定位北京", payload["messages"][1]["content"])
         self.assertIn("已定位北京。", payload["messages"][1]["content"])
         self.assertIn("定位北京", payload["messages"][1]["content"])
         self.assertNotIn("收到首长", payload["messages"][0]["content"])
+        self.assertNotIn("可用技能：command_center.earth", payload["messages"][1]["content"])
+        self.assertNotIn("已执行技能结果", payload["messages"][1]["content"])
+        self.assertNotIn("兜底参考", payload["messages"][1]["content"])
         self.assertLessEqual(payload["max_tokens"], 220)
 
     def test_extract_chat_completion_text_accepts_openai_shape(self) -> None:

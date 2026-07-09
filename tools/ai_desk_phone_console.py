@@ -1736,10 +1736,9 @@ class AppState:
     def format_agent_skill_context(self, result: Any) -> str:
         rows: list[str] = []
         for tool_result in getattr(result, "tool_results", []) or []:
-            status = "成功" if getattr(tool_result, "ok", False) else "失败"
-            name = str(getattr(tool_result, "name", "") or "")
+            status = "已办好" if getattr(tool_result, "ok", False) else "没办成"
             message = str(getattr(tool_result, "message", "") or "")
-            rows.append(f"{name}：{status}，{message}")
+            rows.append(f"{status}：{message}")
         return "；".join(rows)
 
     def clear_reply_queue(self, reason: str = "manual") -> None:
