@@ -1,63 +1,128 @@
 # AI Desk Phone
 
-这是一个基于 HG113 共电电话外壳改造的 AI 桌面电话项目。
+AI Desk Phone 是一套把 HG113 共电电话外壳改造成本地 AI 桌面电话的项目。
 
-当前主线不再是早期“只做 BLE 快捷键”的原型，而是以 HG113 为目标：
-ESP32-C3 负责读取摘挂机开关、通过 Wi-Fi 发送轻量状态数据，并接收电脑端
-命令来驱动蜂鸣器和 LED。网页、波形、动作配置、接线员模式提醒，以及后续
-豆包语音能力都放在电脑端处理。
+仓库已经提供电脑端控制台、最小 Agent runtime、地球指挥中心页面、ESP32-C3 固件、语音 ASR/TTS 接入和调试工具。真实电话外壳、听筒音频、蜂鸣器、LED、供电和内部走线仍然需要你按自己的硬件实物改造；本项目不会直接把一台普通座机变成成品电话，也不接入电话外线。
 
-## 当前主线资料
+## 当前能做什么
 
-- [HG113 产品方案](docs/HG113_PRODUCT_PLAN.md)
-- [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md)
-- [硬件参考资料](docs/electronics/README.md)
-- [Codex 接线员 hook 配置](docs/CODEX_OPERATOR_HOOK.md)
-- [控制指挥中心页面与 Agent 接口](web/variant-earth-command-center/README.md)
-- [2026-07-08 工作区更新汇总](docs/WORKSPACE_UPDATE_2026-07-08.md)
+- 没有 ESP32 时，可以用本地模拟发送端和网页模拟页完整跑通摘机、挂机、回拨和 Agent 流程。
+- 有 ESP32-C3 时，固件读取摘挂机开关，通过 Wi-Fi UDP 上报状态，并接收电脑端命令驱动蜂鸣器和 LED。
+- 有手柄音频模块时，听筒可以作为 Windows 的麦克风和扬声器，由电脑端完成 ASR、TTS 和 Agent 处理。
+- Agent 模式下，用户拿起听筒说话，ASR 实时识别；停顿或挂机后提交一轮；后台继续处理、调用工具、生成回话；任务完成后通过蜂鸣器和 LED 回拨提醒。
+- Agent runtime 使用 PI 风格的会话结构：`system`、`developer`、`user`、`assistant`、`toolCall`、`toolResult`、session 文件、自动压缩和技能加载。
+- 目前只加载项目本地 `.pi/skills`。默认技能是 `command-center-earth`，用于指导 Agent 操作地球/地图页面。
 
-旧电话信号和早期 BLE HID 方案保留在 `legacy/phone-signal` 分支。
+## 从 0 开始跑起来
 
-## 系统结构
+先只跑电脑端，不接硬件：
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\Start_AI_Desk_Phone.bat
+```
+
+启动后打开：
+
+```text
+http://127.0.0.1:8765/
+http://127.0.0.1:8765/command-center/
+http://127.0.0.1:8765/simulator
+```
+
+第一个页面是后台控制台，用来配置、看日志、维护 Agent session 和测试硬件动作。第二个页面是地球指挥中心。第三个页面可以模拟电话按下/抬起、模拟回拨和测试 hook。
+
+也可以直接给 Agent 提交一轮文字：
+
+```powershell
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:8765/api/agent/turn `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body '{"source":"manual","text":"首长让地图定位到上海","reply_behavior":"direct"}'
+```
+
+## 密钥配置
+
+复制 `.env.example` 为 `.env`，只在本机填写真实密钥，不提交 `.env`。
+
+```text
+VOLCENGINE_API_KEY=        # 豆包 / 火山引擎 ASR 和 TTS
+ARK_API_KEY=               # 思考模型、通讯员回话润色、Agent 角色回复
+```
+
+这两类 key 可以不同。ASR/TTS 能用的 key，不一定能调用 Ark Chat Completions；后台页面也按这个边界分开维护。
+
+## 两种交互模式
+
+**输入法模式**
+
+电话只负责触发第三方软件的语音输入、回车或快捷键。Codex 或其他 AI 完成任务后，可以调用本地 hook，把完成内容加入电话回拨队列。
+
+**Agent 模式**
+
+电话本身就是服务终端。摘机开始录音；停顿或挂机提交本轮语音；后台继续 ASR、工具调用和回复生成。挂机只关闭麦克风和听筒，不取消已经提交的后台任务。任务完成后，电话进入回拨；接听后播报结果。Agent 播报中挂机会暂停当前回报并重新进入回拨，用户再抬起听筒后继续听。
+
+更细的行为契约见 [交互目标](docs/INTERACTION_TARGETS.md)。
+
+## 项目模块
+
+| 路径 | 作用 |
+| --- | --- |
+| `Start_AI_Desk_Phone.bat` | 一键启动本地控制台、模拟端和指挥中心页面。 |
+| `Connect_Real_Device.bat` | 连接真实硬件时使用的辅助启动脚本。 |
+| `tools/ai_desk_phone_console.py` | 本地后端和网页控制台，端口默认 `8765`。管理配置、事件流、录音、回拨、Agent session 和硬件命令。 |
+| `tools/agent_runtime.py` | 最小 PI 风格 Agent runtime，包含会话、消息、工具调用、自动压缩、本地技能加载和工具执行。 |
+| `tools/volcengine_speech.py` | 豆包 / 火山引擎 ASR、TTS、Ark 角色模型调用。 |
+| `tools/audio_recorder.py` | Windows 麦克风录音与音频块采集。 |
+| `tools/codex_operator_hook.py` | Codex 任务完成后调用的本地 hook 客户端。 |
+| `.codex/hooks/` | 仓库本地 Codex hook 配置。 |
+| `.pi/skills/command-center-earth/SKILL.md` | 本项目唯一默认加载的本地技能，说明地球/地图如何被 Agent 操作。 |
+| `web/variant-earth-command-center/` | 地球屏保和真实地图指挥中心页面。 |
+| `firmware/esp32c3_gpio0_21_test/` | 当前主线 ESP32-C3 固件，负责 GPIO 输入、Wi-Fi 状态上报、蜂鸣器和 LED 命令。 |
+| `firmware/esp32c3_wifi_minimal_test/` | Wi-Fi 排查用最小工程。 |
+| `firmware/esp32c3_wifi_pioarduino_test/` | pioarduino Wi-Fi 排查工程。 |
+| `docs/` | 制作、接线、交互、Hook 和硬件资料。 |
+| `data/agent_sessions/` | 运行时生成的 Agent session JSONL。 |
+| `config/ai_desk_phone_console.json` | 本机运行配置。这里会记录你的调试状态，不建议随手提交。 |
+
+## Agent 的基础能力
+
+当前 Agent runtime 保持最小可用，不额外加载全局 PI skills，也不加载用户目录里的 `.agents`。它只从当前项目向上查找 `.pi/skills`。
+
+内置工具面向这些基础能力：
+
+- 地球/地图：返回首页、定位城市、跳转经纬度、切换阶段。
+- 信息查询：天气摘要、浏览器搜索、打开 URL。
+- 项目只读文件：`read`、`grep`、`find`、`ls`，只允许读项目内文件。
+- 本地程序：启动 allowlist 中的应用。
+- 命令执行：只执行用户明确要求的命令，带危险模式拦截、超时和输出截断。
+
+后台页面的 Agent 维护区可以查看 system/developer prompt、当前 session、最近消息、已加载 skills、可用 tools、自动压缩摘要，也可以新建或删除当前 session。
+
+## 硬件路线
+
+控制链路：
 
 ```text
 HG113 摘挂机开关
   -> ESP32-C3 GPIO0
   -> Wi-Fi UDP 状态上报
-  -> 电脑端 Agent 页面 http://localhost:8765/command-center/
-
-电脑端控制台 / AI hook
-  -> UDP 或 USB 串口命令
-  -> ESP32-C3
-  -> GPIO21 蜂鸣器、GPIO20 LED
-
-手柄音频
-  -> 蓝牙耳机音频模块
-  -> 电脑音频输入/输出
+  -> 电脑端控制台
+  -> ESP32-C3 GPIO21 蜂鸣器 / GPIO20 LED
 ```
 
-ESP32-C3 不负责承载网页。它只发送状态数据，并执行蜂鸣器、LED 等硬件命令。
+音频链路：
 
-## 已实现内容
+```text
+HG113 听筒麦克风和喇叭
+  -> RJ9/R9/4P4C 听筒线
+  -> CSR8645 或其他蓝牙音频模块
+  -> Windows 麦克风 / 扬声器
+```
 
-- 本地网页控制台：状态显示、GPIO 波形、GPIO 配置、蜂鸣器测试、LED 测试、方案切换。
-- Agent 待命页：`Start_AI_Desk_Phone.bat` 默认同时打开配置页 `http://127.0.0.1:8765/` 和 `http://127.0.0.1:8765/command-center/`，后者用于展示地球屏保和当前 Agent 阶段。
-- 摘挂机判定方案可切换：
-  - 方案 1：`HIGH = 按下`，`LOW = 抬起`。
-  - 方案 2：`LOW = 按下`，`HIGH = 抬起`。
-- Codex 或其他 AI 工具完成任务后可以调用：
-  - `POST http://127.0.0.1:8765/api/ai/hook`
-  - `POST http://127.0.0.1:8765/hook`
-- 接线员模式提醒逻辑：任务完成后蜂鸣器和 LED 同步 `1 秒响/亮 -> 4 秒停/灭` 循环；摘机后停止。
-- 约 90 秒无人接听后，普通响铃停止并切换为忙音节奏。
-- 回话队列：hook 文本或手动回话会进入队列，Codex hook 可先经 Ark 角色模型润色成通讯员回报；角色回复需要配置 `ARK_API_KEY`，摘机后播放；AI 播报中挂机会立即停止当前播报。
-- 默认只使用 Wi-Fi UDP / 模拟链路，不扫描 USB 串口；需要串口调试时，在配置页“调试与校准”打开“串口调试”。
-- 配置页“调试与校准 -> 维护”提供固件烧录按钮，烧录前会先释放串口调试连接。
-- 豆包 / 火山引擎语音链路：支持 TTS 2.0 流式回话播放、BigASR 流式识别、摘机录音和本地模拟页调试；用户说完后挂机会提交后台处理，完成后进入 Agent loop，再电话回拨。
-- 最小 Agent loop：`tools/agent_runtime.py` 已接入 `command_center.earth` skill，可把语音或 `POST /api/agent/turn` 文本转换成地球页面的城市定位、经纬度跳转、返回地球屏保等 tool call。
-- 控制指挥中心地球页：`web/variant-earth-command-center/index.html` 已融合 Three.js 地球和 MapLibre 卫星地图，支持城市级缩放探索。外部 AI 可通过页面桥接接口直接切换状态、跳转城市或经纬度位置。
-
-## 当前硬件默认引脚
+默认引脚：
 
 ```text
 GPIO0  = 摘挂机开关输入
@@ -65,26 +130,18 @@ GPIO21 = 蜂鸣器输出
 GPIO20 = LED 输出
 ```
 
-目前已经测通的 HG113 六脚簧片开关接法：
+已经测通的一种 HG113 六脚簧片开关接法：
 
 ```text
 ESP32-C3 GPIO0 -> 开关 6 脚
 ESP32-C3 GND   -> 开关 2 脚
 ```
 
-改线前先看 [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md)。
+不同电话批次、线序和改造方式可能不同。改线前先看 [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md) 和 [制作与维护手册](docs/BUILD_MANUAL.md)，用万用表确认，不要凭颜色直接接线。电话外线不要接入。
 
-## Wi-Fi 说明
+## ESP32-C3 固件
 
-当前稳定固件基于 pioarduino / Arduino-ESP32 3.3.9，并降低了 Wi-Fi 发射功率：
-
-```text
-WIFI_TX_POWER_QUARTER_DBM = 40
-状态上报 UDP 端口       = 8766
-命令接收 UDP 端口       = 8767
-```
-
-不要提交真实 Wi-Fi 密码。本地新建这个被忽略的文件即可：
+本地创建 Wi-Fi 凭据文件，不要提交真实 SSID 和密码：
 
 ```cpp
 // firmware/esp32c3_gpio0_21_test/include/wifi_credentials.h
@@ -94,81 +151,65 @@ WIFI_TX_POWER_QUARTER_DBM = 40
 #define WIFI_STA_PASSWORD "your-wifi-password"
 ```
 
-## 启动控制台
-
-```powershell
-.\Start_AI_Desk_Phone.bat
-```
-
-也可以手动运行：
-
-```powershell
-.\.venv\Scripts\python.exe tools\ai_desk_phone_console.py --port COM5
-```
-
-打开：
-
-```text
-http://localhost:8765/
-```
-
-控制指挥中心默认由脚本自动打开，也可以直接访问：
-
-```text
-http://127.0.0.1:8765/command-center/
-```
-
-## 编译固件
+编译：
 
 ```powershell
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test
 ```
 
-另外两个 Wi-Fi 最小测试工程只作为排查参考保留：
-
-```text
-firmware/esp32c3_wifi_minimal_test/
-firmware/esp32c3_wifi_pioarduino_test/
-```
-
-如果 Windows 终端编码导致新版 esptool 烧录输出崩掉，可以用合并镜像烧录：
+烧录：
 
 ```powershell
-$env:PYTHONIOENCODING='utf-8'
-& "$env:USERPROFILE\.platformio\penv\Scripts\esptool.exe" `
-  --chip esp32c3 `
-  --port COM5 `
-  --baud 115200 `
-  --before default-reset `
-  --after hard-reset `
-  write-flash -z 0x0 `
-  firmware\esp32c3_gpio0_21_test\.pio\build\esp32c3_gpio0_21_test\firmware.factory.bin
+.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test -t upload
 ```
+
+也可以在控制台“调试与校准 -> 维护”里使用固件烧录按钮。默认运行使用 Wi-Fi UDP / 模拟链路；需要串口调试时，在后台页面打开“串口调试”。
+
+## 常用接口
+
+```text
+GET  http://127.0.0.1:8765/events
+GET  http://127.0.0.1:8765/api/agent/status
+POST http://127.0.0.1:8765/api/agent/start
+POST http://127.0.0.1:8765/api/agent/turn
+POST http://127.0.0.1:8765/api/agent/session/new
+POST http://127.0.0.1:8765/api/agent/session/delete
+POST http://127.0.0.1:8765/api/ai/hook
+POST http://127.0.0.1:8765/api/simulate/release
+POST http://127.0.0.1:8765/api/simulate/press
+POST http://127.0.0.1:8765/api/hardware/beep
+```
+
+地球页面桥接 API 见 [控制指挥中心页面](web/variant-earth-command-center/README.md) 和 [API 参考](web/variant-earth-command-center/API.md)。
+
+## 推荐建设顺序
+
+1. 先不接硬件，启动控制台、模拟页和地球页。
+2. 用 `/api/agent/turn` 跑通定位城市、回到地球首页、天气/搜索等基础工具。
+3. 配好 `VOLCENGINE_API_KEY` 和 `ARK_API_KEY`，测试 ASR、TTS 和通讯员回话。
+4. 烧录 ESP32-C3，接 GPIO0 摘挂机输入，确认后台波形和按下/抬起状态。
+5. 接蜂鸣器和 LED，确认回拨提醒节奏。
+6. 接 CSR8645 或其他音频模块，把听筒接成 Windows 麦克风和扬声器。
+7. 根据你的地球页面继续扩展 `.pi/skills`，让 Agent 学会新的本地能力。
 
 ## 验证
 
 ```powershell
-.\.venv\Scripts\python.exe -m py_compile tools\ai_desk_phone_console.py tools\audio_recorder.py tools\volcengine_speech.py
+.\.venv\Scripts\python.exe -m unittest discover tests -v
 .\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test
 ```
 
-## 目录
+如果只是改文档，不一定需要重新跑固件编译；涉及控制台、Agent runtime 或固件时建议都跑。
 
-```text
-README.md
-docs/HG113_PRODUCT_PLAN.md
-docs/HG113_CONNECTION_MANUAL.md
-docs/WORKSPACE_UPDATE_2026-07-08.md
-docs/electronics/
-firmware/esp32c3_gpio0_21_test/
-firmware/esp32c3_wifi_minimal_test/
-firmware/esp32c3_wifi_pioarduino_test/
-tools/ai_desk_phone_console.py
-tools/audio_recorder.py
-tools/volcengine_speech.py
-config/ai_desk_phone_console.json
-web/variant-earth-command-center/
-```
+## 继续阅读
+
+- [制作与维护手册](docs/BUILD_MANUAL.md)
+- [交互目标](docs/INTERACTION_TARGETS.md)
+- [Codex 接线员 hook 配置](docs/CODEX_OPERATOR_HOOK.md)
+- [HG113 产品方案](docs/HG113_PRODUCT_PLAN.md)
+- [HG113 连接方式](docs/HG113_CONNECTION_MANUAL.md)
+- [硬件参考资料](docs/electronics/README.md)
+- [地球指挥中心页面](web/variant-earth-command-center/README.md)
 
 ## 许可证
 
