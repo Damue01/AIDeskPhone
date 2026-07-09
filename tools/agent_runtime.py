@@ -388,36 +388,40 @@ def build_conversation_text(text: str) -> str:
     compact = clean.rstrip("。！？!?")
     lower = compact.lower()
     if not compact:
-        return "首长，线路里没有听清。您再说一遍，我在。"
+        return "我没听清，您再说一遍。"
 
     greetings = ("你好", "喂", "在吗", "早上好", "晚上好", "hello", "hi")
     if any(greeting in lower for greeting in greetings):
-        return "首长，我在。您慢慢说。"
+        return "我在，您说。"
 
     thanks = ("谢谢", "辛苦", "多谢")
     if any(word in compact for word in thanks):
-        return "首长，不辛苦。您继续吩咐。"
+        return "不客气。"
 
     mood_terms = ("累", "烦", "焦虑", "紧张", "困", "压力", "难受", "开心", "高兴")
     if any(word in compact for word in mood_terms):
-        return f"首长，我听着。您刚才说：“{compact}”。这事先别急，我们可以慢慢捋。"
+        return "先缓一缓。我在这儿，您慢慢说。"
+
+    request_terms = ("帮我", "帮忙", "替我", "给我", "整理", "写", "看看", "查一下", "看一下")
+    if any(word in compact for word in request_terms):
+        return "可以。您说要怎么弄，我听着。"
 
     question_marks = ("吗", "呢", "怎么", "为什么", "是不是", "能不能", "?")
     if any(mark in compact for mark in question_marks):
-        return f"首长，我听明白了。关于“{compact}”，我先按通话内容陪您分析，不调度其他线路。"
+        return "可以，我们先聊这个。"
 
-    return f"首长，我听到了：{compact}。这句先按通话处理，不启动额外调度。您继续说。"
+    return "嗯，我在听。您继续说。"
 
 
 def build_final_text(text: str, results: list[AgentToolResult]) -> str:
     successful = [result.message for result in results if result.ok]
     failed = [result.message for result in results if not result.ok]
     if successful and not failed:
-        return "首长，" + "，".join(successful) + "。"
+        return "，".join(successful) + "。"
     if successful and failed:
-        return "首长，" + "，".join(successful) + "；但" + "，".join(failed) + "。"
+        return "，".join(successful) + "；但" + "，".join(failed) + "。"
     if failed:
-        return "首长，命令没有执行成功：" + "，".join(failed) + "。"
+        return "命令没有执行成功：" + "，".join(failed) + "。"
     if text:
         return build_conversation_text(text)
     return build_conversation_text(text)

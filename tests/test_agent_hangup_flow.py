@@ -251,7 +251,7 @@ class AgentHangupFlowTest(unittest.TestCase):
         logs = "\n".join(app.action_logs)
         self.assertIn("电话已挂机：停止录音并提交已收到的语音", logs)
         self.assertIn("收到命令：查一下状态", logs)
-        self.assertIn("回话内容：首长，我听到了：查一下状态。这句先按通话处理，不启动额外调度。您继续说。", logs)
+        self.assertIn("回话内容：可以。您说要怎么弄，我听着。", logs)
 
     def test_agent_voice_turn_publishes_command_center_skill_event(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))
@@ -274,7 +274,7 @@ class AgentHangupFlowTest(unittest.TestCase):
         self.assertIn("北京", app.reply_queue[0].text)
         logs = "\n".join(app.action_logs)
         self.assertIn("收到命令：定位北京", logs)
-        self.assertIn("回话内容：首长，已定位北京。", logs)
+        self.assertIn("回话内容：已定位北京。", logs)
 
     def test_voice_stop_uses_streaming_asr_result_before_file_fallback(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="doubao", enable_callback=False, voice_reply_policy="direct"))

@@ -185,6 +185,8 @@ class VolcengineSpeechSpeakersTest(unittest.TestCase):
         self.assertEqual(payload["messages"][0]["content"], DEFAULT_OPERATOR_SYSTEM_PROMPT)
         self.assertIn("电话通讯员", payload["messages"][0]["content"])
         self.assertIn("不暴露任何后台身份", payload["messages"][0]["content"])
+        self.assertIn("不要固定套用", payload["messages"][0]["content"])
+        self.assertNotIn("用户是首长", payload["messages"][0]["content"])
         self.assertNotIn("AI 任务完成结果", payload["messages"][1]["content"])
         self.assertNotIn("外部 AI", payload["messages"][0]["content"])
 
