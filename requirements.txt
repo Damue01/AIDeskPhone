@@ -1,4 +1,4 @@
-platformio>=6.1,<7
+platformio>=6.1.19,<7
 pyserial>=3.5
 requests>=2.31,<3
 websockets>=12,<16
