@@ -1,5 +1,5 @@
 platformio>=6.1,<7
 pyserial>=3.5
-requests>=2.31,<3
+requests>=2.34.2,<3
 websockets>=12,<16
 sounddevice>=0.4.6,<0.6
