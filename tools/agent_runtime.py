@@ -18,7 +18,7 @@ from typing import Any, Callable, Protocol
 
 @dataclass(frozen=True)
 class AgentContext:
-    permission_profile: str = "commander"
+    permission_profile: str = "confirm_sensitive"
     source: str = "voice"
     cwd: str | None = None
 

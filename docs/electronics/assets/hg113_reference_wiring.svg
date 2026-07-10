@@ -1,4 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1280" height="860" viewBox="0 0 1280 860">
+  <title>HG113 与 ESP32-S3 参考接线图</title>
+  <desc>GPIO4 连接 HG113 摘挂机干接点，GPIO2 连接蜂鸣器驱动，GPIO1 连接 LED，音频由独立蓝牙模块连接 Windows。</desc>
   <defs>
     <style>
       .bg { fill: #f8fafc; }
@@ -27,17 +29,17 @@
   <text class="subtitle" x="48" y="88">不按照片位置绘制，只表达电气连接关系：开关、蜂鸣器、LED、Wi-Fi 数据、蓝牙音频。</text>
 
   <rect class="box" x="80" y="160" width="300" height="420"/>
-  <text class="label" x="110" y="200">ESP32-C3</text>
+  <text class="label" x="110" y="200">ESP32-S3</text>
   <text class="small" x="110" y="230">USB-C 由电脑供电</text>
   <text class="small" x="110" y="258">Wi-Fi STA 连接路由器</text>
-  <text class="tiny" x="110" y="282">发射功率：40</text>
+  <text class="tiny" x="110" y="282">当前基线：DevKitC-1</text>
 
   <rect class="soft" x="110" y="330" width="210" height="42"/>
-  <text class="small" x="130" y="357">GPIO0：开关输入</text>
+  <text class="small" x="130" y="357">GPIO4：开关输入</text>
   <rect class="soft" x="110" y="392" width="210" height="42"/>
-  <text class="small" x="130" y="419">GPIO21：蜂鸣器</text>
+  <text class="small" x="130" y="419">GPIO2：蜂鸣器</text>
   <rect class="soft" x="110" y="454" width="210" height="42"/>
-  <text class="small" x="130" y="481">GPIO20：LED</text>
+  <text class="small" x="130" y="481">GPIO1：LED</text>
   <rect class="soft" x="110" y="516" width="210" height="42"/>
   <text class="small" x="130" y="543">GND：公共地</text>
 
@@ -60,26 +62,26 @@
   <text class="text" x="808" y="353">6</text>
 
   <path class="wire" d="M320 351 C430 351, 455 346, 560 346"/>
-  <text class="small" x="410" y="332">GPIO0 -> 6</text>
+  <text class="small" x="410" y="332">GPIO4 -> 6</text>
   <path class="wire-gnd" d="M320 537 C460 537, 470 281, 700 281"/>
   <text class="small" x="415" y="555">GND -> 2</text>
   <text class="tiny" x="590" y="410">2/6 是机械触点，本身不分正负；如果实际反接，检测效果相同。</text>
 
   <rect class="phone" x="560" y="455" width="270" height="145"/>
   <text class="label" x="590" y="493">蜂鸣器 / 响铃件</text>
-  <text class="small" x="590" y="522">GPIO21 驱动</text>
+  <text class="small" x="590" y="522">GPIO2 PWM 驱动</text>
   <text class="tiny" x="590" y="548">若为大功率铃器，需要加驱动管</text>
   <path class="wire" d="M320 413 C420 413, 455 505, 560 505"/>
-  <text class="small" x="410" y="452">GPIO21</text>
+  <text class="small" x="410" y="452">GPIO2</text>
   <path class="wire-gnd" d="M320 537 C410 537, 465 575, 560 575"/>
   <text class="small" x="410" y="596">GND</text>
 
   <rect class="phone" x="880" y="455" width="270" height="145"/>
   <text class="label" x="910" y="493">LED 指示灯</text>
-  <text class="small" x="910" y="522">GPIO20 控制</text>
+  <text class="small" x="910" y="522">GPIO1 控制</text>
   <text class="tiny" x="910" y="548">裸 LED 需要串联限流电阻</text>
   <path class="wire" d="M320 475 C530 475, 630 475, 880 505"/>
-  <text class="small" x="435" y="496">GPIO20</text>
+  <text class="small" x="435" y="496">GPIO1</text>
   <path class="wire-gnd" d="M320 537 C545 537, 665 585, 880 575"/>
 
   <rect class="audio" x="80" y="660" width="350" height="135"/>
@@ -100,7 +102,7 @@
   <text class="small" x="970" y="200">http://localhost:8765/</text>
   <text class="tiny" x="970" y="230">画波形、发命令、看状态</text>
   <path class="wire-wifi" d="M380 245 C560 110, 780 95, 940 185"/>
-  <text class="small" x="625" y="118">Wi-Fi UDP 8766/8767</text>
+  <text class="small" x="625" y="118">Wi-Fi UDP 8766/8767 · TCP 8768</text>
 
   <path class="wire-warn" d="M940 345 L1190 345"/>
   <text class="small" x="950" y="375">不要接电话外线 / 市电 / 原板未知电源到 ESP32 GPIO</text>

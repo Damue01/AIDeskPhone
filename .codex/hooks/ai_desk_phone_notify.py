@@ -28,6 +28,14 @@ def read_stdin_payload() -> str:
     return ""
 
 
+def read_notification_payload() -> str:
+    if len(sys.argv) > 1:
+        payload = str(sys.argv[1] or "").strip()
+        if payload:
+            return payload[:20_000]
+    return read_stdin_payload()
+
+
 def parse_upstream_notify_command() -> tuple[str, ...]:
     override = os.getenv("CODEX_AI_DESK_PHONE_UPSTREAM_NOTIFY", "").strip()
     if override:
@@ -82,7 +90,7 @@ def run_notifications(
 
 
 def main() -> int:
-    return run_notifications(read_stdin_payload())
+    return run_notifications(read_notification_payload())
 
 
 if __name__ == "__main__":

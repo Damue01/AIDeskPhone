@@ -85,6 +85,9 @@ class SettingsMarkupTest(unittest.TestCase):
         self.assertNotIn("ASR / TTS / 通讯员共用", INDEX_HTML)
         self.assertNotIn("火山 API Key", INDEX_HTML)
         self.assertNotIn('id="operatorApiKey"', INDEX_HTML)
+        self.assertIn("lucide@1.23.0", INDEX_HTML)
+        self.assertIn('integrity="sha384-', INDEX_HTML)
+        self.assertNotIn("lucide@latest", INDEX_HTML)
 
 
 if __name__ == "__main__":

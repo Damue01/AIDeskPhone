@@ -1,6 +1,7 @@
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 import json
 from pathlib import Path
@@ -48,6 +49,34 @@ class HardwareStatusTest(unittest.TestCase):
         self.assertFalse(status["serial_debug_enabled"])
         self.assertFalse(status["serial_debug_running"])
         self.assertIsNone(status["current_sample"])
+
+    def test_simulation_only_blocks_hardware_io_and_uses_current_pins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = AppState(
+                ConsoleConfig(),
+                Path(directory) / "config.json",
+                simulation_enabled=True,
+                hardware_io_enabled=False,
+                actions_allowed=False,
+            )
+            fake_socket = FakeUdpSocket()
+            app.udp_device_address = ("192.0.2.55", 8767)
+            app.create_udp_command_socket = lambda: fake_socket  # type: ignore[method-assign]
+
+            ok = app.run_hardware_command("led_on")
+            app.update_config(ConsoleConfig(enable_actions=True))
+            status = app.hardware_status()
+            upload = app.start_firmware_upload()
+
+        self.assertTrue(ok)
+        self.assertTrue(app.sim_led_on)
+        self.assertEqual((app.sim_hook_pin, app.sim_buzzer_pin, app.sim_led_pin), (4, 2, 1))
+        self.assertEqual(fake_socket.sent, [])
+        self.assertFalse(status["hardware_io_enabled"])
+        self.assertFalse(status["actions_allowed"])
+        self.assertFalse(app.config.enable_actions)
+        self.assertFalse(upload["ok"])
+        self.assertEqual(upload["error"], "hardware_io_disabled")
 
     def test_disabling_simulation_clears_stale_simulation_sample(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -366,6 +395,66 @@ class HardwareStatusTest(unittest.TestCase):
         self.assertEqual(payload["command"], "led_on")
         self.assertEqual(payload["id"], 1)
 
+    def test_http_api_rejects_cross_site_and_non_json_writes(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            app = AppState(
+                ConsoleConfig(),
+                Path(directory) / "config.json",
+                simulation_enabled=True,
+                hardware_io_enabled=False,
+            )
+            app.queue_device_command("led_on")
+            server = make_server("127.0.0.1", 0, app)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            host, port = server.server_address[:2]
+            try:
+                cross_site_get = urllib.request.Request(
+                    f"http://{host}:{port}/api/device/next-command",
+                    headers={"Sec-Fetch-Site": "cross-site"},
+                )
+                with self.assertRaises(urllib.error.HTTPError) as get_error:
+                    urllib.request.urlopen(cross_site_get, timeout=2)
+                get_error.exception.close()
+
+                text_post = urllib.request.Request(
+                    f"http://{host}:{port}/api/hardware/led_on",
+                    data=b"{}",
+                    headers={"Content-Type": "text/plain"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as type_error:
+                    urllib.request.urlopen(text_post, timeout=2)
+                type_error.exception.close()
+
+                foreign_post = urllib.request.Request(
+                    f"http://{host}:{port}/api/hardware/led_on",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json", "Origin": "https://example.com"},
+                    method="POST",
+                )
+                with self.assertRaises(urllib.error.HTTPError) as origin_error:
+                    urllib.request.urlopen(foreign_post, timeout=2)
+                origin_error.exception.close()
+
+                local_post = urllib.request.Request(
+                    f"http://{host}:{port}/api/hardware/led_on",
+                    data=b"{}",
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(local_post, timeout=2) as response:
+                    result = json.loads(response.read().decode("utf-8"))
+            finally:
+                server.shutdown()
+                server.server_close()
+                thread.join(timeout=2)
+
+        self.assertEqual(get_error.exception.code, 403)
+        self.assertEqual(type_error.exception.code, 415)
+        self.assertEqual(origin_error.exception.code, 403)
+        self.assertTrue(result["ok"])
+
     def test_hardware_command_accepts_already_confirmed_fresh_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             command_socket = FakeUdpSocket()
@@ -477,6 +566,8 @@ class HardwareStatusTest(unittest.TestCase):
     def test_firmware_upload_forces_utf8_output(self) -> None:
         source = (Path(__file__).resolve().parents[1] / "tools" / "ai_desk_phone_console.py").read_text(encoding="utf-8")
 
+        self.assertIn('FIRMWARE_ENV = "esp32s3_gpio0_21_test"', source)
+        self.assertIn("FIRMWARE_ENV,", source)
         self.assertIn('"PYTHONIOENCODING": "utf-8"', source)
         self.assertIn('"PYTHONUTF8": "1"', source)
         self.assertIn('"PLATFORMIO_SETTING_ENABLE_COLOR": "0"', source)

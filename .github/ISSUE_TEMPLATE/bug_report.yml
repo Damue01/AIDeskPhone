@@ -1,0 +1,91 @@
+name: Bug report
+description: 报告桌面端、固件、硬件或文档中的可复现问题
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请先搜索现有 Issue，并移除密钥、Wi-Fi 凭据、录音和个人信息。安全漏洞请按 SECURITY.md 私下报告。
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 影响组件
+      options:
+        - Windows 控制台
+        - Agent / ASR / TTS
+        - Codex Hook
+        - ESP32-S3 固件
+        - GPIO / LED / 蜂鸣器
+        - 地球指挥中心
+        - 文档
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 环境与版本
+      description: Windows、Python、提交 SHA；实机问题还请写板型和 PlatformIO 环境
+      placeholder: Windows 11, Python 3.12, commit abc1234, ESP32-S3
+    validations:
+      required: true
+
+  - type: dropdown
+    id: target
+    attributes:
+      label: 运行目标
+      options:
+        - 模拟器
+        - ESP32-S3 实机
+        - 两者都能复现
+        - 不适用
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 运行 ...
+        2. 打开 ...
+        3. 执行 ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志
+      description: 不要粘贴 .env、Wi-Fi 密码、完整录音或个人路径
+      render: text
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我已搜索现有 Issue
+          required: true
+        - label: 我已移除密钥、凭据和个人信息
+          required: true
+        - label: 这不是需要私下报告的安全漏洞
+          required: true
+

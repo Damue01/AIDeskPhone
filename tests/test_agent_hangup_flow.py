@@ -235,6 +235,22 @@ class FakeModelNoToolAgentSpeech:
         }
 
 
+class FakeSessionAgentLoop:
+    def __init__(self) -> None:
+        self.deleted = False
+        self.session_id = "session-current"
+
+    def status(self) -> dict[str, object]:
+        return {"session": {"id": self.session_id}}
+
+    def delete_current_session(self, *, next_persist_path: Path) -> dict[str, object]:
+        self.deleted = True
+        self.session_id = "session-next"
+        return {
+            "deleted_path": str(next_persist_path),
+            "runtime": {"session": {"id": self.session_id}},
+        }
+
 def make_app(test_case: unittest.TestCase, config: ConsoleConfig | None = None) -> AppState:
     directory = tempfile.TemporaryDirectory()
     test_case.addCleanup(directory.cleanup)
@@ -244,6 +260,21 @@ def make_app(test_case: unittest.TestCase, config: ConsoleConfig | None = None) 
 
 
 class AgentHangupFlowTest(unittest.TestCase):
+    def test_silent_reply_alias_and_session_delete_guard(self) -> None:
+        app = make_app(self)
+        fake_loop = FakeSessionAgentLoop()
+        app.agent_loop = fake_loop  # type: ignore[assignment]
+        app.agent_conversation_id = "session-current"
+
+        mismatch = app.delete_agent_session("test", expected_session_id="session-other")
+        deleted = app.delete_agent_session("test", expected_session_id="session-current")
+
+        self.assertEqual(app.resolve_voice_reply_behavior("silent", "direct"), "none")
+        self.assertFalse(mismatch["ok"])
+        self.assertEqual(mismatch["error"], "session_mismatch")
+        self.assertTrue(deleted["ok"])
+        self.assertTrue(fake_loop.deleted)
+
     def test_input_mode_lift_and_hangup_execute_active_profile_actions(self) -> None:
         app = make_app(self, ConsoleConfig(business_mode="codex"))
         calls: list[str] = []

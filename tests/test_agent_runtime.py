@@ -203,7 +203,7 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         skill = ShellCommandSkill(runner=fake_runner, timeout_seconds=3)
         result = MinimalAgentLoop(skills=[skill]).run(
             "执行命令 echo hello",
-            AgentContext(cwd=str(PROJECT_ROOT)),
+            AgentContext(permission_profile="commander", cwd=str(PROJECT_ROOT)),
         )
 
         self.assertEqual(result.tool_calls[0].skill, "system.command")
@@ -212,9 +212,20 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
         self.assertIn("命令已执行", result.final_text)
         self.assertIn("hello", result.final_text)
 
+    def test_shell_command_is_denied_by_default_profile(self) -> None:
+        skill = ShellCommandSkill(runner=lambda *_: self.fail("default profile must not run shell"))
+
+        result = MinimalAgentLoop(skills=[skill]).run("执行命令 echo hello")
+
+        self.assertFalse(result.tool_results[0].ok)
+        self.assertIn("当前权限不允许执行本机命令", result.final_text)
+
     def test_shell_command_intent_does_not_switch_earth_phase(self) -> None:
         skill = ShellCommandSkill(runner=lambda *_: (0, "hello\n", ""))
-        result = MinimalAgentLoop(skills=[CommandCenterEarthSkill(), skill]).run("执行命令 echo hello")
+        result = MinimalAgentLoop(skills=[CommandCenterEarthSkill(), skill]).run(
+            "执行命令 echo hello",
+            AgentContext(permission_profile="commander", cwd=str(PROJECT_ROOT)),
+        )
 
         self.assertEqual(len(result.tool_calls), 1)
         self.assertEqual(result.tool_calls[0].skill, "system.command")
@@ -222,7 +233,10 @@ class MinimalAgentRuntimeTest(unittest.TestCase):
     def test_shell_command_blocks_dangerous_command(self) -> None:
         skill = ShellCommandSkill(runner=lambda *_: self.fail("dangerous command should not run"))
 
-        result = MinimalAgentLoop(skills=[skill]).run("执行命令 git reset --hard")
+        result = MinimalAgentLoop(skills=[skill]).run(
+            "执行命令 git reset --hard",
+            AgentContext(permission_profile="commander", cwd=str(PROJECT_ROOT)),
+        )
 
         self.assertEqual(result.tool_calls[0].name, "run_command")
         self.assertFalse(result.tool_results[0].ok)

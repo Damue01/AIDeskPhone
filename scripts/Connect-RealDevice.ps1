@@ -1,7 +1,8 @@
 param(
-  [int]$WebPort = 8768,
+  [int]$WebPort = 8765,
   [int]$TelemetryPort = 8766,
   [int]$CommandPort = 8767,
+  [int]$TcpCommandPort = 8768,
   [int]$WaitSeconds = 45,
   [switch]$StopExisting,
   [switch]$NoBrowser,
@@ -24,18 +25,17 @@ function Get-PythonPath($Root) {
   return "python"
 }
 
-function Stop-PortOwner($Protocol, $Port) {
-  if ($Protocol -eq "TCP") {
-    $owners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
-      Select-Object -ExpandProperty OwningProcess -Unique
-  } else {
-    $owners = Get-NetUDPEndpoint -LocalPort $Port -ErrorAction SilentlyContinue |
-      Select-Object -ExpandProperty OwningProcess -Unique
-  }
-
+function Stop-AIDeskPhoneConsoleOnWebPort($Port) {
+  $owners = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue |
+    Select-Object -ExpandProperty OwningProcess -Unique
   foreach ($owner in $owners) {
     if (-not $owner) { continue }
-    Write-Host "Stopping process $owner on $Protocol port $Port"
+    $process = Get-CimInstance Win32_Process -Filter "ProcessId = $owner" -ErrorAction SilentlyContinue
+    $commandLine = [string]$process.CommandLine
+    if ($commandLine -notmatch 'tools[\\/]+ai_desk_phone_console\.py(?:\s|$)') {
+      throw "TCP port $Port is owned by an unrelated process (PID $owner). Close it manually or choose another WebPort."
+    }
+    Write-Host "Stopping existing AI Desk Phone console process $owner on TCP port $Port"
     Stop-Process -Id $owner -Force
   }
 }
@@ -79,6 +79,11 @@ Write-Host "Repo: $RepoRoot"
 Write-Host "Web: http://127.0.0.1:$WebPort/#config"
 Write-Host "UDP telemetry: $TelemetryPort"
 Write-Host "UDP command:   $CommandPort"
+Write-Host "TCP command:   $TcpCommandPort"
+
+if ($WebPort -eq $TcpCommandPort) {
+  throw "WebPort and TcpCommandPort must be different."
+}
 
 Write-Step "Local network addresses"
 Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -87,14 +92,14 @@ Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
   Format-Table -AutoSize
 
 if ($StopExisting) {
-  Write-Step "Stopping old listeners"
-  Stop-PortOwner "TCP" $WebPort
-  Stop-PortOwner "UDP" $TelemetryPort
+  Write-Step "Stopping an existing AI Desk Phone console"
+  Stop-AIDeskPhoneConsoleOnWebPort $WebPort
   Start-Sleep -Milliseconds 500
 }
 
 Assert-PortAvailable "TCP" $WebPort
 Assert-PortAvailable "UDP" $TelemetryPort
+Assert-PortAvailable "TCP" $TcpCommandPort
 
 $Python = Get-PythonPath $RepoRoot
 Write-Step "Python runtime"
@@ -119,6 +124,7 @@ $Args = @(
   "--web-port", "$WebPort",
   "--udp-port", "$TelemetryPort",
   "--device-command-port", "$CommandPort",
+  "--tcp-command-port", "$TcpCommandPort",
   "--no-simulation"
 )
 

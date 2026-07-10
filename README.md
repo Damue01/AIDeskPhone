@@ -1,297 +1,174 @@
 # AI Desk Phone
 
-AI Desk Phone turns an HG113 desk phone shell into a local AI desk phone. The
-computer runs the console, voice pipeline, Agent runtime, Codex completion
-hooks, and command-center page. The ESP32 board only handles the physical phone
-state, Wi-Fi telemetry, LED, and buzzer.
+[![CI](https://github.com/Damue01/AIDeskPhone/actions/workflows/ci.yml/badge.svg)](https://github.com/Damue01/AIDeskPhone/actions/workflows/ci.yml)
+![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)
+![Platform](https://img.shields.io/badge/Platform-Windows%20%2B%20ESP32--S3-555555)
+![Status](https://img.shields.io/badge/Status-Experimental-orange)
 
-This project does not connect to a real telephone line. Keep the original phone
-line disconnected.
+把 HG113 桌面电话改造成一台本地优先的 AI 终端：拿起听筒说出任务，由 Windows 主机完成语音识别、Agent 工具调用和语音播报；任务在挂机后完成时，电话会通过 LED 与蜂鸣器提醒用户接听。
 
-## Current Hardware
+> [!WARNING]
+> 本项目只复用电话外壳、听筒和低压机械结构。**不要连接公共电话网、电话外线或任何未知高压线路。**
 
-The current verified board is ESP32-S3. Some firmware folders still contain
-`esp32c3` in their names because the project started on ESP32-C3; treat those
-as historical path names.
+项目目前是实验性硬件原型，面向开发者和电子制作爱好者，不是经过认证的通信设备或消费级成品。
 
-Current ESP32-S3 wiring:
+## 已实现能力
 
-| Function | ESP32-S3 pin |
+- ESP32-S3 采集 HG113 摘挂机状态，并通过 Wi-Fi 向电脑发送遥测。
+- Windows 本地控制台管理配置、硬件状态、录音、ASR、TTS、Agent 和回拨队列。
+- 输入法模式可把摘挂机动作映射为 Windows 快捷键。
+- Agent 模式支持流式语音识别、项目内 skill、工具调用和连续电话对话。
+- Codex 或其他本地工具可通过完成通知触发电话回拨。
+- 地球指挥中心展示待命、聆听、执行、等待接听和播报状态。
+- 无硬件模拟模式可先验证页面、状态机、回拨与 Agent 文本入口。
+
+## 工作原理
+
+```mermaid
+flowchart LR
+    Phone["HG113 摘挂机开关"] -->|"GPIO4"| ESP["ESP32-S3"]
+    ESP -->|"UDP 8766 遥测"| PC["Windows 本地控制台"]
+    PC -->|"TCP 8768 / UDP 8767 命令"| ESP
+    Handset["HG113 听筒"] --> Audio["蓝牙音频模块"] --> PC
+    Codex["Codex / 本地工具"] -->|"完成通知"| PC
+    PC --> Voice["ASR · Agent · TTS"]
+    PC --> UI["控制台 · 模拟器 · 指挥中心"]
+```
+
+ESP32-S3 只负责 GPIO、Wi-Fi 和输出控制。音频、模型调用、业务状态与网页全部运行在电脑端。
+
+## 快速开始
+
+### 1. 无硬件体验
+
+需要 Windows 10/11 和 Python 3.11 或 3.12。启动脚本会自动创建 `.venv` 并安装依赖：
+
+```powershell
+git clone https://github.com/Damue01/AIDeskPhone.git
+Set-Location AIDeskPhone
+.\Start_AI_Desk_Phone.bat simulator
+```
+
+浏览器将打开：
+
+```text
+http://127.0.0.1:8765/simulator
+```
+
+一键模拟模式会禁用串口、ESP32 UDP/TCP 链路、固件烧录和 Windows 快捷键。体验模拟器不需要 API Key。
+
+### 2. 连接真实设备
+
+当前已验证基线是 ESP32-S3：
+
+| 功能 | 引脚 |
 | --- | --- |
-| Hook switch input | GPIO4 |
-| LED output | GPIO1 |
-| Buzzer output | GPIO2 |
-| Common ground | GND |
+| 摘挂机输入 | GPIO4，`INPUT_PULLUP` |
+| 蜂鸣器输出 | GPIO2，3 kHz PWM |
+| LED 输出 | GPIO1 |
+| 公共地 | GND |
 
-The hook input uses `INPUT_PULLUP`.
+完成接线、烧录和 Wi-Fi 配网后运行：
 
-```text
-HIGH = on hook / pressed / handset down
-LOW  = off hook / released / handset lifted
+```powershell
+.\Connect_Real_Device.bat
 ```
 
-## What Runs Where
+指定 USB 串口时：
 
-```text
-HG113 hook switch
-  -> ESP32-S3 GPIO4
-  -> Wi-Fi telemetry
-  -> local console at http://127.0.0.1:8765/
-
-Local console
-  -> hardware commands over TCP/UDP
-  -> ESP32-S3 GPIO1 LED and GPIO2 buzzer
-
-Handset audio
-  -> Windows audio device
-  -> ASR / TTS / Agent runtime on the computer
+```powershell
+.\Connect_Real_Device.bat -SerialPort COM7
 ```
 
-The ESP32 does not process microphone or speaker audio.
+完整步骤、安全边界、成功判据和恢复方法见[标准参考手册](docs/REFERENCE_MANUAL.md)。
 
-## Quick Start
+### 3. 启用语音与角色模型
 
-Install Python dependencies and start the local console:
+复制环境变量模板，并只在本机填写密钥：
+
+```powershell
+Copy-Item .env.example .env
+```
+
+最小配置：
+
+```dotenv
+VOLCENGINE_API_KEY=YOUR_SPEECH_API_KEY
+ARK_API_KEY=YOUR_ARK_API_KEY
+```
+
+`VOLCENGINE_API_KEY` 用于 ASR/TTS，`ARK_API_KEY` 用于 Ark Chat、通讯员润色和 Agent 回复。两者可能来自不同的授权体系。
+
+## 支持状态
+
+| 组件 | 状态 | 说明 |
+| --- | --- | --- |
+| Windows 10/11 | 主要目标 | 快捷键、音频和启动脚本均为 Windows 优先 |
+| Python 3.11 / 3.12 | 支持 | 启动脚本按 3.12、3.11、`python` 顺序尝试 |
+| ESP32-S3 DevKitC-1 | 当前基线 | PlatformIO 环境为 `esp32s3_gpio0_21_test` |
+| ESP32-C3 | 历史/诊断 | 目录名和部分诊断固件保留 C3 命名，不代表当前推荐硬件 |
+| 无硬件模拟 | 支持 | 使用 `Start_AI_Desk_Phone.bat simulator` |
+| macOS / Linux | 未支持 | 后端部分能力可能运行，但快捷键、音频和脚本未经验证 |
+
+## 文档
+
+| 文档 | 内容 |
+| --- | --- |
+| [文档中心](docs/README.md) | 权威文档入口与维护规则 |
+| [标准参考手册](docs/REFERENCE_MANUAL.md) | 安装、接线、固件、配置、使用、验证与故障排查 |
+| [API 参考](docs/API_REFERENCE.md) | HTTP、SSE、ESP32 命令协议与指挥中心 JS Bridge |
+| [硬件资料索引](docs/electronics/README.md) | 参考接线图、样机照片和历史硬件说明 |
+| [指挥中心组件](web/variant-earth-command-center/README.md) | 页面职责、开发入口与联网依赖 |
+| [贡献指南](CONTRIBUTING.md) | 开发环境、测试、文档规则和 PR 检查项 |
+| [安全策略](SECURITY.md) | 漏洞报告和受支持范围 |
+| [威胁模型](THREAT_MODEL.md) | 电气、网络、密钥、模型与命令执行边界 |
+
+## 项目结构
+
+```text
+config/      本地控制台默认配置
+docs/        参考手册、API 与硬件资料
+firmware/    ESP32 主固件和诊断工程
+scripts/     Windows 实机连接脚本
+tests/       状态机、Agent、硬件、Hook 与语音单元测试
+tools/       Python 控制台、Agent runtime、语音与 Hook 客户端
+web/         地球指挥中心页面
+```
+
+## 开发与测试
 
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\Start_AI_Desk_Phone.bat
-```
-
-Open:
-
-```text
-http://127.0.0.1:8765/
-http://127.0.0.1:8765/command-center/
-http://127.0.0.1:8765/simulator
-```
-
-Use the simulator first if no real hardware is connected.
-
-## Secrets
-
-Copy `.env.example` to `.env` and fill only local secrets:
-
-```text
-VOLCENGINE_API_KEY=
-ARK_API_KEY=
-```
-
-Do not commit `.env`.
-
-## ESP32-S3 Firmware
-
-The current main firmware is:
-
-```text
-firmware/esp32c3_gpio0_21_test/
-```
-
-Build for ESP32-S3:
-
-```powershell
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test -e esp32s3_gpio0_21_test
-```
-
-Upload, replacing `COM7` with the actual port:
-
-```powershell
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test -e esp32s3_gpio0_21_test -t upload --upload-port COM7
-```
-
-Find the current port:
-
-```powershell
-.\.venv\Scripts\platformio.exe device list
-```
-
-The ESP32-S3 port may change after reset or replugging. In our verified setup it
-has appeared as both `COM6` and `COM7`.
-
-## Wi-Fi Provisioning
-
-The firmware is not tied to one fixed Wi-Fi network.
-
-On first setup, or after repeated Wi-Fi failures, the board starts a setup
-hotspot:
-
-```text
-SSID: AiLandLine-Setup
-Password: ailandline
-Setup page: http://192.168.4.1/
-```
-
-Steps:
-
-1. Power on the board.
-2. Join `AiLandLine-Setup`.
-3. Open `http://192.168.4.1/` if the setup page does not appear automatically.
-4. Enter the user's Wi-Fi SSID and password.
-5. Leave `Computer command host` blank for `auto`, unless the desktop computer
-   has a known fixed LAN IP.
-6. Save and wait for the board to reconnect.
-
-Saved Wi-Fi settings live in ESP32 NVS, so users do not need to rebuild the
-firmware to change networks.
-
-To enter setup mode again, send one of these firmware commands:
-
-```text
-provision
-wifi_setup
-setup_portal
-```
-
-More detail: [docs/WIFI_PROVISIONING.md](docs/WIFI_PROVISIONING.md).
-
-## Optional Local Wi-Fi Credentials
-
-Developers can still create a local ignored file:
-
-```text
-firmware/esp32c3_gpio0_21_test/include/wifi_credentials.h
-```
-
-Example:
-
-```cpp
-#pragma once
-
-#define WIFI_STA_SSID "your-wifi"
-#define WIFI_STA_PASSWORD "your-password"
-#define COMMAND_SERVER_HOST_TEXT "192.168.1.23"
-#define COMMAND_SERVER_HOST_OCTETS 192, 168, 1, 23
-```
-
-This file is ignored by git. It is only for local development, not for users.
-
-## Hardware Verification
-
-After the console and board are running, check:
-
-1. The console shows `real_device_connected = true`.
-2. The board has a Wi-Fi IP.
-3. The board reports `pin = 4`, `led_pin = 1`, and `buzzer_pin = 2`.
-4. `LED on` lights GPIO1.
-5. `beep` or `ring_on` drives GPIO2.
-6. `ring_off` and `led_off` return both outputs to `OFF`.
-
-Useful API checks:
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8765/api/hardware/status
-```
-
-```powershell
-Invoke-RestMethod `
-  -Uri http://127.0.0.1:8765/api/hardware/beep `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body "{}"
-```
-
-## Codex Completion Callback
-
-The project can receive Codex completion hooks and turn them into phone reports.
-The expected path is:
-
-```text
-Codex finishes a task
-  -> local hook sends the final message to the console
-  -> operator model summarizes the result
-  -> phone callback queue
-  -> LED/buzzer alert when callback is enabled
-```
-
-If the handset is already lifted, the console may play or queue the report
-without ringing. To test the full callback ring flow, keep the handset down
-until the alert starts.
-
-Detailed hook notes: [docs/CODEX_OPERATOR_HOOK.md](docs/CODEX_OPERATOR_HOOK.md).
-
-## Common Pitfalls
-
-### LED works but buzzer is silent
-
-For the current ESP32-S3 wiring:
-
-```text
-GPIO1 = LED
-GPIO2 = buzzer
-```
-
-If GPIO1 lights but no sound is heard, do not assume the command failed. Check
-whether the buzzer is actually wired to GPIO2, whether it needs a driver, and
-whether it is active or passive.
-
-### Board is connected but upload fails
-
-The COM port can change. Run:
-
-```powershell
-.\.venv\Scripts\platformio.exe device list
-```
-
-Then upload with `--upload-port COMx`.
-
-### Wi-Fi connects but backend does not react
-
-Check that the board and computer are on the same reachable network. Windows
-Mobile Hotspot usually works well with `Computer command host = auto`. On a
-normal router, UDP discovery can still find the board, but a fixed desktop IP is
-more reliable for the persistent TCP command channel.
-
-### Callback does not ring
-
-Check:
-
-1. `enable_callback` is enabled in the console.
-2. The phone is on hook before the callback arrives.
-3. Hardware status shows `buzzer = OFF` and `led = OFF` before testing.
-4. The completion hook sends real task content, not only a generic template.
-
-### Text looks garbled in logs
-
-Run commands with UTF-8 enabled:
-
-```powershell
-$env:PYTHONIOENCODING='utf-8'
-$env:PYTHONUTF8='1'
-```
-
-The startup scripts already set UTF-8 for the common paths.
-
-## Project Map
-
-| Path | Purpose |
-| --- | --- |
-| `Start_AI_Desk_Phone.bat` | Starts the local console and related services. |
-| `tools/ai_desk_phone_console.py` | Main backend and web console, default port `8765`. |
-| `tools/agent_runtime.py` | Local PI-style Agent runtime. |
-| `tools/volcengine_speech.py` | ASR, TTS, and operator polish calls. |
-| `tools/codex_operator_hook.py` | Codex completion hook client. |
-| `firmware/esp32c3_gpio0_21_test/` | Main ESP32 firmware, including ESP32-S3 env. |
-| `firmware/esp32c3_wifi_pioarduino_test/` | Minimal Wi-Fi diagnostic firmware. |
-| `web/variant-earth-command-center/` | Command-center globe/map page. |
-| `docs/` | Hardware, Wi-Fi, hook, and build notes. |
-| `tests/` | Unit tests for runtime, hooks, hardware status, and firmware expectations. |
-
-## Tests
-
-Run Python tests:
-
-```powershell
 .\.venv\Scripts\python.exe -m unittest discover tests -v
 ```
 
-Build the ESP32-S3 firmware:
+编译当前 ESP32-S3 固件：
 
 ```powershell
-.\.venv\Scripts\platformio.exe run -d firmware\esp32c3_gpio0_21_test -e esp32s3_gpio0_21_test
+.\.venv\Scripts\platformio.exe run `
+  -d firmware\esp32c3_gpio0_21_test `
+  -e esp32s3_gpio0_21_test
 ```
 
-## License
+提交改动前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。硬件相关 PR 必须说明板型、引脚、固件环境和实机验证结果。
 
-No open-source license has been selected yet. Add a `LICENSE` file before
-public reuse.
+## 安全与隐私
+
+- HTTP 控制台默认只绑定 `127.0.0.1`，API 没有身份认证；不要将其反向代理或暴露到公网。
+- ESP32 的 UDP/TCP 链路面向可信局域网，没有加密、签名或设备认证。
+- `.env` 包含密钥；`data/` 可能保存录音、TTS 文件和 Agent 会话，`logs/` 可能包含调试信息。
+- 启用 ASR、TTS、Ark 或网页搜索后，相关音频或文本会发送给对应的第三方服务。
+- 默认 `confirm_sensitive` 权限不允许 Agent 执行 shell；只有显式切换到受信任权限后才会开放命令工具。
+
+详细说明见 [SECURITY.md](SECURITY.md) 和 [THREAT_MODEL.md](THREAT_MODEL.md)。
+
+## 参与贡献
+
+Bug、功能建议和文档问题请使用仓库的 Issue 模板。提交 PR 前，请确认测试通过、文档与行为同步，并移除密钥、Wi-Fi 凭据、个人路径和未脱敏日志。
+
+项目协作遵循 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。第三方代码、地图和素材说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 许可证
+
+项目所有者尚未选择代码许可证。许可证落地前，仓库公开可见不等于自动授权复制、修改或再分发；第三方组件仍分别遵循其上游条款。

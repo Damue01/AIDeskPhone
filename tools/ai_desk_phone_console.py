@@ -62,6 +62,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = ROOT / "config" / "ai_desk_phone_console.json"
 COMMAND_CENTER_DIR = ROOT / "web" / "variant-earth-command-center"
 FIRMWARE_PROJECT_DIR = ROOT / "firmware" / "esp32c3_gpio0_21_test"
+FIRMWARE_ENV = "esp32s3_gpio0_21_test"
 DEFAULT_WEB_PORT = 8765
 DEFAULT_BAUD = 115200
 DEFAULT_UDP_TELEMETRY_PORT = 8766
@@ -215,9 +216,9 @@ class ConsoleConfig:
     score_trigger: int = 5
     peak_hold_ms: int = 350
     sample_interval_ms: int = 250
-    hook_pin: int = 0
-    buzzer_pin: int = 21
-    led_pin: int = 20
+    hook_pin: int = 4
+    buzzer_pin: int = 2
+    led_pin: int = 1
     udp_device_host: str = ""
     udp_command_port: int = DEFAULT_UDP_COMMAND_PORT
     press_action_text: str = "控制键+Windows键+Shift键"
@@ -238,7 +239,7 @@ class ConsoleConfig:
     voice_record_device: str = ""
     voice_auto_transcribe: bool = True
     voice_reply_policy: str = "direct"
-    agent_permission_profile: str = "commander"
+    agent_permission_profile: str = "confirm_sensitive"
     enable_serial_debug: bool = False
 
     def __post_init__(self) -> None:
@@ -777,9 +778,18 @@ class HookStateMachine:
 
 
 class AppState:
-    def __init__(self, config: ConsoleConfig, config_path: Path, simulation_enabled: bool = True) -> None:
+    def __init__(
+        self,
+        config: ConsoleConfig,
+        config_path: Path,
+        simulation_enabled: bool = True,
+        hardware_io_enabled: bool = True,
+        actions_allowed: bool = True,
+    ) -> None:
         self.config = config
         self.config_path = config_path
+        self.hardware_io_enabled = hardware_io_enabled
+        self.actions_allowed = actions_allowed
         self.machine = HookStateMachine(config)
         self.sender = WindowsHotkeySender()
         self.lock = threading.RLock()
@@ -874,9 +884,9 @@ class AppState:
         self.sim_hook_state = "PRESSED"
         self.sim_buzzer_on = False
         self.sim_led_on = False
-        self.sim_hook_pin = 0
-        self.sim_buzzer_pin = 21
-        self.sim_led_pin = 20
+        self.sim_hook_pin = config.hook_pin
+        self.sim_buzzer_pin = config.buzzer_pin
+        self.sim_led_pin = config.led_pin
         self.sim_wifi_ip = "192.0.2.113"
         self.sim_wifi_rssi = -48
         self.sim_started_at: float | None = time.monotonic() if simulation_enabled else None
@@ -1347,6 +1357,8 @@ class AppState:
             current_sample = dict(self.current_sample) if isinstance(self.current_sample, dict) else None
             sample_count = len(self.samples)
             simulation_enabled = self.simulation_enabled
+            hardware_io_enabled = self.hardware_io_enabled
+            actions_allowed = self.actions_allowed
             real_sample_last_seen = self.real_sample_last_seen
             last_hardware_command = dict(self.last_hardware_command) if isinstance(self.last_hardware_command, dict) else None
             device_command_queue_length = len(self.device_command_queue)
@@ -1397,6 +1409,8 @@ class AppState:
             "real_device_connected": udp_fresh or serial_connected or real_sample_fresh or tcp_command_fresh,
             "real_sample_last_seen_seconds": real_sample_last_seen_seconds,
             "simulation_enabled": simulation_enabled,
+            "hardware_io_enabled": hardware_io_enabled,
+            "actions_allowed": actions_allowed,
             "sample_count": sample_count,
             "current_sample": current_sample,
             "last_hardware_command": last_hardware_command,
@@ -1575,12 +1589,27 @@ class AppState:
         self.publish_agent_status()
         return {"ok": True, **self.agent_status()}
 
-    def delete_agent_session(self, reason: str = "manual") -> dict[str, Any]:
+    def delete_agent_session(
+        self,
+        reason: str = "manual",
+        *,
+        expected_session_id: str | None = None,
+    ) -> dict[str, Any]:
         if self.agent_loop is None or not hasattr(self.agent_loop, "delete_current_session"):
             return {"ok": False, "error": "agent runtime is not available", **self.agent_status()}
         with self.lock:
             if self.agent_active:
                 return {"ok": False, "error": "agent is active", **self.agent_status()}
+            current_session_id = self.agent_conversation_id
+            requested_session_id = str(expected_session_id or "").strip()
+            if requested_session_id and requested_session_id != current_session_id:
+                return {
+                    "ok": False,
+                    "error": "session_mismatch",
+                    "requested_session_id": requested_session_id,
+                    "current_session_id": current_session_id,
+                    **self.agent_status(),
+                }
             delete_result = self.agent_loop.delete_current_session(next_persist_path=make_agent_session_path())
             runtime = delete_result.get("runtime", {}) if isinstance(delete_result, dict) else {}
             runtime_session = runtime.get("session", {}).get("id") if isinstance(runtime, dict) else None
@@ -1700,6 +1729,8 @@ class AppState:
 
     def resolve_voice_reply_behavior(self, requested_behavior: str, configured_policy: str) -> str:
         requested = str(requested_behavior or "legacy").strip().lower()
+        if requested == "silent":
+            return "none"
         if requested in {"direct", "callback", "none"}:
             return requested
 
@@ -2850,7 +2881,7 @@ class AppState:
 
     def run_configured_shortcut_for_state(self, state: str) -> bool:
         with self.lock:
-            if not self.config.enable_actions:
+            if not self.actions_allowed or not self.config.enable_actions:
                 return False
             action_text = self.config.action_text_for_state(state)
             action_label = "挂机动作" if state == "PRESSED" else "摘机动作"
@@ -2968,6 +2999,8 @@ class AppState:
             return self.current_sample
 
     def send_udp_command(self, command: str) -> bool:
+        if not self.hardware_io_enabled:
+            return False
         payload = self.udp_command_payload(command)
         with self.udp_lock:
             target = self.udp_device_address
@@ -3005,6 +3038,8 @@ class AppState:
         return True
 
     def send_device_command(self, command: str, *, queued_for_tcp: bool = False) -> bool:
+        if not self.hardware_io_enabled:
+            return False
         if self.has_fresh_tcp_command_client():
             if not queued_for_tcp:
                 self.queue_device_command(command)
@@ -3015,6 +3050,8 @@ class AppState:
         return self.send_serial_command(command)
 
     def send_serial_command(self, command: str) -> bool:
+        if not self.hardware_io_enabled:
+            return False
         with self.serial_lock:
             if self.serial_handle is None:
                 self.add_state_log("串口尚未连接，无法写入板子配置。")
@@ -3189,6 +3226,8 @@ class AppState:
         return self.config
 
     def update_config(self, config: ConsoleConfig) -> None:
+        if not self.actions_allowed:
+            config.enable_actions = False
         save_config(self.config_path, config)
         with self.lock:
             self.config = config
@@ -3288,7 +3327,7 @@ class AppState:
         )
         sent_at = time.monotonic()
         queued_for_tcp = False
-        if expected_state is not None:
+        if expected_state is not None and self.hardware_io_enabled:
             self.queue_device_command(command)
             queued_for_tcp = True
         if self.send_device_command(command, queued_for_tcp=queued_for_tcp):
@@ -3390,6 +3429,13 @@ class AppState:
         return [sys.executable, "-m", "platformio"]
 
     def start_firmware_upload(self) -> dict[str, Any]:
+        if not self.hardware_io_enabled:
+            return {
+                "ok": False,
+                "error": "hardware_io_disabled",
+                "message": "纯模拟模式已禁用固件烧录。",
+                "firmware_upload": self.firmware_status(),
+            }
         with self.firmware_lock:
             current = self.firmware_thread
             if current is not None and current.is_alive():
@@ -3415,7 +3461,15 @@ class AppState:
     def firmware_upload_worker(self) -> None:
         restart_serial = self.config.enable_serial_debug and self.is_serial_debug_running()
         self.stop_serial_debug("烧录固件前释放串口", wait_seconds=2.0)
-        command = self.platformio_command() + ["run", "-d", str(FIRMWARE_PROJECT_DIR), "-t", "upload"]
+        command = self.platformio_command() + [
+            "run",
+            "-d",
+            str(FIRMWARE_PROJECT_DIR),
+            "-e",
+            FIRMWARE_ENV,
+            "-t",
+            "upload",
+        ]
         upload_env = os.environ.copy()
         upload_env.update(
             {
@@ -3646,7 +3700,7 @@ class AppState:
             return self.start_reply_playback(f"{source} hook")
         return self.start_operator_alert(source)
 
-    def set_test_pins(self, hook_pin: int, buzzer_pin: int, led_pin: int = 20) -> bool:
+    def set_test_pins(self, hook_pin: int, buzzer_pin: int, led_pin: int = 1) -> bool:
         command = json.dumps(
             {"type": "set_pins", "hook_pin": hook_pin, "buzzer_pin": buzzer_pin, "led_pin": led_pin},
             separators=(",", ":"),
@@ -4483,9 +4537,9 @@ INDEX_HTML = r"""<!doctype html>
 
       <div class="hidden-config" aria-hidden="true">
         <input id="hook_scheme" type="hidden" value="scheme1">
-        <input id="hookPinInput" type="hidden" value="0">
-        <input id="buzzerPinInput" type="hidden" value="21">
-        <input id="ledPinInput" type="hidden" value="20">
+        <input id="hookPinInput" type="hidden" value="4">
+        <input id="buzzerPinInput" type="hidden" value="2">
+        <input id="ledPinInput" type="hidden" value="1">
         <input id="enable_actions" type="hidden" value="true">
         <input id="press_action_text" type="hidden">
         <input id="release_action_text" type="hidden">
@@ -4852,8 +4906,11 @@ INDEX_HTML = r"""<!doctype html>
       setValue("voiceSampleRate", config.voice_record_sample_rate ?? 16000);
       setValue("voiceRecordDevice", config.voice_record_device || "");
       setValue("audioOutputDevice", config.audio_output_device || "");
-      setValue("agentPermissionProfile", config.agent_permission_profile || "commander");
+      setValue("agentPermissionProfile", config.agent_permission_profile || "confirm_sensitive");
       setValue("voiceReplyPolicy", config.voice_reply_policy || "callback");
+      setValue("hookPinInput", config.hook_pin ?? 4);
+      setValue("buzzerPinInput", config.buzzer_pin ?? 2);
+      setValue("ledPinInput", config.led_pin ?? 1);
       renderInputProfiles();
       setEditorsFromActiveProfile();
     }
@@ -4986,7 +5043,12 @@ INDEX_HTML = r"""<!doctype html>
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(url, {...options, signal: controller.signal});
+        const request = {...options};
+        if ((request.method || "GET").toUpperCase() === "POST") {
+          request.headers = {"Content-Type": "application/json", ...(request.headers || {})};
+          if (request.body === undefined) request.body = "{}";
+        }
+        const response = await fetch(url, {...request, signal: controller.signal});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return await response.json();
       } catch (error) {
@@ -5065,7 +5127,7 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function postAction(url) {
-      await fetch(url, {method: "POST"});
+      await fetch(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: "{}"});
     }
 
     async function postHardwareCommand(command) {
@@ -5179,9 +5241,9 @@ INDEX_HTML = r"""<!doctype html>
     }
 
     async function applyHardwarePins() {
-      const hookPin = Number($("hookPinInput").value || 0);
-      const buzzerPin = Number($("buzzerPinInput").value || 21);
-      const ledPin = Number($("ledPinInput").value || 20);
+      const hookPin = Number($("hookPinInput").value || 4);
+      const buzzerPin = Number($("buzzerPinInput").value || 2);
+      const ledPin = Number($("ledPinInput").value || 1);
       try {
         const result = await fetchJson("/api/hardware/pins", {
           method: "POST",
@@ -5639,7 +5701,12 @@ SIMULATOR_HTML = r"""<!doctype html>
     }
 
     async function fetchJson(url, options = {}) {
-      const response = await fetch(url, options);
+      const request = {...options};
+      if ((request.method || "GET").toUpperCase() === "POST") {
+        request.headers = {"Content-Type": "application/json", ...(request.headers || {})};
+        if (request.body === undefined) request.body = "{}";
+      }
+      const response = await fetch(url, request);
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await response.json();
     }
@@ -5658,7 +5725,7 @@ SIMULATOR_HTML = r"""<!doctype html>
       $("voiceSampleRate").value = String(config.voice_record_sample_rate ?? 16000);
       $("voiceRecordDevice").value = config.voice_record_device || "";
       $("voiceReplyPolicy").value = config.voice_reply_policy || "silent";
-      $("agentPermissionProfile").value = config.agent_permission_profile || "commander";
+      $("agentPermissionProfile").value = config.agent_permission_profile || "confirm_sensitive";
     }
 
     async function saveConfig() {
@@ -5903,7 +5970,7 @@ INDEX_HTML = r"""<!doctype html>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
   <title>设置</title>
-  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+  <script src="https://unpkg.com/lucide@1.23.0/dist/umd/lucide.js" integrity="sha384-+Wa97DHpWU8c+hegs3RdnMeiaEIS6PXASszOAv8jXPHZhM2Sfqxb1dEpp7SGC7UG" crossorigin="anonymous"></script>
   <style>
     :root {
       color-scheme: light;
@@ -7511,7 +7578,12 @@ INDEX_HTML = r"""<!doctype html>
       const controller = new AbortController();
       const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(url, {...options, signal: controller.signal});
+        const request = {...options};
+        if ((request.method || "GET").toUpperCase() === "POST") {
+          request.headers = {"Content-Type": "application/json", ...(request.headers || {})};
+          if (request.body === undefined) request.body = "{}";
+        }
+        const response = await fetch(url, {...request, signal: controller.signal});
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         return await response.json();
       } catch (error) {
@@ -7830,7 +7902,7 @@ INDEX_HTML = r"""<!doctype html>
       setValue("voiceSampleRate", config.voice_record_sample_rate ?? 16000);
       setSelectValue("voiceRecordDevice", config.voice_record_device || "");
       setSelectValue("audioOutputDevice", config.audio_output_device || "");
-      setValue("agentPermissionProfile", config.agent_permission_profile || "commander");
+      setValue("agentPermissionProfile", config.agent_permission_profile || "confirm_sensitive");
       setValue("voiceReplyPolicy", config.voice_reply_policy || "direct");
       renderInputProfiles();
       setEditorsFromActiveProfile();
@@ -7859,7 +7931,7 @@ INDEX_HTML = r"""<!doctype html>
       next.enable_voice_asr = $("enableVoiceAsr").checked;
       next.voice_auto_transcribe = $("enableVoiceAsr").checked;
       next.voice_reply_policy = $("voiceReplyPolicy").value || "direct";
-      next.agent_permission_profile = $("agentPermissionProfile").value || "commander";
+      next.agent_permission_profile = $("agentPermissionProfile").value || "confirm_sensitive";
       next.tts_speech_rate = Number($("ttsSpeechRate").value || 0);
       next.tts_loudness_rate = Number($("ttsLoudnessRate").value || 0);
       next.tts_pitch = Number($("ttsPitch").value || 0);
@@ -8773,27 +8845,41 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         parsed = urlparse(origin)
         return parsed.scheme in {"http", "https"} and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
 
+    def is_same_origin_request(self, origin: str) -> bool:
+        if not self.is_loopback_origin(origin):
+            return False
+        parsed = urlparse(origin)
+        host = str(self.headers.get("Host", "") or "").strip().lower()
+        return bool(host) and parsed.netloc.lower() == host
+
+    def is_trusted_api_request(self) -> bool:
+        if str(self.headers.get("Sec-Fetch-Site", "") or "").strip().lower() == "cross-site":
+            return False
+        origin = str(self.headers.get("Origin", "") or "").strip()
+        return not origin or self.is_same_origin_request(origin)
+
     def send_cors_headers(self) -> None:
         origin = self.headers.get("Origin", "")
-        if self.is_loopback_origin(origin):
+        if self.is_same_origin_request(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
-        elif origin == "null":
-            self.send_header("Access-Control-Allow-Origin", "null")
-            self.send_header("Vary", "Origin")
-        elif not origin:
-            self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.send_header("Access-Control-Max-Age", "600")
 
     def do_OPTIONS(self) -> None:
+        if not self.is_trusted_api_request():
+            self.send_error(403, "Cross-origin API requests are not allowed")
+            return
         self.send_response(204)
         self.send_cors_headers()
         self.end_headers()
 
     def do_GET(self) -> None:
         route = urlparse(self.path).path
+        if (route.startswith("/api/") or route == "/events") and not self.is_trusted_api_request():
+            self.send_error(403, "Cross-origin API requests are not allowed")
+            return
         if route == "/":
             self.send_bytes(INDEX_HTML.encode("utf-8"), "text/html; charset=utf-8")
         elif route == "/command-center":
@@ -8841,6 +8927,13 @@ class ConsoleHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         route = urlparse(self.path).path
+        if not self.is_trusted_api_request():
+            self.send_error(403, "Cross-origin API requests are not allowed")
+            return
+        content_type = str(self.headers.get("Content-Type", "") or "").split(";", 1)[0].strip().lower()
+        if content_type != "application/json":
+            self.send_error(415, "POST requests require application/json")
+            return
         if route == "/api/config":
             data = self.read_json()
             config = ConsoleConfig.from_dict(data)
@@ -8976,7 +9069,8 @@ class ConsoleHandler(BaseHTTPRequestHandler):
         elif route == "/api/agent/session/delete":
             data = self.read_json()
             reason = str(data.get("reason", "web"))
-            self.send_json(self.app.delete_agent_session(reason))
+            expected_session_id = str(data.get("session_id", data.get("conversation_id", ""))).strip() or None
+            self.send_json(self.app.delete_agent_session(reason, expected_session_id=expected_session_id))
         elif route == "/api/voice/stop":
             data = self.read_json()
             reason = str(data.get("reason", "web"))
@@ -9137,18 +9231,33 @@ def main() -> int:
     parser.add_argument("--no-serial", action="store_true", help="只启动网页，不打开串口。")
     parser.add_argument("--no-actions", action="store_true", help="只记录动作，不发送 Windows 快捷键。")
     parser.add_argument("--no-simulation", action="store_true", help="关闭本机模拟发送端，只使用真实 ESP32 数据。")
+    parser.add_argument(
+        "--simulation-only",
+        action="store_true",
+        help="启用隔离模拟：关闭串口、ESP32 UDP/TCP 链路、固件烧录和 Windows 快捷键。",
+    )
     args = parser.parse_args()
 
+    if args.simulation_only and args.no_simulation:
+        parser.error("--simulation-only 不能与 --no-simulation 同时使用。")
+
     config = load_config(args.config)
-    if args.no_actions:
+    if args.no_actions or args.simulation_only:
         config.enable_actions = False
 
-    app = AppState(config, args.config, simulation_enabled=not args.no_simulation)
+    app = AppState(
+        config,
+        args.config,
+        simulation_enabled=not args.no_simulation,
+        hardware_io_enabled=not args.simulation_only,
+        actions_allowed=not args.no_actions and not args.simulation_only,
+    )
     stop = threading.Event()
     preferred_port = normalize_port_name(args.port)
     if preferred_port:
         config.enable_serial_debug = True
-    app.configure_serial_debug_runtime(preferred_port, args.baud, allowed=not args.no_serial)
+    serial_allowed = not args.no_serial and not args.simulation_only
+    app.configure_serial_debug_runtime(preferred_port, args.baud, allowed=serial_allowed)
 
     if not args.no_simulation:
         app.add_state_log("本机模拟发送端已启动：没有 ESP32 时也会生成稳定 GPIO/Wi-Fi 样本。")
@@ -9157,21 +9266,24 @@ def main() -> int:
     simulation_thread = threading.Thread(target=simulation_worker, args=(app, stop), daemon=True)
     simulation_thread.start()
 
-    udp_thread = threading.Thread(
-        target=udp_worker,
-        args=(app, args.udp_port, args.device_command_port, stop),
-        daemon=True,
-    )
-    udp_thread.start()
+    if args.simulation_only:
+        app.add_state_log("纯模拟模式已禁用串口、ESP32 UDP/TCP 链路、固件烧录和 Windows 快捷键。")
+    else:
+        udp_thread = threading.Thread(
+            target=udp_worker,
+            args=(app, args.udp_port, args.device_command_port, stop),
+            daemon=True,
+        )
+        udp_thread.start()
 
-    tcp_command_thread = threading.Thread(
-        target=tcp_command_worker,
-        args=(app, args.tcp_command_port, stop),
-        daemon=True,
-    )
-    tcp_command_thread.start()
+        tcp_command_thread = threading.Thread(
+            target=tcp_command_worker,
+            args=(app, args.tcp_command_port, stop),
+            daemon=True,
+        )
+        tcp_command_thread.start()
 
-    if args.no_serial:
+    if args.no_serial or args.simulation_only:
         app.add_state_log("已按 --no-serial 启动，串口调试不可用，页面只使用 Wi-Fi / 模拟链路。")
         app.publish_serial_status()
     elif config.enable_serial_debug:

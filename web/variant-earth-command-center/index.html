@@ -4,8 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="data:,">
-  <title>控制指挥中心</title>
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.css">
+  <title>AI Desk Phone · 地球指挥中心</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.css" integrity="sha384-gNYNsUmuZqDYiT3gbirWTV5K7rt71RoveS/yXAaU09d4ZUmeDVTD3XoqB6uJAIFR" crossorigin="anonymous">
   <style>
     :root {
       color-scheme: dark;
@@ -249,9 +249,37 @@
       height: 100% !important;
     }
 
-    .maplibregl-ctrl-bottom-left,
-    .maplibregl-ctrl-bottom-right {
+    .maplibregl-ctrl-bottom-left {
       display: none;
+    }
+
+    .maplibregl-ctrl-bottom-right {
+      right: 12px;
+      bottom: 54px;
+      opacity: 0.72;
+    }
+
+    .maplibregl-ctrl-attrib {
+      color: rgba(247, 243, 232, 0.78);
+      background: rgba(2, 4, 3, 0.72) !important;
+    }
+
+    .maplibregl-ctrl-attrib a {
+      color: inherit;
+    }
+
+    .data-attribution {
+      position: absolute;
+      z-index: 10;
+      left: 20px;
+      bottom: 54px;
+      color: rgba(247, 243, 232, 0.56);
+      font: 10px/1.4 system-ui, sans-serif;
+      letter-spacing: 0.02em;
+    }
+
+    .data-attribution a {
+      color: inherit;
     }
 
     .maplibregl-ctrl-top-right {
@@ -783,7 +811,7 @@
   </style>
 </head>
 <body data-palette="teal">
-  <main class="stage" id="stage" aria-label="控制指挥中心">
+  <main class="stage" id="stage" aria-label="AI Desk Phone 地球指挥中心">
     <div id="starfield" aria-hidden="true"></div>
     <div id="map" aria-label="真实地图"></div>
     <div id="map-label-layer" aria-hidden="true"></div>
@@ -793,7 +821,7 @@
     <header class="topbar">
       <section class="brand-block" aria-label="系统身份">
         <div class="brand-row">
-          <h1>控制指挥中心</h1>
+          <h1>AI Desk Phone</h1>
         </div>
       </section>
 
@@ -811,6 +839,16 @@
       <button id="m-reset" type="button">复位</button>
     </nav>
 
+    <div class="data-attribution" aria-label="地图与影像来源">
+      Data:
+      <a href="https://www.openfreemap.org/" target="_blank" rel="noopener">OpenFreeMap</a> ·
+      <a href="https://www.esri.com/" target="_blank" rel="noopener">Esri</a> ·
+      <a href="https://s2maps.eu/" target="_blank" rel="noopener">Sentinel-2 cloudless processing © EOX</a> ·
+      <a href="https://dataspace.copernicus.eu/" target="_blank" rel="noopener">modified Copernicus Sentinel data 2024</a> ·
+      <a href="https://www.earthdata.nasa.gov/" target="_blank" rel="noopener">NASA</a> ·
+      <a href="https://www.solarsystemscope.com/textures/" target="_blank" rel="noopener">Solar System Scope</a>
+    </div>
+
     <footer class="bottom-ticker" aria-label="控制台日志">
       <div class="ticker-label" id="ticker-label">播报</div>
       <div class="ticker-window">
@@ -819,7 +857,7 @@
     </footer>
   </main>
 
-  <script src="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/maplibre-gl@5.6.2/dist/maplibre-gl.js" integrity="sha384-1qC0PnXk2fgMDybOtZF1ui4LM5Sxm7o0TbEkwfxTTVdlZvuNENNGCKUub7d644HP" crossorigin="anonymous"></script>
   <script type="module">
     import * as THREE from "./vendor/three.module.js";
 
@@ -984,7 +1022,7 @@
         tickerReady: false,
         tickerSpeed: 52,
         logs: [
-          "[SYS] 控制指挥中心已就绪",
+          "[SYS] 地球指挥中心已就绪",
           "[WAIT] 等待命令输入"
         ]
       },
@@ -1023,7 +1061,7 @@
           ],
           tileSize: 256,
           maxzoom: 19,
-          attribution: "Esri World Imagery"
+          attribution: '&copy; <a href="https://www.esri.com/">Esri</a> World Imagery'
         },
         transportation: {
           type: "raster",
@@ -1032,7 +1070,7 @@
           ],
           tileSize: 256,
           maxzoom: 19,
-          attribution: "Esri"
+          attribution: '&copy; <a href="https://www.esri.com/">Esri</a>'
         },
         places: {
           type: "raster",
@@ -1041,7 +1079,7 @@
           ],
           tileSize: 256,
           maxzoom: 19,
-          attribution: "Esri"
+          attribution: '&copy; <a href="https://www.esri.com/">Esri</a>'
         }
       },
       layers: [
@@ -1085,18 +1123,37 @@
       ]
     };
 
-    const map = new maplibregl.Map({
-      container: mapNode,
-      style: MAP_REAL_STYLE_URL,
-      center: [105, 31],
-      zoom: 6.2,
-      minZoom: 5.4,
-      maxZoom: 14.6,
-      pitch: 0,
-      bearing: 0,
-      renderWorldCopies: false,
-      attributionControl: false
-    });
+    const maplibreAvailable = typeof globalThis.maplibregl !== "undefined";
+    const fallbackMapCenter = { lng: 105, lat: 31 };
+    const fallbackMap = {
+      on() { return this; },
+      off() { return this; },
+      once() { return this; },
+      resize() {},
+      stop() {},
+      jumpTo() {},
+      easeTo() {},
+      areTilesLoaded() { return false; },
+      getCenter() { return fallbackMapCenter; },
+      getZoom() { return 6.2; },
+      getMinZoom() { return 5.4; },
+      getMaxZoom() { return 14.6; },
+      scrollZoom: { enable() {}, disable() {} }
+    };
+    const map = maplibreAvailable
+      ? new maplibregl.Map({
+          container: mapNode,
+          style: MAP_REAL_STYLE_URL,
+          center: [105, 31],
+          zoom: 6.2,
+          minZoom: 5.4,
+          maxZoom: 14.6,
+          pitch: 0,
+          bearing: 0,
+          renderWorldCopies: false,
+          attributionControl: true
+        })
+      : fallbackMap;
 
     function markMapReady() {
       state.mapReady = true;
@@ -1108,10 +1165,17 @@
       }
     }
 
-    map.on("style.load", markMapReady);
-    map.on("load", markMapReady);
-    map.on("idle", markMapReady);
-    window.setTimeout(markMapReady, 1200);
+    if (maplibreAvailable) {
+      map.on("style.load", markMapReady);
+      map.on("load", markMapReady);
+      map.on("idle", markMapReady);
+      window.setTimeout(() => {
+        if (map.isStyleLoaded?.()) markMapReady();
+      }, 1200);
+    } else {
+      stage.dataset.mapStyle = "offline-unavailable";
+      mapNode.setAttribute("aria-label", "在线地图组件不可用；本地地球模式仍可使用");
+    }
 
     function setMapProjection(type) {
       if (!map.setProjection) return;
@@ -2063,11 +2127,9 @@
     const waterMap = await textureLoader.loadAsync("./assets/earth-water.png");
     const nightMap = await textureLoader.loadAsync("./assets/earth-night.jpg");
     const specularCloudsMap = await textureLoader.loadAsync("./assets/earth-specular-clouds.jpg");
-    const cloudLayerMap = await textureLoader.loadAsync("./assets/earth-clouds.png");
     diffuseMap.colorSpace = THREE.SRGBColorSpace;
     nightMap.colorSpace = THREE.SRGBColorSpace;
-    cloudLayerMap.colorSpace = THREE.SRGBColorSpace;
-    [diffuseMap, waterMap, nightMap, specularCloudsMap, cloudLayerMap].forEach(texture => {
+    [diffuseMap, waterMap, nightMap, specularCloudsMap].forEach(texture => {
       texture.anisotropy = renderer.capabilities.getMaxAnisotropy();
       texture.needsUpdate = true;
     });
@@ -2228,20 +2290,6 @@
       .catch(() => {
         stage.dataset.globeTexture = "reference-day";
       });
-
-    const cloudMaterial = new THREE.MeshPhongMaterial({
-      map: cloudLayerMap,
-      transparent: true,
-      opacity: 0.34,
-      depthWrite: false,
-      alphaTest: 0.03,
-      specular: new THREE.Color(0x111111),
-      shininess: 2
-    });
-    const cloudMesh = new THREE.Mesh(sphereGeometry, cloudMaterial);
-    cloudMesh.scale.setScalar(1.004);
-    cloudMesh.visible = true;
-    earthSpinGroup.add(cloudMesh);
 
     const wireMaterial = new THREE.MeshBasicMaterial({
       color: 0x7df6e3,
@@ -3036,7 +3084,6 @@
           terminatorSoftness: 0.17,
           contrast: 1.06
         },
-        cloudLayerOpacity: 0.34,
         keyLight: 2.34,
         ambientLight: 0.09,
         fillLight: 0.045,
@@ -3087,7 +3134,6 @@
           terminatorSoftness: 0.17,
           contrast: 1.1
         },
-        cloudLayerOpacity: 0.44,
         keyLight: 2.34,
         ambientLight: 0.08,
         fillLight: 0.04,
@@ -3137,7 +3183,6 @@
           terminatorSoftness: 0.13,
           contrast: 1.0
         },
-        cloudLayerOpacity: 0.26,
         keyLight: 2.2,
         ambientLight: 0.12,
         fillLight: 0.055,
@@ -3187,7 +3232,6 @@
           terminatorSoftness: 0.12,
           contrast: 1.16
         },
-        cloudLayerOpacity: 0.32,
         keyLight: 2.42,
         ambientLight: 0.055,
         fillLight: 0.025,
@@ -3408,9 +3452,6 @@
       nightOverlayMaterial.uniforms.uNightStrength.value = preset.nightStrength;
       nightOverlayMaterial.uniforms.uNightEdge.value = preset.nightEdge;
       nightOverlayMaterial.uniforms.uNightSoftness.value = preset.nightSoftness;
-      cloudMaterial.opacity = preset.cloudLayerOpacity;
-      cloudMesh.visible = preset.cloudLayerOpacity > 0.001;
-
       applyFillLightsForPreset(preset);
       if (!options.silent) appendConsoleLog(`[FX] ${preset.label}`);
       syncControls();
@@ -3895,7 +3936,6 @@
           earthGroup.rotation.x += state.velocity.x * state.speed;
           earthSpinGroup.rotation.y += state.velocity.y * state.speed;
         }
-        cloudMesh.rotation.y -= 0.000104719755 * state.speed;
         starField.rotation.z += 0.000004 * state.speed;
       }
 

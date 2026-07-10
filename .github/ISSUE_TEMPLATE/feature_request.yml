@@ -1,0 +1,48 @@
+name: Feature request
+description: 提议一个具体、可验证的新能力
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: 使用场景和问题
+      description: 先说明用户要完成什么，不要只描述实现方案
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 当前替代方案
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: 主要影响组件
+      options:
+        - Windows 控制台
+        - Agent / 语音
+        - Codex 集成
+        - ESP32-S3 固件
+        - 硬件
+        - 指挥中心
+        - 文档 / 社区
+    validations:
+      required: true
+
+  - type: textarea
+    id: safety
+    attributes:
+      label: 安全、隐私和兼容性影响
+      description: 是否增加网络暴露、命令权限、数据上传、供电或协议变化
+    validations:
+      required: true
+

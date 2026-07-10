@@ -51,6 +51,6 @@
   "voice_record_device": "",
   "voice_auto_transcribe": true,
   "voice_reply_policy": "direct",
-  "agent_permission_profile": "commander",
+  "agent_permission_profile": "confirm_sensitive",
   "enable_serial_debug": false
 }

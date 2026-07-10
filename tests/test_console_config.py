@@ -4,6 +4,12 @@ from tools.ai_desk_phone_console import ConsoleConfig
 
 
 class ConsoleConfigInputProfilesTest(unittest.TestCase):
+    def test_default_hardware_and_permission_profile_are_safe_for_esp32s3(self) -> None:
+        config = ConsoleConfig()
+
+        self.assertEqual((config.hook_pin, config.buzzer_pin, config.led_pin), (4, 2, 1))
+        self.assertEqual(config.agent_permission_profile, "confirm_sensitive")
+
     def test_legacy_shortcut_fields_seed_default_input_profile(self) -> None:
         config = ConsoleConfig.from_dict(
             {

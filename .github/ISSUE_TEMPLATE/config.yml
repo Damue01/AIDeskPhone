@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 使用手册
+    url: https://github.com/Damue01/AIDeskPhone/blob/hg113-main/docs/REFERENCE_MANUAL.md
+    about: 提问前先查看安装、接线、配置和故障排查
+  - name: 安全漏洞
+    url: https://github.com/Damue01/AIDeskPhone/security/advisories/new
+    about: 私下报告漏洞，不要创建公开 Issue
+

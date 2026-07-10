@@ -3,6 +3,7 @@ import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,14 @@ def load_notify_module():
 
 
 class CodexNotifyHookTest(unittest.TestCase):
+    def test_notification_payload_prefers_codex_json_argument(self) -> None:
+        notify = load_notify_module()
+
+        with patch.object(sys, "argv", ["notify.py", '{"type":"agent-turn-complete"}']):
+            payload = notify.read_notification_payload()
+
+        self.assertEqual(payload, '{"type":"agent-turn-complete"}')
+
     def test_repo_notify_preserves_upstream_and_calls_phone_hook(self) -> None:
         notify = load_notify_module()
         calls: list[tuple[tuple[str, ...], str]] = []
