@@ -4,6 +4,7 @@
 ![Python](https://img.shields.io/badge/Python-3.11%20%7C%203.12-3776AB?logo=python&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Windows%20%2B%20ESP32--S3-555555)
 ![Status](https://img.shields.io/badge/Status-Experimental-orange)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 把 HG113 桌面电话改造成一台本地优先的 AI 终端：拿起听筒说出任务，由 Windows 主机完成语音识别、Agent 工具调用和语音播报；任务在挂机后完成时，电话会通过 LED 与蜂鸣器提醒用户接听。
 
@@ -118,6 +119,10 @@ ARK_API_KEY=YOUR_ARK_API_KEY
 | [标准参考手册](docs/REFERENCE_MANUAL.md) | 安装、接线、固件、配置、使用、验证与故障排查 |
 | [API 参考](docs/API_REFERENCE.md) | HTTP、SSE、ESP32 命令协议与指挥中心 JS Bridge |
 | [硬件资料索引](docs/electronics/README.md) | 参考接线图、样机照片和历史硬件说明 |
+| [参考物料清单](docs/electronics/BOM.md) | 当前 ESP32-S3 样机的数量、规格、替代件和供电边界 |
+| [隐私与本地数据](PRIVACY.md) | 本地保存、第三方数据流、保留与清理边界 |
+| [分支与发布规则](GOVERNANCE.md) | 两条长期分支、版本号和发布检查表 |
+| [依赖与发行清单](docs/DEPENDENCIES.md) | 直接依赖、手动更新策略和发行 SBOM 要求 |
 | [指挥中心组件](web/variant-earth-command-center/README.md) | 页面职责、开发入口与联网依赖 |
 | [贡献指南](CONTRIBUTING.md) | 开发环境、测试、文档规则和 PR 检查项 |
 | [安全策略](SECURITY.md) | 漏洞报告和受支持范围 |
@@ -161,7 +166,7 @@ py -3.12 -m venv .venv
 - 启用 ASR、TTS、Ark 或网页搜索后，相关音频或文本会发送给对应的第三方服务。
 - 默认 `confirm_sensitive` 权限不允许 Agent 执行 shell；只有显式切换到受信任权限后才会开放命令工具。
 
-详细说明见 [SECURITY.md](SECURITY.md) 和 [THREAT_MODEL.md](THREAT_MODEL.md)。
+本地文件默认不会自动过期；详细数据流和清理方式见 [PRIVACY.md](PRIVACY.md)，安全边界见 [SECURITY.md](SECURITY.md) 和 [THREAT_MODEL.md](THREAT_MODEL.md)。
 
 ## 参与贡献
 
@@ -171,4 +176,4 @@ Bug、功能建议和文档问题请使用仓库的 Issue 模板。提交 PR 前
 
 ## 许可证
 
-项目所有者尚未选择代码许可证。许可证落地前，仓库公开可见不等于自动授权复制、修改或再分发；第三方组件仍分别遵循其上游条款。
+项目自身代码采用 [MIT License](LICENSE)，Copyright (c) 2026 Damue01。第三方组件、素材和在线服务仍分别遵循 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) 中列出的上游条款。

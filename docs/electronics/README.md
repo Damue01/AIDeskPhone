@@ -5,6 +5,7 @@
 ## 当前资料
 
 - [ESP32-S3 参考接线图](assets/hg113_reference_wiring.svg)：当前 GPIO4/2/1 基线。
+- [ESP32-S3 参考物料清单](BOM.md)：数量、推荐规格、替代规则和供电边界。
 - [样机照片索引](photo-index.md)：电话内部、开关小板、CSR8645、旧 ESP32-C3 样机和电源模块。
 - [原始照片](assets/photos/)：未经压缩的现场资料，仅用于识别和复查。
 

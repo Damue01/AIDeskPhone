@@ -4,6 +4,7 @@
 
 ## 开始之前
 
+- 长期分支、版本号和发布流程见 [GOVERNANCE.md](GOVERNANCE.md)。功能开发以 `hg113-main` 为基线；不要创建新的长期维护分支。
 - 阅读[标准参考手册](docs/REFERENCE_MANUAL.md)和[威胁模型](THREAT_MODEL.md)。
 - Bug 和新功能先使用对应的 Issue 模板，说明问题发生在模拟器、桌面端、固件还是实机。
 - 安全漏洞不要提交公开 Issue，按 [SECURITY.md](SECURITY.md) 私下报告。
@@ -50,6 +51,7 @@ Copy-Item .env.example .env
 ### Python
 
 - 优先保持标准库和现有依赖，新增依赖必须解释用途、许可证和维护成本。
+- 依赖变化同步更新 `docs/DEPENDENCIES.md` 和必要的第三方声明。
 - 硬件、文件和网络操作应有超时、错误处理和可测试边界。
 - 新增公共行为时补回归测试。
 - 不扩大 Agent 命令权限；涉及权限、shell 或网络绑定的改动必须更新威胁模型。
@@ -107,4 +109,3 @@ test: cover Codex notify argument payloads
 ## 行为准则
 
 参与项目即表示同意遵守 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。
-

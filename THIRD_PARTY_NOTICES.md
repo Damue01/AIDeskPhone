@@ -2,7 +2,7 @@
 
 AI Desk Phone 使用或运行时访问以下第三方代码、素材和服务。各项目名称和商标归其权利人所有。本文件只做归属说明，不改变任何上游许可证，也不代表第三方认可本项目。
 
-项目自身代码许可证尚待项目所有者选择；第三方条款始终独立适用。
+项目自身代码采用 [MIT License](LICENSE)；第三方条款始终独立适用，不因项目许可证而改变。
 
 ## 随仓库分发
 
@@ -62,6 +62,6 @@ AI Desk Phone 使用或运行时访问以下第三方代码、素材和服务。
 
 ## Python 与固件依赖
 
-Python 包和 PlatformIO/Arduino 库由 `requirements.txt` 与各 `platformio.ini` 声明。安装时会下载对应上游软件包；再分发二进制或发行包前，应生成依赖清单并复核每个许可证。
+Python 包和 PlatformIO/Arduino 库由 `requirements.txt` 与各 `platformio.ini` 声明。直接依赖、更新策略和发行快照要求见[依赖与发行清单](docs/DEPENDENCIES.md)。安装时会下载对应上游软件包；再分发二进制或发行包前，应生成解析后的完整依赖清单并复核每个许可证。
 
 如果发现遗漏或错误归属，请按 [CONTRIBUTING.md](CONTRIBUTING.md) 提交更正；涉及潜在权利问题时请私下联系维护者。

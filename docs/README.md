@@ -10,6 +10,8 @@
 | [API 参考](API_REFERENCE.md) | 集成开发者 | HTTP、SSE、ESP32 命令协议和指挥中心 JavaScript Bridge |
 | [硬件资料索引](electronics/README.md) | 硬件制作者 | 当前接线图、样机照片、历史板卡和现场证据 |
 | [照片索引](electronics/photo-index.md) | 硬件制作者 | 每张样机照片可确认的信息与使用限制 |
+| [参考物料清单](electronics/BOM.md) | 硬件制作者 | 当前物料数量、规格、替代件和供电边界 |
+| [依赖与发行清单](DEPENDENCIES.md) | 维护者、发行者 | 直接依赖、手动更新策略和发行 SBOM 要求 |
 
 组件级开发资料：
 
@@ -21,8 +23,11 @@
 - [贡献指南](../CONTRIBUTING.md)
 - [安全策略](../SECURITY.md)
 - [威胁模型](../THREAT_MODEL.md)
+- [隐私与本地数据](../PRIVACY.md)
+- [分支与发布规则](../GOVERNANCE.md)
 - [行为准则](../CODE_OF_CONDUCT.md)
 - [第三方声明](../THIRD_PARTY_NOTICES.md)
+- [MIT 许可证](../LICENSE)
 
 ## 文档维护规则
 
@@ -33,4 +38,3 @@
 5. 示例不得包含真实密钥、Wi-Fi 凭据、局域网地址、用户名或未脱敏日志。
 6. 行为改动必须在同一个 PR 中更新对应文档和测试。
 7. 规划内容不写进参考手册；需要记录时放到 Issue 或 Discussion。
-
