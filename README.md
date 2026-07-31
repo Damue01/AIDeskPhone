@@ -175,6 +175,7 @@ Bug、功能建议和文档问题请使用仓库的 Issue 模板。提交 PR 前
 项目协作遵循 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。第三方代码、地图和素材说明见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 视频最早于 6 月 28 日发布在小红书、抖音、哔哩哔哩平台，发布前无任何相关内容作为参考，开发部分记录可在其他分支查看，勿再后续发布高度重复内容时让人私信说我是抄袭了。
+一个非常有仪式感的 vibe coding 工具 用旧电话机改造... http://xhslink.cn/o/5oWGSnWhosM Copy and open rednote to view the note
 
 ## 许可证
 
